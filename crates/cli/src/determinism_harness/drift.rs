@@ -272,7 +272,7 @@ fn append_text_diff(
 /// in the sorted order returned by `discover_artifacts`. Returns
 /// `None` when no artifact maps to the named stage (caller silently
 /// no-ops — the integration test should observe drift_count == 0 in
-/// that case, surfacing a typo in the stage value).
+/// that case, reporting a typo in the stage value).
 pub(super) fn pick_first_artifact_for_stage<'a>(
     artifacts: &'a [PathBuf],
     stage_name: &str,
@@ -424,7 +424,7 @@ mod tests {
             summary.contains("offset 0x4650"),
             "expected absolute offset 0x4650 (=18000), got: {summary}"
         );
-        // Bytes at that offset must be surfaced.
+        // Bytes at that offset must be reported.
         assert!(summary.contains("0x11"), "got: {summary}");
         assert!(summary.contains("0x22"), "got: {summary}");
     }

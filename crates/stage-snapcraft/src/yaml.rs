@@ -21,9 +21,7 @@ use crate::generate::generate_snap_yaml;
 pub(super) const DEFAULT_SNAP_NAME_TEMPLATE: &str =
     anodizer_core::archive_name::DEFAULT_NAME_TEMPLATE;
 
-// ---------------------------------------------------------------------------
 // Serde-serializable snapcraft YAML model
-// ---------------------------------------------------------------------------
 
 pub(super) fn is_empty_vec<T>(v: &[T]) -> bool {
     v.is_empty()

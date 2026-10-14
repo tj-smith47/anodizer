@@ -220,7 +220,7 @@ fn render_top_level_cask_inner(
         // publish-only pass over a library workspace) from "an `ids:` filter
         // is set but matched no darwin artifact" (a typo'd id, or an id that
         // produces no macOS build). The latter is a misconfiguration: the
-        // cask would silently never publish. Surface it as an error so the
+        // cask would silently never publish. Report it as an error so the
         // typo is caught at release time rather than when `brew install`
         // 404s.
         let ids_set = cask_cfg.ids.as_deref().is_some_and(|ids| !ids.is_empty());

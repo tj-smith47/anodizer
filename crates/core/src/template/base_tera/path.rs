@@ -8,7 +8,7 @@ use tera::TeraResult;
 use crate::template::engine_adapter::{JsonRegisterExt, try_get_value};
 
 pub(super) fn register(tera: &mut tera::Tera) {
-    // --- Path manipulation filters ---
+    // Path manipulation filters
 
     // dir — returns the directory portion of a path
     tera.register_json_filter("dir", |value: &Value, _: &HashMap<String, Value>| {

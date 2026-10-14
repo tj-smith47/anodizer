@@ -197,7 +197,7 @@ pub(super) fn crate_declares_docker(
 /// verbatim (production does not template them).
 ///
 /// The `Context` is seeded the SAME way the child `anodizer release --snapshot`
-/// builds its config-resolution surface for this crate — snapshot/nightly
+/// builds its config-resolution context for this crate — snapshot/nightly
 /// options, process + config `env` (`helpers::setup_env`), git + version vars
 /// (`helpers::resolve_git_context`), the snapshot version suffix
 /// (`release::apply_snapshot_template_vars`), and time/runtime/metadata vars —
@@ -216,7 +216,7 @@ pub(super) fn resolve_docker_configs(
 
     // Build the config-resolution Context the child snapshot release would use
     // for this crate, reusing the SAME public helpers the release setup does so
-    // the two surfaces cannot drift.
+    // the two paths cannot drift.
     let opts = anodizer_core::context::ContextOptions {
         snapshot: child_snapshot,
         selected_crates: crate_name.map(|n| vec![n.to_string()]).unwrap_or_default(),
@@ -333,7 +333,7 @@ pub(super) fn classify_docker_stage_state(
 ///
 /// A missing/unparseable config (`None`) yields an empty list: the gate then
 /// treats `msi` as carrying no tool requirement and the real config error
-/// surfaces from the pipeline itself.
+/// is reported by the pipeline itself.
 ///
 /// `required_msi_tools` renders each entry's `skip:` / `if:` in this bare
 /// gate context, which lacks the `--snapshot` child's `.Version` /
@@ -341,7 +341,7 @@ pub(super) fn classify_docker_stage_state(
 /// an entry inactive here yet active in the child, leaving `msi` ungated.
 /// Unlike `upx`, that is benign: when no WiX binary is on PATH the stage's
 /// version probe falls back to v4 and the child hard-fails at `wix build`
-/// spawn (`run_checked`), surfacing the missing tool loudly. There is no
+/// spawn (`run_checked`), reporting the missing tool loudly. There is no
 /// silent warn-skip to under-cover, so `msi` needs no conservative
 /// over-require (contrast [`resolve_upx_tools`], whose stage warn-skips).
 pub(super) fn resolve_msi_tools(

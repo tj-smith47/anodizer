@@ -6,9 +6,7 @@ use super::super::{
 };
 use super::RepositoryConfig;
 
-// ---------------------------------------------------------------------------
 // ChocolateyConfig
-// ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default, deny_unknown_fields)]

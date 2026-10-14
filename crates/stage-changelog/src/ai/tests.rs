@@ -16,9 +16,7 @@ use anodizer_core::test_helpers::scripted_responder::{ScriptedRoute, spawn_scrip
 
 use super::enhance_with_ai;
 
-// ---------------------------------------------------------------------------
 // Test fixtures
-// ---------------------------------------------------------------------------
 
 /// Build a minimal `Context` for AI-enhancement tests.
 fn make_ctx(allow_ai_failure: bool) -> Context {
@@ -55,9 +53,7 @@ fn json_200(body: &'static str) -> String {
     )
 }
 
-// ---------------------------------------------------------------------------
 // Provider-not-configured (no-op)
-// ---------------------------------------------------------------------------
 
 #[test]
 fn no_provider_returns_body_unchanged() {
@@ -99,9 +95,7 @@ fn whitespace_only_provider_string_returns_body_unchanged() {
     assert_eq!(out, body);
 }
 
-// ---------------------------------------------------------------------------
 // Anthropic — 200 OK replaces the body
-// ---------------------------------------------------------------------------
 
 #[test]
 fn anthropic_200_replaces_body() {
@@ -169,9 +163,7 @@ fn anthropic_200_skips_leading_thinking_block() {
     assert_eq!(out, "# Real notes");
 }
 
-// ---------------------------------------------------------------------------
 // OpenAI — 200 OK replaces the body
-// ---------------------------------------------------------------------------
 
 #[test]
 fn openai_200_replaces_body() {
@@ -204,9 +196,7 @@ fn openai_200_replaces_body() {
     assert_eq!(out, "# Enhanced via OpenAI");
 }
 
-// ---------------------------------------------------------------------------
 // Ollama — 200 OK replaces the body
-// ---------------------------------------------------------------------------
 
 #[test]
 fn ollama_200_replaces_body() {
@@ -233,9 +223,7 @@ fn ollama_200_replaces_body() {
     assert_eq!(out, "# Local Llama notes");
 }
 
-// ---------------------------------------------------------------------------
 // 401 — release aborts, error does not leak the API key
-// ---------------------------------------------------------------------------
 
 #[test]
 fn anthropic_401_aborts_and_redacts() {
@@ -286,7 +274,7 @@ fn anthropic_401_aborts_and_redacts() {
 fn anthropic_abort_path_redacts_secrets() {
     // The fail-closed abort path must redact symmetrically with the
     // --allow-ai-failure warn path. An unreachable endpoint with embedded
-    // URL credentials surfaces the credentials in reqwest's connection
+    // URL credentials exposes the credentials in reqwest's connection
     // error; the propagated error must not carry them verbatim. The known
     // API-key env value must also be scrubbed.
     let secret = "sk-ant-very-secret-do-not-leak-9999";
@@ -317,9 +305,7 @@ fn anthropic_abort_path_redacts_secrets() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // 503 — fail-closed by default, degrades to original body with --allow-ai-failure
-// ---------------------------------------------------------------------------
 
 #[test]
 fn anthropic_503_aborts_when_fail_closed() {
@@ -383,9 +369,7 @@ fn anthropic_503_degrades_with_allow_ai_failure() {
     assert_eq!(out, original);
 }
 
-// ---------------------------------------------------------------------------
 // from_file — file content used as the prompt
-// ---------------------------------------------------------------------------
 
 #[test]
 fn prompt_from_file_is_used() {
@@ -442,9 +426,7 @@ fn prompt_from_file_is_used() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // from_url — `${TOKEN}` env-expanded in headers via the injected EnvSource
-// ---------------------------------------------------------------------------
 
 #[test]
 fn prompt_from_url_expands_env_in_headers() {
@@ -526,9 +508,7 @@ fn prompt_from_url_expands_env_in_headers() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // Missing API key — bails with a clear error, no panic, no leak
-// ---------------------------------------------------------------------------
 
 #[test]
 fn missing_api_key_bails_cleanly() {
@@ -547,9 +527,7 @@ fn missing_api_key_bails_cleanly() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // Unknown provider name — bails with the valid options
-// ---------------------------------------------------------------------------
 
 #[test]
 fn unknown_provider_lists_valid_options() {
@@ -570,9 +548,7 @@ fn unknown_provider_lists_valid_options() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // Snapshot mode — AI is skipped for cost containment
-// ---------------------------------------------------------------------------
 
 #[test]
 fn snapshot_mode_skips_ai() {
@@ -601,9 +577,7 @@ fn snapshot_mode_skips_ai() {
     assert_eq!(out, original);
 }
 
-// ---------------------------------------------------------------------------
 // Body passed to the AI provider is the flat (ungrouped) commit list
-// ---------------------------------------------------------------------------
 //
 // When `changelog.ai.use` is set the stage clears `opts.groups` BEFORE the
 // per-crate render (`run.rs::run`). The render therefore emits a flat

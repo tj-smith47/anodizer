@@ -75,11 +75,11 @@ pub fn response_is_rate_limited(headers: &reqwest::header::HeaderMap) -> bool {
 /// `secondary-rate-limits`.
 ///
 /// Body-signature detection exists for callers whose HTTP layer does not
-/// surface response headers (octocrab's `GitHubError` carries only
+/// expose response headers (octocrab's `GitHubError` carries only
 /// message / documentation_url / status). Callers that do hold the headers
 /// should prefer [`response_is_rate_limited`]. Keeping the signature strings
 /// here — next to the header detector — means a GitHub body rewording is a
-/// one-place fix for every surface that discriminates 403s.
+/// one-place fix for every caller that discriminates 403s.
 pub fn is_secondary_rate_limit_signature(
     status: u16,
     message: &str,

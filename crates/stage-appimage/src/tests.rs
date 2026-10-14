@@ -12,9 +12,7 @@ use anodizer_core::test_helpers::TestContextBuilder;
 
 use super::*;
 
-// ---------------------------------------------------------------------------
 // linuxdeploy argv + env construction (pure)
-// ---------------------------------------------------------------------------
 
 #[test]
 fn linuxdeploy_args_canonical_order() {
@@ -114,9 +112,7 @@ fn appimage_arch_maps_triples() {
     assert_eq!(appimage_arch("i686-unknown-linux-gnu"), "i686");
 }
 
-// ---------------------------------------------------------------------------
 // filename rendering
-// ---------------------------------------------------------------------------
 
 fn ctx_v(version: &str) -> Context {
     TestContextBuilder::new()
@@ -265,9 +261,7 @@ fn untagged_x86_64_amd64_matches_build_baseline() {
     assert_eq!(name, "myapp-1.2.3-x86_64.AppImage");
 }
 
-// ---------------------------------------------------------------------------
 // AppDir assembly
-// ---------------------------------------------------------------------------
 
 fn write(p: &Path, bytes: &[u8]) {
     if let Some(parent) = p.parent() {
@@ -441,9 +435,7 @@ fn assemble_appdir_copies_extra_file_to_dst() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // runtime harvest command rendering
-// ---------------------------------------------------------------------------
 
 #[test]
 fn harvest_command_renders_artifact_and_dir_vars() {
@@ -518,9 +510,7 @@ fn harvest_vars_do_not_leak_into_later_render() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // host-binary resolution
-// ---------------------------------------------------------------------------
 
 #[test]
 fn resolve_host_binary_finds_host_target() {
@@ -564,9 +554,7 @@ fn resolve_host_binary_none_for_pure_cross() {
     assert!(resolve_host_binary(&binaries).is_none());
 }
 
-// ---------------------------------------------------------------------------
 // validation
-// ---------------------------------------------------------------------------
 
 #[test]
 fn validate_rejects_missing_desktop() {
@@ -603,10 +591,8 @@ fn validate_rejects_duplicate_ids() {
     assert!(validate_unique_ids(&configs).is_err());
 }
 
-// ---------------------------------------------------------------------------
 // run-path: dry-run, per-arch naming, host-missing harvest
 // (these exercise collect_config_jobs without spawning linuxdeploy)
-// ---------------------------------------------------------------------------
 
 fn build_ctx_with_binaries(dist: &Path, targets: &[&str]) -> Context {
     let mut ctx = TestContextBuilder::new()
@@ -1305,9 +1291,7 @@ fn no_ids_admits_both_builds_the_collision_we_guard_against() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // .zsync MTime pinning (determinism)
-// ---------------------------------------------------------------------------
 
 // Build a minimal `.zsync` sidecar shaped like zsyncmake's output: newline
 // header, blank-line terminator, then a binary block-checksum tail.

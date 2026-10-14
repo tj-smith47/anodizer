@@ -61,9 +61,7 @@ pub(crate) struct WingetInstallerItem {
     pub(crate) silent_switch_override: Option<String>,
 }
 
-// ---------------------------------------------------------------------------
 // Serde structs for WinGet YAML manifests (3-file format)
-// ---------------------------------------------------------------------------
 
 #[derive(Serialize)]
 #[serde(rename_all = "PascalCase")]
@@ -503,6 +501,4 @@ fn build_locale_manifest(
     }
 }
 
-// ---------------------------------------------------------------------------
 // publish_to_winget helpers
-// ---------------------------------------------------------------------------

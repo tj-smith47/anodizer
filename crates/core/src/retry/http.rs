@@ -262,7 +262,7 @@ where
 ///
 /// `success_class` mirrors the blocking variant: `Strict` rejects 3xx,
 /// `AllowRedirects` accepts them. Most async API clients want `Strict`
-/// (their reqwest::Client follows redirects by default, so a surfaced 3xx
+/// (their reqwest::Client follows redirects by default, so a returned 3xx
 /// is itself an error).
 pub async fn retry_http_async<F, Fut, M>(
     rlog: RetryLog<'_>,

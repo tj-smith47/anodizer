@@ -18,7 +18,7 @@ use anyhow::{Result, bail};
 /// A residual `{{` … `}}` delimiter pair found in finished manifest text.
 ///
 /// Returned by `find_unrendered`; the `snippet` is already secret-redacted
-/// (see [`assert_no_unrendered`]) so it is safe to surface in logs or errors.
+/// (see [`assert_no_unrendered`]) so it is safe to show in logs or errors.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Residual {
     /// The offending `{{ … }}` substring (redacted), bounded so a runaway
@@ -34,7 +34,7 @@ const MAX_SNIPPET: usize = 120;
 /// Find the first residual `{{` … `}}` delimiter pair in `text`, if any.
 ///
 /// Returns `None` for clean manifests. The returned [`Residual::snippet`] is
-/// the raw (un-redacted) matched substring — callers that surface it MUST
+/// the raw (un-redacted) matched substring — callers that show it MUST
 /// redact first; prefer [`assert_no_unrendered`], which redacts for you.
 fn find_unrendered_raw(text: &str) -> Option<String> {
     let open = text.find("{{")?;
@@ -59,7 +59,7 @@ fn find_unrendered_raw(text: &str) -> Option<String> {
 ///
 /// `label` names the publisher + manifest (e.g. `"chocolatey nuspec"`) for the
 /// diagnostic. `redact` is applied to the offending snippet before it is
-/// surfaced, so a secret-flagged config value cannot leak into a log line or
+/// shown, so a secret-flagged config value cannot leak into a log line or
 /// error message — callers pass [`crate::redact::redact_process_env`] (or an
 /// equivalent that also masks config-declared secrets).
 ///

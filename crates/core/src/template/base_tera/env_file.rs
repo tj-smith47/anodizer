@@ -40,7 +40,7 @@ pub(super) fn register(tera: &mut tera::Tera) {
         },
     );
 
-    // --- File reading functions ---
+    // File reading functions
 
     // readFile(path="file.txt") — reads file, returns empty string on error.
     // Intentionally returns empty on all errors (not just ENOENT).

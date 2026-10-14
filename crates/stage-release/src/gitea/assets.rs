@@ -218,9 +218,7 @@ pub(crate) async fn gitea_find_asset_size(
     Ok(None)
 }
 
-// ---------------------------------------------------------------------------
 // Forge-client face of the shared upload loop
-// ---------------------------------------------------------------------------
 
 /// The Gitea face of the shared upload loop
 /// ([`crate::forge::run_upload_loop`]).
@@ -267,7 +265,7 @@ impl crate::forge::ForgeAssetClient for GiteaAssetClient {
 
     /// [`gitea_find_asset_size`] returns `None` both for "no such asset" and
     /// for "asset present but size unreadable"; both map to `Absent` so the
-    /// loop proceeds straight to the upload (the API surfaces any duplicate
+    /// loop proceeds straight to the upload (the API reports any duplicate
     /// itself), preserving the pre-driver decision table.
     async fn probe_asset(&self, file_name: &str) -> Result<crate::forge::AssetPresence> {
         Ok(

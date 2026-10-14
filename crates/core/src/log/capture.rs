@@ -18,7 +18,7 @@ pub enum LogLevel {
     Error,
     Warn,
     Status,
-    /// Liveness / progress line from [`StageLogger::heartbeat`], surfaced
+    /// Liveness / progress line from [`StageLogger::heartbeat`], emitted
     /// during a slow subprocess or upload. A level of its own so a heartbeat is
     /// never counted as a status result line.
     Heartbeat,

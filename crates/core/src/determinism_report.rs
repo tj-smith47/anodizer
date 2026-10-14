@@ -92,7 +92,7 @@ pub struct AllowListEntry {
     /// Artifact name or `*.ext` glob (see
     /// [`crate::DeterminismState`] for pattern semantics).
     pub artifact: String,
-    /// Human-readable reason surfaced into the report so consumers can
+    /// Human-readable reason written into the report so consumers can
     /// audit the rationale alongside the SHA256SUMS file.
     pub reason: String,
 }

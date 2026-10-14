@@ -8,9 +8,7 @@ use anodizer_core::context::Context;
 use anodizer_core::stage::Stage;
 use anodizer_core::tool_detect::on_path;
 
-// ---------------------------------------------------------------------------
 // Helpers
-// ---------------------------------------------------------------------------
 
 use anodizer_core::artifact::format_size;
 
@@ -23,7 +21,7 @@ pub(crate) fn target_matches_pattern(target: &str, pattern: &str) -> bool {
 }
 
 /// Validate the `compress` value against UPX's accepted set: empty (use UPX
-/// defaults), `best`, or one of `1`..=`9`. Returning `Err` here surfaces the
+/// defaults), `best`, or one of `1`..=`9`. Returning `Err` here reports the
 /// typo before the shell-out, where UPX rejects it with an unhelpful exit code.
 pub fn validate_compress(level: Option<&str>) -> Result<()> {
     let Some(level) = level else { return Ok(()) };
@@ -68,9 +66,7 @@ pub(crate) fn should_compress(
     true
 }
 
-// ---------------------------------------------------------------------------
 // UpxStage
-// ---------------------------------------------------------------------------
 
 pub struct UpxStage;
 
@@ -318,12 +314,12 @@ impl Stage for UpxStage {
 /// The upx binaries the configured `upx:` stages need on `PATH` to run:
 /// each enabled `upx:` entry contributes its `binary` (default `upx`).
 /// `enabled` defaults to false, matching [`UpxStage::run`]; a template that
-/// fails to render is treated as enabled so a broken expression surfaces in
+/// fails to render is treated as enabled so a broken expression is reported in
 /// the stage, not as a silently dropped requirement.
 ///
 /// The single source of truth for the upx tool requirement: both
 /// [`env_requirements`] (release preflight) and the determinism harness's
-/// tool gate consult it, so the two surfaces can never disagree about
+/// tool gate consult it, so the two checks can never disagree about
 /// whether upx must be present.
 pub fn required_upx_tools(ctx: &anodizer_core::context::Context) -> Vec<String> {
     let mut out = Vec::new();
@@ -343,7 +339,7 @@ pub fn required_upx_tools(ctx: &anodizer_core::context::Context) -> Vec<String> 
 
 /// Environment requirements for the upx stage: each enabled `upx:` entry's
 /// binary (default `upx`), derived from [`required_upx_tools`] so the
-/// preflight surface and the determinism tool gate can never drift.
+/// preflight check and the determinism tool gate can never drift.
 pub fn env_requirements(
     ctx: &anodizer_core::context::Context,
 ) -> Vec<anodizer_core::EnvRequirement> {
@@ -353,9 +349,7 @@ pub fn env_requirements(
         .collect()
 }
 
-// ---------------------------------------------------------------------------
 // Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
@@ -364,9 +358,7 @@ mod tests {
     use anodizer_core::config::UpxConfig;
     use anodizer_core::test_helpers::TestContextBuilder;
 
-    // -----------------------------------------------------------------------
     // target_matches_pattern tests
-    // -----------------------------------------------------------------------
 
     #[test]
     fn test_target_matches_exact() {
@@ -413,9 +405,7 @@ mod tests {
         assert!(target_matches_pattern("x86_64-unknown-linux-gnu", "*"));
     }
 
-    // -----------------------------------------------------------------------
     // should_compress tests
-    // -----------------------------------------------------------------------
 
     #[test]
     fn test_should_compress_no_filters() {
@@ -550,9 +540,7 @@ mod tests {
         ));
     }
 
-    // -----------------------------------------------------------------------
     // Config parsing tests
-    // -----------------------------------------------------------------------
 
     #[test]
     fn test_config_parse_single_upx_object() {
@@ -667,9 +655,7 @@ crates: []
         );
     }
 
-    // -----------------------------------------------------------------------
     // Stage behavior tests
-    // -----------------------------------------------------------------------
 
     #[test]
     fn test_stage_skips_without_upx_config() {
@@ -947,9 +933,7 @@ crates: []
         assert_eq!(stage.name(), "upx");
     }
 
-    // -----------------------------------------------------------------------
     // validate_compress tests
-    // -----------------------------------------------------------------------
 
     #[test]
     fn test_validate_compress_accepts_valid_levels() {
@@ -970,9 +954,7 @@ crates: []
         }
     }
 
-    // -----------------------------------------------------------------------
     // env_requirements tests
-    // -----------------------------------------------------------------------
 
     fn ctx_with_upx(upx: Vec<UpxConfig>) -> anodizer_core::context::Context {
         TestContextBuilder::new().upx(upx).build()
@@ -1007,7 +989,7 @@ crates: []
 
     #[test]
     fn test_env_requirements_treats_broken_template_as_enabled() {
-        // A template that fails to render must surface the binary as a
+        // A template that fails to render must report the binary as a
         // requirement so the error is reported by the stage, not hidden by
         // a silently skipped preflight.
         let ctx = ctx_with_upx(vec![UpxConfig {
@@ -1020,9 +1002,7 @@ crates: []
         assert_eq!(env_requirements(&ctx).len(), 1);
     }
 
-    // -----------------------------------------------------------------------
     // Live-run tests (stubbed upx binary via FakeToolDir)
-    // -----------------------------------------------------------------------
 
     #[cfg(unix)]
     mod live_run {

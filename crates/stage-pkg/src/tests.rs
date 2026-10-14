@@ -10,7 +10,7 @@ use anodizer_core::context::{Context, ContextOptions};
 use anodizer_core::stage::Stage;
 use tempfile::TempDir;
 
-// -- pkgbuild_command tests --
+// pkgbuild_command tests
 
 #[test]
 fn test_pkgbuild_command_basic() {
@@ -98,7 +98,7 @@ fn test_pkgbuild_command_custom_install_location() {
     );
 }
 
-// -- tool resolution tests --
+// tool resolution tests
 
 #[test]
 fn test_resolve_prefers_pkgbuild() {
@@ -128,9 +128,9 @@ fn test_resolve_bail_names_both_options() {
     assert!(err.contains("cpio"), "message must name cpio: {err}");
 }
 
-// -- Linux flat-package builder --
+// Linux flat-package builder
 
-// -- reproducibility helpers --
+// reproducibility helpers
 
 #[test]
 fn test_sha1_digest_known_vectors() {
@@ -388,7 +388,7 @@ fn test_build_flat_pkg_linux_emits_xar_layout() {
     );
 }
 
-// -- Stage no-op / skip tests --
+// Stage no-op / skip tests
 
 #[test]
 fn test_stage_skips_when_no_pkg_config() {
@@ -448,7 +448,7 @@ fn test_stage_skips_when_disabled() {
     assert!(ctx.artifacts.by_kind(ArtifactKind::MacOsPackage).is_empty());
 }
 
-// -- Dry-run behavior tests --
+// Dry-run behavior tests
 
 #[test]
 fn test_stage_dry_run_registers_artifacts() {
@@ -866,7 +866,7 @@ fn test_stage_dry_run_replace_removes_archives() {
     );
 }
 
-// -- Error path tests --
+// Error path tests
 
 #[test]
 fn test_stage_errors_without_identifier() {
@@ -920,7 +920,7 @@ fn test_stage_errors_without_identifier() {
     );
 }
 
-// -- Config parsing tests --
+// Config parsing tests
 
 #[test]
 fn test_config_parse_pkg() {
@@ -1273,7 +1273,7 @@ fn test_ids_filtering() {
     );
 }
 
-// -- `use` field tests --
+// `use` field tests
 
 #[test]
 fn test_use_appbundle_selects_installer_artifacts() {
@@ -1548,7 +1548,7 @@ fn test_use_appbundle_skips_when_no_appbundles() {
     );
 }
 
-// -- StringOrBool disable tests --
+// StringOrBool disable tests
 
 #[test]
 fn test_disable_string_or_bool_true_string() {
@@ -1715,7 +1715,7 @@ crates:
     assert!(matches!(pkgs[0].skip, Some(StringOrBool::String(_))));
 }
 
-// --- `pkg.if` template-conditional ---
+// `pkg.if` template-conditional
 
 fn pkg_if_test_ctx(if_expr: Option<&str>) -> anodizer_core::context::Context {
     use anodizer_core::artifact::{Artifact, ArtifactKind};
@@ -2209,7 +2209,7 @@ fn test_two_configs_same_crate_distinct_names_pass() {
     assert_eq!(pkgs.len(), 2, "expected one PKG per distinct-named config");
 }
 
-// -- collect_find_paths tests --
+// collect_find_paths tests
 
 /// The sorted name list is what cpio archives, so it must reproduce
 /// `find . | LC_ALL=C sort` exactly — a divergence in entry order or

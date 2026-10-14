@@ -4,7 +4,7 @@
 //! the BuildKit reproducibility side of the determinism harness. The
 //! harness itself lives in `crates/cli/` which is forbid-listed for
 //! direct subprocess spawn (see `.claude/rules/module-boundaries.md`);
-//! this module owns the call site so the security surface stays small.
+//! this module owns the call site so the security-relevant code stays small.
 //!
 //! ## What it does
 //!
@@ -31,7 +31,7 @@
 //!   the attribute has a value to rewrite to. The attribute is a
 //!   BuildKit *output*-side feature, NOT a top-level `--rewrite-timestamp`
 //!   flag (early BuildKit drafts considered the flag form but settled on
-//!   the exporter attribute; buildx itself does not surface a top-level
+//!   the exporter attribute; buildx itself does not expose a top-level
 //!   flag).
 //! - **Provenance attestation**: `--provenance=false` suppresses BuildKit's
 //!   default in-toto provenance attestation, whose body embeds the build
@@ -104,7 +104,7 @@ pub struct OciBuildOutput {
 /// host env vars cannot perturb the build.
 ///
 /// `log` governs the buildx child's output: at default verbosity BuildKit's
-/// wall-clock-stamped progress stream is captured silently (surfaced only if
+/// wall-clock-stamped progress stream is captured silently (shown only if
 /// the build fails), and at `-v` it is streamed live — matching the
 /// `status` vs `verbose` log register every other subprocess obeys.
 ///
@@ -157,7 +157,7 @@ pub fn oci_build_fixture(
     }
     // `docker buildx build` writes a wall-clock-stamped progress stream by
     // default; at default verbosity it must not flood the harness log.
-    // `run_checked` captures both streams (surfacing the tail on failure) and
+    // `run_checked` captures both streams (showing the tail on failure) and
     // tees them live only under `-v`, so build errors still reach the operator
     // without leaking BuildKit chatter into every passing run.
     let log = &log.with_child_env(&cmd);

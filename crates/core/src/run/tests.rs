@@ -31,7 +31,7 @@ fn cmd_c(script: &str) -> Command {
 }
 
 /// Count capture records at a given level (the public `LogCapture`
-/// surface exposes per-level counters for status/warn/error but not for
+/// API exposes per-level counters for status/warn/error but not for
 /// verbose, so derive it from the message snapshot here).
 #[cfg(unix)]
 fn count_level(cap: &crate::log::LogCapture, level: LogLevel) -> usize {
@@ -378,7 +378,7 @@ fn run_capture_timeout_returns_nonzero_exit_as_ok_output() {
 }
 
 /// A hung child (the Snap Store-stall analogue) must be killed at the
-/// deadline and surface a retriable timeout — never block forever. This is
+/// deadline and return a retriable timeout — never block forever. This is
 /// the regression guard for the publish-stage hang.
 #[serial_test::serial(child_tree_registry)]
 #[test]
@@ -410,7 +410,7 @@ fn run_capture_timeout_kills_hung_child() {
 /// `try_wait` succeeds immediately, but the reader threads can only EOF once
 /// the leaked grandchild releases the pipe — without a drain bound they block
 /// for the grandchild's full lifetime, blowing past the timeout and only
-/// surfacing at the global 1h pipeline watchdog (RED past every one-way
+/// showing up at the global 1h pipeline watchdog (RED past every one-way
 /// door). The deadline must reap the whole process group so the readers EOF
 /// and the call returns promptly with the child's real (success) status.
 #[serial_test::serial(child_tree_registry)]

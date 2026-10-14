@@ -58,9 +58,7 @@ fn clear_snapcraft_cache(xdg_cache_home: Option<&str>, home: Option<&str>, log: 
     let _ = std::fs::remove_dir_all(&cache);
 }
 
-// ---------------------------------------------------------------------------
 // Icon copy helper
-// ---------------------------------------------------------------------------
 
 /// Resolve a user-configured icon path against the project root.
 ///
@@ -115,9 +113,7 @@ pub(crate) fn copy_snap_icon(
     Ok(format!("meta/gui/{}", dest_name))
 }
 
-// ---------------------------------------------------------------------------
 // SnapcraftStage
-// ---------------------------------------------------------------------------
 
 pub struct SnapcraftStage;
 
@@ -323,9 +319,7 @@ pub(crate) fn filter_binaries_by_ids<'a>(
     filtered
 }
 
-// ---------------------------------------------------------------------------
 // Per-target helper
-// ---------------------------------------------------------------------------
 
 /// Process one target platform for a snapcraft config: validate arch,
 /// compute filename, and either emit dry-run output or stage the prime
@@ -472,9 +466,7 @@ fn process_snap_target(
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
 // Helpers
-// ---------------------------------------------------------------------------
 
 /// Run all staged `snapcraft pack` jobs with bounded parallelism.
 /// Serializes the cache-wipe + pack pair across workers via

@@ -1,8 +1,6 @@
 use super::*;
 
-// ---------------------------------------------------------------------------
 // Upload asset + create release link
-// ---------------------------------------------------------------------------
 
 /// Upload a file to GitLab and create a release link for it.
 ///
@@ -513,9 +511,7 @@ async fn upload_via_project_uploads(
     Ok(link)
 }
 
-// ---------------------------------------------------------------------------
 // Forge-client face of the shared upload loop
-// ---------------------------------------------------------------------------
 
 /// The GitLab face of the shared upload loop
 /// ([`crate::forge::run_upload_loop`]).

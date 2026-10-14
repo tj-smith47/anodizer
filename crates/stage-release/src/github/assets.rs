@@ -4,9 +4,7 @@ use std::sync::Arc;
 use super::{RetryAfterCapture, retry_octocrab_call};
 use anodizer_core::retry::RetryPolicy;
 
-// ---------------------------------------------------------------------------
 // delete_release_asset_by_name — paginated asset deletion for GitHub
-// ---------------------------------------------------------------------------
 
 /// Search through all pages of release assets to find and delete one by name.
 ///
@@ -261,9 +259,7 @@ mod tests {
     const RESP_204: &str = "HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n";
     const RESP_503: &str = "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\n\r\n";
 
-    // ------------------------------------------------------------------
     // find_release_asset_probe
-    // ------------------------------------------------------------------
 
     #[tokio::test]
     async fn find_returns_some_when_asset_matches_first_page() {
@@ -295,7 +291,7 @@ mod tests {
     #[tokio::test]
     async fn find_reports_partial_state_for_interrupted_upload() {
         // An interrupted upload leaves the asset registered with
-        // state "starter" (not "uploaded"). The probe must surface
+        // state "starter" (not "uploaded"). The probe must report
         // `uploaded: false` so the retry loop deletes the partial
         // instead of treating it as published content.
         let body = format!(
@@ -402,7 +398,7 @@ mod tests {
     #[tokio::test]
     async fn find_retries_on_transient_5xx() {
         // 503 then a 200 with a match. The retry helper should swallow the
-        // 503 and surface the eventual match.
+        // 503 and return the eventual match.
         let body = format!("[{}]", asset_json("retry-me.tar.gz", 7, 11));
         let (addr, calls) = spawn_oneshot_http_responder(vec![RESP_503, ok_json(body)]);
         let octo = build_test_octocrab(addr);
@@ -420,9 +416,7 @@ mod tests {
         );
     }
 
-    // ------------------------------------------------------------------
     // delete_release_asset_by_name
-    // ------------------------------------------------------------------
 
     #[tokio::test]
     async fn delete_returns_false_when_asset_absent() {

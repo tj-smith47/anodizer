@@ -2,7 +2,7 @@
 //! base image (and its manifest digest) as template variables.
 //!
 //! The two values feed the `{{ .BaseImage }}` / `{{ .BaseImageDigest }}`
-//! template surface, which is primarily intended for OCI annotations:
+//! template variables, which are primarily intended for OCI annotations:
 //!
 //! ```yaml
 //! dockers_v2:

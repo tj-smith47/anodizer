@@ -147,9 +147,7 @@ pub fn copy_dockerfile(
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
 // warn_project_markers_in_extra_files
-// ---------------------------------------------------------------------------
 
 /// Project root markers that likely don't belong in Docker images.
 pub const PROJECT_MARKERS: &[&str] = &[

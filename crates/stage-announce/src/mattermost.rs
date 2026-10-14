@@ -4,9 +4,7 @@ use serde_json::json;
 
 use crate::http::post_json;
 
-// ---------------------------------------------------------------------------
 // Options
-// ---------------------------------------------------------------------------
 
 /// Optional fields for Mattermost webhook payloads.
 pub struct MattermostOptions<'a> {
@@ -18,9 +16,7 @@ pub struct MattermostOptions<'a> {
     pub title: Option<&'a str>,
 }
 
-// ---------------------------------------------------------------------------
 // Payload builder
-// ---------------------------------------------------------------------------
 
 /// always emit an attachment with
 /// defaults — title template `{{ .ProjectName }} {{ .Tag }} is out!`, color
@@ -63,9 +59,7 @@ pub(crate) fn mattermost_payload(message: &str, opts: &MattermostOptions<'_>) ->
     payload.to_string()
 }
 
-// ---------------------------------------------------------------------------
 // Send
-// ---------------------------------------------------------------------------
 
 /// POST to a Mattermost incoming webhook.
 ///
@@ -81,9 +75,7 @@ pub fn send_mattermost(
     post_json(webhook_url, &payload, "mattermost", policy, log)
 }
 
-// ---------------------------------------------------------------------------
 // Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {

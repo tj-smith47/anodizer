@@ -6,9 +6,7 @@ use anodizer_core::retry::{RetryLog, RetryPolicy, SuccessClass, retry_http_block
 use anodizer_core::{EnvSource, ProcessEnvSource};
 use anyhow::{Context as _, Result};
 
-// ---------------------------------------------------------------------------
 // Shared helpers to reduce boilerplate across providers
-// ---------------------------------------------------------------------------
 
 /// Display name shown to recipients in chat-platform announcements
 /// (Discord embed `author`, Slack/Mattermost webhook `username`).
@@ -36,7 +34,7 @@ pub(crate) const WEBHOOK_DEFAULT_MESSAGE_TEMPLATE: &str =
 
 /// Evaluate an `enabled` field (now `Option<StringOrBool>`) through the template
 /// engine. Returns `Ok(true)` only when the value is present and resolves to
-/// truthy. Surfaces template render errors instead of silently treating them
+/// truthy. Returns template render errors instead of silently treating them
 /// as "not enabled".
 pub(crate) fn is_enabled(ctx: &mut Context, enabled: Option<&StringOrBool>) -> Result<bool> {
     match enabled {
@@ -255,9 +253,7 @@ fn render_json_strings(
     })
 }
 
-// ---------------------------------------------------------------------------
 // Webhook header resolver
-// ---------------------------------------------------------------------------
 
 /// Run a closure that performs a single HTTP request, classifying transport
 /// errors and HTTP status codes via [`anodizer_core::retry`] and retrying

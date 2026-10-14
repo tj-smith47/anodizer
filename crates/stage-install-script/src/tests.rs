@@ -102,9 +102,7 @@ fn default_cfg() -> InstallScriptConfig {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Engine-derived case tables
-// ---------------------------------------------------------------------------
 
 #[test]
 fn bakes_engine_asset_and_detect_cases() {
@@ -415,9 +413,7 @@ fn no_flagship_crate_skips_with_status() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // Shell shape guards
-// ---------------------------------------------------------------------------
 
 #[test]
 fn starts_with_shebang_and_has_no_bashisms() {
@@ -469,7 +465,7 @@ fn checksums_assignment_follows_version_resolution() {
 }
 
 /// The generated script must be valid POSIX `sh` — a syntax slip (or a stray
-/// bashism the string checks miss) surfaces here as a non-zero `sh -n`.
+/// bashism the string checks miss) shows up here as a non-zero `sh -n`.
 #[cfg(unix)]
 #[test]
 fn script_passes_sh_syntax_check() {
@@ -483,9 +479,7 @@ fn script_passes_sh_syntax_check() {
     assert!(status.success(), "generated install.sh failed `sh -n`");
 }
 
-// ---------------------------------------------------------------------------
 // Artifact + config plumbing
-// ---------------------------------------------------------------------------
 
 #[test]
 fn registers_install_script_artifact() {
@@ -607,9 +601,7 @@ fn config_skip_accepts_bool_and_template() {
     assert!(config.install_scripts[0].skip.is_some());
 }
 
-// ---------------------------------------------------------------------------
 // End-to-end offline execution
-// ---------------------------------------------------------------------------
 
 /// End-to-end execution of the generated installer, fully offline. A fake
 /// release (tarball + checksums file) is served through `curl`/`uname` PATH
@@ -735,9 +727,7 @@ fn path_hint_fires_for_a_writable_install_dir_off_path() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // Archive formats
-// ---------------------------------------------------------------------------
 
 /// Every format `crates/stage-archive` can write must have an extraction arm:
 /// the archive stage's format vocabulary and the installer's are one
@@ -856,9 +846,7 @@ fn single_file_format_with_several_binaries_bails_at_render_time() {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Libc-aware asset arms
-// ---------------------------------------------------------------------------
 
 /// The gnu/musl pair for one architecture plus a platform that ships neither,
 /// so both the split arms and the unsplit glob are exercised.
@@ -1095,11 +1083,9 @@ fn write_single_file_asset(release: &Path, asset: &str, tool: &str) {
     assert!(child.wait().expect("compressor").success());
 }
 
-// ---------------------------------------------------------------------------
-// Script argument surface
-// ---------------------------------------------------------------------------
+// Script arguments
 
-/// `--help` describes the env-var surface a `curl | sh` user can never see in
+/// `--help` describes the env vars a `curl | sh` user can never see in
 /// the file's `#` comment header, and returns before any network access.
 #[cfg(unix)]
 #[test]
@@ -1155,9 +1141,7 @@ fn unknown_argument_errors_with_a_help_hint() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // E2E helpers
-// ---------------------------------------------------------------------------
 
 /// Build a gzip tarball named `asset` under `release`, containing each named
 /// binary as a `#!/bin/sh` echo stub.

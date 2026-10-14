@@ -966,7 +966,7 @@ fn live_per_crate_moniker_no_leakage() {
 }
 
 /// Single-crate live path: the default install behavior and a
-/// derived moniker both surface through the real per-crate render.
+/// derived moniker both come through the real per-crate render.
 #[test]
 fn live_single_crate_default_moniker_and_upgrade_behavior() {
     let demo = winget_crate_with("demo", "v{{ .Version }}", "AcmeCo.Demo");
@@ -1445,7 +1445,7 @@ fn run_no_eligible_crates_warning_names_remediation() {
     assert!(msg.starts_with("winget publisher registered"), "{msg}");
     assert!(msg.contains("0 of 5 effective"), "{msg}");
     assert!(msg.contains("nothing pushed"), "{msg}");
-    // The warning must point the operator at the remediation surface
+    // The warning must point the operator at the remediation flags
     // (--crate / --all selection) — otherwise it's noise.
     assert!(msg.contains("--crate"), "{msg}");
     assert!(msg.contains("--all"), "{msg}");

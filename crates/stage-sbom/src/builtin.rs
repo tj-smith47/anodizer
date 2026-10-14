@@ -2,9 +2,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, Result, bail};
 
-// ---------------------------------------------------------------------------
 // Built-in SBOM generation (Rust-specific)
-// ---------------------------------------------------------------------------
 
 /// A parsed Cargo.lock package entry.
 #[derive(Debug, Clone)]

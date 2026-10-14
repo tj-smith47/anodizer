@@ -3,9 +3,7 @@ use serde::{Deserialize, Serialize};
 
 use super::HookEntry;
 
-// ---------------------------------------------------------------------------
 // TagConfig
-// ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default, deny_unknown_fields)]

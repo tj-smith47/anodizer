@@ -125,7 +125,7 @@ pub(crate) struct ReleaseOpts {
     /// `ANODIZE_TEST_HARNESS=1` is set; otherwise rejected at the
     /// translation site so production releases cannot trip it.
     pub simulate_failure: Vec<String>,
-    /// `--show-skipped`: surface the per-crate "no `<publisher>` config
+    /// `--show-skipped`: show the per-crate "no `<publisher>` config
     /// block" skip lines at default verbosity. Plumbed into
     /// `ContextOptions::show_skipped`; defaults to false (those no-op skips
     /// route to debug so workspace mode does not emit one line per

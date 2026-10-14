@@ -155,10 +155,10 @@ pub(crate) fn compute_per_crate_tags(
 
     Ok(results)
 }
-/// Template vars + process env every tag hook surface provides: `Tag`,
+/// Template vars + process env every tag hook site provides: `Tag`,
 /// `PrefixedTag`, `Version`, `PreviousTag` plus `ANODIZER_CURRENT_TAG` /
 /// `ANODIZER_PREVIOUS_TAG`. One helper serves both the single/lockstep
-/// `create_tag` closure and the per-crate group loop so the two surfaces
+/// `create_tag` closure and the per-crate group loop so the two sites
 /// cannot drift. `ANODIZER_PREVIOUS_TAG` is REMOVED when there is no
 /// previous tag: the per-crate loop reuses one process env across groups,
 /// and a stale value left over from an earlier group would hand hooks a

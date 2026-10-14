@@ -366,7 +366,7 @@ pub fn publish_to_krew(
             }
         });
     }
-    // Surface PR-already-exists skips to the dispatch summary table.
+    // Report PR-already-exists skips to the dispatch summary table.
     if let Some(outcome) = pr_outcome.outcome {
         ctx.record_publisher_outcome(outcome);
     }

@@ -72,7 +72,7 @@ pub(crate) fn run_git_in_envs(
 /// with no deadline. On expiry the whole git subtree is killed and the call
 /// returns a [`Retriable`](anodizer_core::retry::Retriable)-wrapped timeout
 /// error, so a call site inside a retry loop can route it to a retry and a
-/// non-looping caller surfaces a clear timeout instead of hanging.
+/// non-looping caller reports a clear timeout instead of hanging.
 ///
 /// `secret` is scrubbed from `argv`/`stderr`/`stdout` in the error embed
 /// exactly as [`run_git_in_redacted`] does (pass `None` when no element of
@@ -132,7 +132,7 @@ fn run_bounded(
 /// example a git remote URL like
 /// `https://x-access-token:<TOKEN>@github.com/owner/repo.git`). The
 /// success path is unaffected — redaction only kicks in when an error
-/// surface is being constructed.
+/// message is being constructed.
 pub(crate) fn run_git_in_redacted(
     dir: &Path,
     args: &[&str],
@@ -239,7 +239,7 @@ pub(crate) struct PushLadder<'a> {
 ///
 /// Transport failures are classified by the shared
 /// [`anodizer_core::retry::is_retriable`], which already carries the
-/// vocabulary these drops surface as (`connection closed`, `connection reset`,
+/// vocabulary these drops show up as (`connection closed`, `connection reset`,
 /// `broken pipe`, `operation timed out`, …). A push rejected for any other
 /// reason — bad key, protected branch, non-fast-forward, a stale
 /// `--force-with-lease` — matches no needle and fast-fails on the first
@@ -283,7 +283,7 @@ mod tests {
     use std::time::Instant;
 
     /// A network git op (`git push`/`fetch`) that wedges on an unreachable
-    /// remote must be killed at the deadline and surface a retriable timeout —
+    /// remote must be killed at the deadline and report a retriable timeout —
     /// never hang the release. This is the publisher-stage analogue of
     /// `core::run`'s `run_capture_timeout_kills_hung_child`, exercised through
     /// the shared `run_bounded` bound under `run_git_in_timeout`, which every

@@ -4,9 +4,7 @@ use serde::{Deserialize, Serialize};
 use super::publishers::CommitAuthorConfig;
 use super::{StringOrBool, deserialize_string_or_bool_opt};
 
-// ---------------------------------------------------------------------------
 // AurSourceConfig
-// ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default, deny_unknown_fields)]

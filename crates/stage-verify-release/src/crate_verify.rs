@@ -8,7 +8,7 @@ pub(crate) struct AxisScope {
     /// This run itself uploaded the release assets (github-release runs in
     /// this leg). When `false` — the pre-submitter gate verifying a release
     /// an earlier leg published — byte comparison is exempted for
-    /// publish-surface-dependent assets: the combined checksum manifests,
+    /// publisher-selection-dependent assets: the combined checksum manifests,
     /// whose bytes the uploading leg rewrote at upload time to fold in
     /// publish-time evidence (docker image digests) this leg never produces.
     /// Every other asset stays byte-checked and the missing-asset diff stays
@@ -18,7 +18,7 @@ pub(crate) struct AxisScope {
     pub(crate) os_pkg_selected: bool,
     /// `install_smoke:` is configured.
     pub(crate) smoke_enabled: bool,
-    /// Docker probe succeeded (only probed when smoke is in surface).
+    /// Docker probe succeeded (only probed when smoke is in scope).
     pub(crate) docker_ok: bool,
 }
 
@@ -35,7 +35,7 @@ pub(crate) struct VerifyRun {
 
 /// Per-crate tally of what each check axis ACTUALLY examined.
 ///
-/// An axis being enabled and in-surface proves only that it was in scope;
+/// An axis being enabled and selected proves only that it was in scope;
 /// these counters prove it inspected ≥1 artifact — the difference between
 /// "verified" and "had nothing to verify". The aggregation site refuses to
 /// stamp a passing verdict off all-zero counters, so a run that proved nothing
@@ -83,7 +83,7 @@ pub(crate) fn verify_one_crate(
     };
     let issues = &mut run.issues;
 
-    // (a) asset existence + content ------------------------------------------
+    // (a) asset existence + content
     if cfg.assert_assets_enabled() && scope.github_selected {
         match rt.block_on(anodizer_stage_release::fetch_published_assets(
             ctx,
@@ -230,7 +230,7 @@ pub(crate) fn verify_one_crate(
             }
             Err(e) => {
                 // Failing to fetch the live release is itself a post-publish
-                // signal worth surfacing, not a silent skip.
+                // signal worth reporting, not a silent skip.
                 issues.push(format!(
                     "could not fetch published release assets for crate '{}': {e}",
                     crate_cfg.name
@@ -239,7 +239,7 @@ pub(crate) fn verify_one_crate(
         }
     }
 
-    // (c) libc-ceiling ------------------------------------------------------
+    // (c) libc-ceiling
     // `glibc_check_enabled()` is true only when a ceiling is set; the
     // `if let` keeps that an invariant the type system enforces rather than an
     // unwrap that could panic if the predicate ever diverges from the field.
@@ -257,12 +257,12 @@ pub(crate) fn verify_one_crate(
         }
     }
 
-    // (b) install smoke-test ------------------------------------------------
+    // (b) install smoke-test
     // `smoke_enabled` is derived from `install_smoke.is_some()`; the `if let`
     // ties the config presence to its enablement flag without an unwrap.
-    // Gating on the OS-package surface here (not only at the caller's
+    // Gating on the OS-package selection here (not only at the caller's
     // docker-probe site) keeps the loop's precondition local instead of
-    // relying on the caller having zeroed `docker_ok` when out of surface.
+    // relying on the caller having zeroed `docker_ok` when out of scope.
     if scope.smoke_enabled
         && scope.os_pkg_selected
         && scope.docker_ok

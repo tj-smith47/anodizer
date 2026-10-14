@@ -176,7 +176,7 @@ pub(super) fn check_not_burned_on_moderated_registries(
             }
         }
     }
-    // Pass 2 — probe the registries concurrently. A worker panic surfaces as
+    // Pass 2 — probe the registries concurrently. A worker panic is reported as
     // an attributed error; per-probe failures stay wrapped so one flaky
     // endpoint cannot abort its siblings.
     let results = anodizer_core::parallel::run_parallel_chunks(

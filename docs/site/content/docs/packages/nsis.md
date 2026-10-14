@@ -140,7 +140,7 @@ extra_files:
 
 ## Signing
 
-NSIS installers should be Authenticode-signed before distribution so Windows SmartScreen does not flag them. A `signs:` entry with an `authenticode:` block signs every Windows `.exe`, `.msi` and `.dll` in place, the NSIS installer included. It runs `signtool` on Windows and [`osslsigncode`](https://github.com/mtrojnar/osslsigncode) elsewhere, and reads the certificate path from `WINDOWS_CERT_FILE` and its password from `WINDOWS_CERT_PASSWORD`:
+NSIS installers should be Authenticode-signed before distribution so Windows SmartScreen does not flag them. A `signs:` entry with an `authenticode:` block signs every Windows `.exe`, `.msi` and `.dll` in place, the NSIS installer included. It runs `signtool` on Windows and [`osslsigncode`](https://github.com/mtrojnar/osslsigncode) elsewhere, and reads the certificate path from `WINDOWS_CERT_FILE` and its password from `WINDOWS_CERT_PASSWORD`. The password is trimmed of leading and trailing whitespace, and a blank one counts as no password:
 
 ```yaml
 signs:

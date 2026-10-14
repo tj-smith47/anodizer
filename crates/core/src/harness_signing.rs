@@ -9,7 +9,7 @@
 //!
 //! Cosign signatures are non-deterministic regardless of key reuse —
 //! ECDSA random-`k` makes byte equality impossible. The harness's
-//! `build_report` auto-allowlists `stage=sign` drift so that surface
+//! `build_report` auto-allowlists `stage=sign` drift so that stage
 //! doesn't fail the run; signature *verification* is the right gate
 //! and belongs downstream of the harness.
 
@@ -62,7 +62,7 @@ pub struct EphemeralSigningKeys {
     pub cosign_password: String,
     /// `GNUPGHOME` directory holding the ephemeral keyring.
     pub gnupg_home: PathBuf,
-    /// GPG long key id (16 hex chars) for `gpg --local-user` — surfaced
+    /// GPG long key id (16 hex chars) for `gpg --local-user` — exposed
     /// to user configs as `{{ Env.GPG_FINGERPRINT }}`.
     pub gpg_fingerprint: String,
     /// Path to the armored secret-key file (consumed by nfpm via the
@@ -191,7 +191,7 @@ fn to_msys_drive_form(forward: &str) -> String {
 /// (`/c/Users/...`), native Gpg4win reports a drive letter
 /// (`C:\Users\...`). A gpg that is absent or whose output can't be
 /// parsed defaults to "not MSYS" (the native/drive-letter form);
-/// `provision_gpg`'s own `gpg --version` precheck is what surfaces a
+/// `provision_gpg`'s own `gpg --version` precheck is what reports a
 /// genuinely missing gpg with an actionable error.
 #[cfg(windows)]
 fn gpg_on_path_is_msys() -> bool {

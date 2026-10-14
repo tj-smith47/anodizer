@@ -3,9 +3,7 @@ use serde::{Deserialize, Serialize};
 
 use super::{StringOrBool, deserialize_string_or_bool_opt};
 
-// ---------------------------------------------------------------------------
 // MCP (Model Context Protocol) registry publisher config
-// ---------------------------------------------------------------------------
 //
 // MCP publisher config: server details, repository, auth, packages, and
 // transport.
@@ -13,7 +11,7 @@ use super::{StringOrBool, deserialize_string_or_bool_opt};
 // The deprecated nested `mcp.github` migration shim is not carried — that
 // alias only existed for backwards compatibility with early previews and
 // has no consumers in this repo. The top-level fields are the canonical
-// surface from day one.
+// config fields from day one.
 
 /// MCP server registry publisher configuration.
 ///

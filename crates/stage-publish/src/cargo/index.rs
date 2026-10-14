@@ -3,9 +3,7 @@
 
 use super::*;
 
-// ---------------------------------------------------------------------------
 // poll_crates_io_index
-// ---------------------------------------------------------------------------
 
 /// Build the sparse index URL for a crate name (path segments based on length).
 ///
@@ -13,7 +11,7 @@ use super::*;
 /// (cargo reference: "Crate names ... must be ASCII"), so the byte slices
 /// below are guaranteed to fall on character boundaries. The debug_assert
 /// enforces the invariant — any caller passing a non-ASCII name
-/// would surface the violation in a debug build long before the slice
+/// would report the violation in a debug build long before the slice
 /// could panic at runtime.
 pub(crate) fn sparse_index_url(crate_name: &str) -> String {
     format!(
@@ -212,7 +210,7 @@ pub(crate) fn poll_crates_io_index_at(
     let mut backoff = initial_backoff;
 
     // Per-attempt logs go to `debug` — transient HTTP errors are the
-    // normal shape of "the index hasn't propagated yet"; surfacing them
+    // normal shape of "the index hasn't propagated yet"; reporting them
     // at `warn`/`error` floods normal release output. The terminal
     // timeout below escalates with a single bail!() carrying the same
     // context the per-attempt logs would have shown.
@@ -267,7 +265,7 @@ pub(crate) fn poll_crates_io_index_at(
 /// Probe the sparse index for `(crate_name, version)` once. Returns
 /// `Ok(true)` when the version line is present, `Ok(false)` for any
 /// non-success status (treated as "not yet"), `Err` on transport
-/// failures the caller should surface.
+/// failures the caller should report.
 ///
 /// Uses the same blocking HTTP client + JSONL parser as
 /// [`is_already_published_at`] — the wait-for-deps gate and the

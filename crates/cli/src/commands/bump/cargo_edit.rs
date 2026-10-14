@@ -48,7 +48,7 @@ pub struct WorkspaceInfo {
 /// projects, which legitimately have no manifest). That absent case is
 /// distinct from a `Cargo.toml` that EXISTS but fails to read or parse, or a
 /// member manifest / member glob that errors: those are real defects and
-/// surface as `Err`. Callers must NOT flatten the `Err` into "no workspace"
+/// are returned as `Err`. Callers must NOT flatten the `Err` into "no workspace"
 /// (the historical `.ok()` bug): doing so let a malformed manifest silently
 /// abandon the lockstep path and resolve the version off a wrong base, cutting
 /// the wrong tag while reporting success.

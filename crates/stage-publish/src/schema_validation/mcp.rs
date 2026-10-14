@@ -9,7 +9,7 @@
 //! This validator renders the exact `server.json` the live publish would POST,
 //! via the same [`crate::mcp::render_server_json`] pipeline, and checks it
 //! against the vendored schema so a structural defect (an out-of-pattern
-//! `name`, a missing required field, a wrong-typed value) surfaces in the
+//! `name`, a missing required field, a wrong-typed value) shows up in the
 //! emission-validate pass rather than after a real release has uploaded it.
 //!
 //! Unlike the winget / scoop / krew validators, MCP collects no build
@@ -294,7 +294,7 @@ mod tests {
     /// A package with an unknown `registryType` is rejected: the registry's
     /// `Package.transport` anyOf cannot satisfy an out-of-shape package, and a
     /// missing required `version` on the document trips the root `required`
-    /// set. Two distinct structural defects, both surfaced — proving the schema
+    /// set. Two distinct structural defects, both reported — proving the schema
     /// rejects more than just the `name` pattern.
     #[test]
     fn missing_required_version_is_reported_at_root() {

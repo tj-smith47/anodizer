@@ -61,7 +61,7 @@ fn git_stdout(dir: &Path, args: &[&str]) -> String {
 /// tempdir. The publisher clones this via the `git.url` SSH branch
 /// (which is a plain `git clone <localpath>` for a filesystem path),
 /// commits the formula, and pushes back to it. The seeded bare repo is
-/// the assertion surface: its published `.rb` content + the commit subject
+/// what the test checks: its published `.rb` content + the commit subject
 /// are inspected after the publish.
 fn make_bare_tap(branch: &str) -> (String, tempfile::TempDir) {
     let bare = tempfile::tempdir().expect("bare tempdir");
@@ -207,10 +207,8 @@ fn install_block_names_a_metadata_less_binary_by_its_file_name() {
     assert!(!code.install.contains("=>"), "{}", code.install);
 }
 
-// ===================================================================
 // collect_archive_entries / homebrew_matching_artifacts — filter +
 // disambiguation + error paths feeding the formula renderer.
-// ===================================================================
 
 /// `collect_archive_entries` returns one `(target,url,sha256)` tuple per
 /// matching archive, carrying the artifact's url + sha256 verbatim.
@@ -428,7 +426,7 @@ fn crate_has_homebrew_archives_false_for_windows_only() {
 }
 
 /// `crate_has_homebrew_archives` is presence-only: a matched artifact with
-/// NO url/sha256 still returns true (the caller surfaces the broken
+/// NO url/sha256 still returns true (the caller reports the broken
 /// metadata via the render `Err`, not a silent skip).
 #[test]
 fn crate_has_homebrew_archives_true_even_when_metadata_incomplete() {
@@ -443,10 +441,8 @@ fn crate_has_homebrew_archives_true_even_when_metadata_incomplete() {
     );
 }
 
-// ===================================================================
 // render_homebrew_formula_for_crate / render_formula_inner — the Ruby
 // body the publisher would write.
-// ===================================================================
 
 /// The rendered formula carries the PascalCase class name, the version,
 /// each archive url + sha256, and a dependency declaration. Pins the
@@ -558,10 +554,8 @@ fn render_formula_for_crate_falsy_if_returns_none() {
     assert!(got.is_none(), "falsy `if` must render None");
 }
 
-// ===================================================================
 // publish_to_homebrew — full clone → write → commit → push round-trip
 // against a local bare tap (direct-push path; PR disabled by default).
-// ===================================================================
 
 /// Happy path, single-crate mode: the publisher clones the local bare
 /// tap, writes `mytool.rb`, commits, and pushes. Asserts (1) the return
@@ -968,7 +962,7 @@ fn publish_to_homebrew_pr_records_the_opened_pr_url() {
     drop(bare);
 }
 
-/// Clone failure surfaces as an `Err`: pointing `git.url` at a path that
+/// Clone failure returns an `Err`: pointing `git.url` at a path that
 /// is not a git repo makes the clone fail; the publisher must propagate
 /// the error (the tap was never touched), not silently report success.
 #[test]
@@ -994,11 +988,9 @@ fn publish_to_homebrew_clone_failure_errors() {
     drop(bogus);
 }
 
-// ===================================================================
 // completions / manpages / livecheck / dual-license — the homebrew-core
 // citizen fields the formula previously lacked (the cask already had).
 // Validated against the real ripgrep/fd/bat exemplar idioms.
-// ===================================================================
 
 /// Single-crate mode: prebuilt completion files + a manpage render as
 /// `bash_completion.install` / `zsh_completion.install` /
@@ -1191,7 +1183,7 @@ fn render_formula_emits_active_livecheck_strategy() {
 
 /// `skip: false` with NO strategy/url/regex is a no-op opt-in: an empty
 /// `livecheck do…end` is invalid Ruby, so the renderer falls back to `skip`
-/// (and warns — the warning is surfaced, not asserted here, since it goes to
+/// (and warns — the warning is reported, not asserted here, since it goes to
 /// stderr). The rendered formula must still carry a valid `skip` block.
 #[test]
 fn render_formula_livecheck_skip_false_without_strategy_falls_back_to_skip() {

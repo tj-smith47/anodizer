@@ -1541,9 +1541,7 @@ fn third_registration_warns_even_when_it_matches_the_first_path() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // Artifact::binary_name — the one binary-name policy
-// ---------------------------------------------------------------------------
 
 fn binary_at(kind: ArtifactKind, path: &str, metadata: HashMap<String, String>) -> Artifact {
     Artifact {

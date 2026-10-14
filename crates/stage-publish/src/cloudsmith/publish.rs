@@ -44,7 +44,7 @@ pub(crate) fn publish_to_cloudsmith_into(
         }
 
         // Organization is required — bail before dry-run so config errors
-        // surface even in dry-run mode.
+        // are reported even in dry-run mode.
         let org_raw = match entry.organization.as_deref() {
             Some(o) if !o.is_empty() => o,
             _ => bail!("cloudsmith: 'organization' is required but not set"),
@@ -165,7 +165,7 @@ pub(crate) fn publish_to_cloudsmith_into(
             ));
         }
 
-        // --- Dry-run logging ---
+        // Dry-run logging
         if ctx.is_dry_run() {
             let sample_url =
                 cloudsmith_upload_url(&organization, &repository, "{format}", "{distribution}");
@@ -203,7 +203,7 @@ pub(crate) fn publish_to_cloudsmith_into(
             continue;
         }
 
-        // --- Live mode ---
+        // Live mode
         // Resolve token from environment.
         let token = ctx
             .env_var(&secret_name_rendered)
@@ -394,7 +394,7 @@ pub(crate) fn publish_to_cloudsmith_into(
                 },
             ));
 
-            // --- Step 3/3 prep: package-create URL + component gating ---
+            // Step 3/3 prep: package-create URL + component gating
             //
             // POST /v1/packages/{org}/{repo}/upload/{format}/ with the
             // identifier + distribution tells Cloudsmith to take the
@@ -478,7 +478,7 @@ pub(crate) fn publish_to_cloudsmith_into(
                         // artifact on the registry" — was satisfied by the
                         // racing process. Re-query the remote: if it now
                         // exists with the local md5, treat as idempotent skip; if
-                        // it exists with a different md5, surface the same
+                        // it exists with a different md5, report the same
                         // conflict the pre-check would have. Anything else
                         // (transport failure, 5xx after retries) propagates.
                         let status = anodizer_core::retry::http_status(&err);
@@ -510,7 +510,7 @@ pub(crate) fn publish_to_cloudsmith_into(
                                 if republish {
                                     // A racing uploader writing the same bytes
                                     // while republish was requested is a real
-                                    // surprise worth surfacing at default
+                                    // surprise worth reporting at default
                                     // verbosity.
                                     log.warn(&msg);
                                 } else {
@@ -536,7 +536,7 @@ pub(crate) fn publish_to_cloudsmith_into(
                             CloudsmithPackageState::Unverifiable => {
                                 // The re-query shows the filename present but
                                 // with no checksum to compare — cannot confirm
-                                // the racing upload published OUR bytes. Surface
+                                // the racing upload published OUR bytes. Report
                                 // the conflict rather than claim an idempotent
                                 // skip that cannot be proven.
                                 log.warn(&format!(
@@ -605,7 +605,7 @@ pub(crate) fn publish_to_cloudsmith_into(
             &repository,
         ));
 
-        // --- Post-upload retention pruning (keep_versions) ---
+        // Post-upload retention pruning (keep_versions)
         //
         // The upload (the real work) has already succeeded. Pruning is a
         // best-effort follow-up: a list/delete failure warns and continues —
@@ -663,7 +663,7 @@ pub(crate) fn publish_to_cloudsmith_into(
 ///
 /// Returns the list of [`CloudsmithTarget`]s actually uploaded this run, with
 /// the `slug` (Cloudsmith's per-package permanent identifier) populated when
-/// the step-3 `packages/upload/<format>/` response surfaced one. The returned
+/// the step-3 `packages/upload/<format>/` response returned one. The returned
 /// list drives `PublishEvidence::extra.cloudsmith_targets` so
 /// [`Publisher::rollback`](anodizer_core::Publisher::rollback)
 /// can issue real `DELETE /v1/packages/<org>/<repo>/<slug>/` calls; targets

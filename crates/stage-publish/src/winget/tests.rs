@@ -2,9 +2,7 @@
 
 use super::*;
 
-// -----------------------------------------------------------------------
 // generate_manifest tests
-// -----------------------------------------------------------------------
 
 fn default_params<'a>() -> WingetManifestParams<'a> {
     WingetManifestParams {
@@ -490,9 +488,7 @@ fn test_generate_manifests_with_tags() {
     assert!(locale.contains("rust"));
 }
 
-// -----------------------------------------------------------------------
 // publish_to_winget dry-run tests
-// -----------------------------------------------------------------------
 
 /// Regression: when short_description, description, and meta.description are all
 /// unset, winget must hard-fail with an actionable error. The old
@@ -673,9 +669,7 @@ fn compound_spdx_license_emitted_verbatim() {
     );
 }
 
-// -----------------------------------------------------------------------
 // Moniker / UpgradeBehavior / Documentations / InstallerSwitches
-// -----------------------------------------------------------------------
 
 /// A configured Moniker is emitted as the short invoke alias, matching
 /// real ripgrep's `Moniker: rg` (NOT the package name `ripgrep`).
@@ -793,9 +787,7 @@ fn test_winget_installer_switches_emitted_for_msi() {
     assert!(inst.contains("Silent: /quiet"));
 }
 
-// -----------------------------------------------------------------------
 // wrap_in_directory tests
-// -----------------------------------------------------------------------
 
 #[test]
 fn test_winget_wrap_in_directory_prefixes_relative_file_path() {
@@ -956,9 +948,7 @@ fn test_winget_wrap_in_directory_multiple_binaries() {
     );
 }
 
-// -----------------------------------------------------------------------
 // PackageIdentifier validation tests
-// -----------------------------------------------------------------------
 
 #[test]
 fn test_validate_package_identifier_valid() {
@@ -1024,9 +1014,7 @@ fn test_validate_package_identifier_empty_segment() {
     assert!(validate_package_identifier("Org.Tool.").is_err());
 }
 
-// -----------------------------------------------------------------------
 // Winget commit message with PackageIdentifier
-// -----------------------------------------------------------------------
 
 fn commit_msg_logger() -> StageLogger {
     StageLogger::new("publish", anodizer_core::log::Verbosity::Normal)
@@ -1109,7 +1097,7 @@ fn test_winget_commit_msg_tag_and_version_vars() {
         "Org.MyTool",
         "1.2.3",
         &commit_msg_logger(),
-        // strict: ensure an unregistered var would surface as an error
+        // strict: ensure an unregistered var would show up as an error
         // rather than be silently swallowed by the warn-and-default path.
         true,
     )
@@ -1289,9 +1277,7 @@ fn winget_per_crate_resolves_each_crates_own_description() {
     );
 }
 
-// -----------------------------------------------------------------------
 // map_winget_arch
-// -----------------------------------------------------------------------
 
 #[test]
 fn map_winget_arch_translates_known_archs() {
@@ -1306,9 +1292,7 @@ fn map_winget_arch_passes_through_unknown() {
     assert_eq!(map_winget_arch("riscv64"), "riscv64");
 }
 
-// -----------------------------------------------------------------------
 // is_winget_zip_archive
-// -----------------------------------------------------------------------
 
 fn archive_with(path: &str, format: Option<&str>) -> anodizer_core::artifact::Artifact {
     let mut metadata = std::collections::HashMap::new();
@@ -1347,9 +1331,7 @@ fn is_winget_zip_archive_false_for_tarball() {
     )));
 }
 
-// -----------------------------------------------------------------------
 // resolve_winget_upstream
-// -----------------------------------------------------------------------
 
 #[test]
 fn resolve_winget_upstream_defaults_to_microsoft() {
@@ -1407,9 +1389,7 @@ fn resolve_winget_upstream_partial_base_falls_back_to_default() {
     );
 }
 
-// -----------------------------------------------------------------------
 // resolve_winget_publisher_name
-// -----------------------------------------------------------------------
 
 #[test]
 fn resolve_winget_publisher_name_prefers_explicit_publisher() {
@@ -1452,9 +1432,7 @@ fn resolve_winget_publisher_name_errors_when_publisher_and_owner_empty() {
     );
 }
 
-// -----------------------------------------------------------------------
 // resolve_winget_description
-// -----------------------------------------------------------------------
 
 #[test]
 fn resolve_winget_description_uses_explicit_and_normalizes_tabs() {
@@ -1496,9 +1474,7 @@ fn resolve_winget_description_empty_when_nothing_configured() {
     );
 }
 
-// -----------------------------------------------------------------------
 // installer_type_for — (format stamp, `use` selector) → winget InstallerType
-// -----------------------------------------------------------------------
 
 /// The `format` stamp wins when present: `msi` maps to `msi` unless the `use`
 /// selector nominates `wix` (both are Windows Installer packages, but winget
@@ -1528,9 +1504,7 @@ fn installer_type_for_falls_back_to_use_selector() {
     assert_eq!(installer_type_for(None, Some("unknown")), "msi");
 }
 
-// -----------------------------------------------------------------------
 // is_executable_installer_type — which types get a silent switch
-// -----------------------------------------------------------------------
 
 /// Only real installer programs (`msi`/`wix`/`exe`/`nsis`) are "executable";
 /// `zip`/`portable` archives winget unpacks itself are not.
@@ -1550,9 +1524,7 @@ fn is_executable_installer_type_matrix() {
     }
 }
 
-// -----------------------------------------------------------------------
 // auto_package_identifier — <publisher-without-spaces>.<name>
-// -----------------------------------------------------------------------
 
 /// The auto-id strips every space from the publisher (winget ids forbid
 /// whitespace) but leaves the package name untouched.
@@ -1570,9 +1542,7 @@ fn auto_package_identifier_strips_publisher_spaces() {
     );
 }
 
-// -----------------------------------------------------------------------
 // static_package_identifier — context-free id resolution
-// -----------------------------------------------------------------------
 
 /// An explicit `package_identifier` with no template syntax is returned
 /// verbatim; one carrying `{{` is unresolvable without a context → `None`.
@@ -1651,9 +1621,7 @@ fn static_package_identifier_auto_derivation() {
     assert_eq!(static_package_identifier("crate-x", &cfg), None);
 }
 
-// -----------------------------------------------------------------------
 // resolve_winget_release_date — YYYY-MM-DD from the template `Date` var
-// -----------------------------------------------------------------------
 
 fn ctx_with_date(date: Option<&str>) -> anodizer_core::context::Context {
     let mut ctx = anodizer_core::context::Context::new(
@@ -1696,9 +1664,7 @@ fn resolve_winget_release_date_extracts_or_omits() {
     assert_eq!(resolve_winget_release_date(&ctx), None);
 }
 
-// -----------------------------------------------------------------------
 // resolve_winget_moniker — override → single-binary derivation → None
-// -----------------------------------------------------------------------
 
 fn add_windows_binary(
     ctx: &mut anodizer_core::context::Context,
@@ -1772,7 +1738,6 @@ fn resolve_winget_moniker_derives_single_and_omits_ambiguous() {
     assert_eq!(resolve_winget_moniker(&ctx, "app", &cfg), None);
 }
 
-// =====================================================================
 // LIVE push + PR flow — drives `publish_to_winget` / `submit_winget_pr`
 // against a local bare git repo (no network), forcing the GitHub REST
 // API PR transport by installing a failing `gh` stub and injecting
@@ -1784,7 +1749,6 @@ fn resolve_winget_moniker_derives_single_and_omits_ambiguous() {
 // so the responder address is a per-Context value set via
 // `inject_api_base` — not a process-global mutation. Each test still
 // mutates PATH (the `gh` stub), so each is `#[serial(path_env)]`.
-// =====================================================================
 mod live_pr {
     use super::*;
     #[cfg(unix)]
@@ -2269,7 +2233,7 @@ mod live_pr {
     }
 
     /// A non-success, non-422 HTTP status from the PR-create POST must be
-    /// surfaced as a `Failed` outcome (silent-fail would let dispatch
+    /// reported as a `Failed` outcome (silent-fail would let dispatch
     /// record `succeeded`). The branch still pushed.
     #[test]
     #[serial(path_env)]
@@ -2895,7 +2859,7 @@ mod live_pr {
     /// The same residual `winget.description` template stays lenient in
     /// dry-run: `publish_to_winget` early-returns before the manifest
     /// render (and therefore before the guard) so it must still report
-    /// `Ok`, not surface the residual as an error.
+    /// `Ok`, not report the residual as an error.
     #[test]
     #[serial(path_env)]
     fn publish_residual_description_template_dry_run_stays_lenient() {
@@ -3092,9 +3056,7 @@ mod live_pr {
     }
 }
 
-// -----------------------------------------------------------------------
 // The skip lines quoted on docs/site/content/docs/publish/winget.md
-// -----------------------------------------------------------------------
 
 /// The lines the "Additional locales" section of the winget page quotes as
 /// what a run prints for a disqualified entry, held to the bytes the

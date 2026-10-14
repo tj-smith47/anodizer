@@ -85,7 +85,6 @@ fn make_msi_artifact(
     }
 }
 
-// ---------------------------------------------------------------------------
 // MsiStage
 
 #[allow(clippy::too_many_arguments)]
@@ -339,9 +338,7 @@ fn build_msi_target(
     Ok(msi_path)
 }
 
-// ---------------------------------------------------------------------------
 // Private helpers — sliced out of `MsiStage::run` to keep the body short.
-// ---------------------------------------------------------------------------
 
 /// Evaluate per-config skip predicates (`if`, `skip`) and run the
 /// `hooks.before` / `pre` lifecycle hooks. Returns `Ok(true)` when the
@@ -719,7 +716,7 @@ fn execute_msi_build(
     // cascading CNDL0010 "Version not found"); the usual cause is a `.wxs`
     // interpolating `{{ Version }}` — which may carry a pre-release / build
     // suffix — where `{{ MsiVersion }}` is required. Translate candle's opaque
-    // exit code into the actionable fix before surfacing the failure.
+    // exit code into the actionable fix before reporting the failure.
     let version_rejected = !output.status.success() && {
         let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);

@@ -44,9 +44,7 @@ fn run_check(root: &Path) -> Run {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Mode 1: single-crate
-// ---------------------------------------------------------------------------
 
 fn single_crate_fixture(root: &Path, chart_version: &str) {
     write(
@@ -252,9 +250,7 @@ fn no_version_files_configured_exits_zero() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // Mode 2: workspace-lockstep (top-level version_files, inherited version)
-// ---------------------------------------------------------------------------
 
 fn lockstep_fixture(root: &Path, chart_version: &str) {
     write(
@@ -314,9 +310,7 @@ fn lockstep_fresh_exits_zero() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // Mode 3: workspace per-crate (flat crates: with independent versions)
-// ---------------------------------------------------------------------------
 
 #[test]
 fn per_crate_stale_exits_nonzero() {
@@ -421,10 +415,8 @@ crates:
     );
 }
 
-// ---------------------------------------------------------------------------
 // Non-member crate: a configured crate that is NOT a [workspace].members entry
 // must resolve against ITS OWN literal version, never the workspace version.
-// ---------------------------------------------------------------------------
 
 /// The root workspace lists only `crates/member`; `crates/standalone` is
 /// configured in `.anodizer.yaml` but excluded from the member globs. Its
@@ -513,10 +505,8 @@ fn non_member_crate_resolves_against_own_version_stale() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // Rootless layout: a single crate in a subdir with NO root Cargo.toml /
 // [workspace] must still resolve (best-effort workspace load).
-// ---------------------------------------------------------------------------
 
 #[test]
 fn rootless_single_crate_fresh_exits_zero() {
@@ -607,11 +597,9 @@ crates:
     );
 }
 
-// ---------------------------------------------------------------------------
 // Lockstep with a crates: block: one shared top-level file enrolled under N
 // crates that all resolve to the same version collapses to a single check via
 // the (path, version) dedup key.
-// ---------------------------------------------------------------------------
 
 #[test]
 fn lockstep_shared_file_dedups_across_crates() {
@@ -670,9 +658,7 @@ crates:
     );
 }
 
-// ---------------------------------------------------------------------------
 // Anchored entries (`path` + `match`) — checked INSIDE their anchor
-// ---------------------------------------------------------------------------
 
 /// A single-crate anchored enrollment passes when the crate's current version
 /// sits inside the anchor, and is STALE when the version is only present

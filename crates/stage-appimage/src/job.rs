@@ -9,9 +9,7 @@ use anodizer_core::artifact::{Artifact, ArtifactKind};
 
 use super::appdir::{AppDirEntry, assemble_appdir, pin_appdir_mtimes};
 
-// ---------------------------------------------------------------------------
 // linuxdeploy command construction (pure — independently testable)
-// ---------------------------------------------------------------------------
 
 /// Build the linuxdeploy argument vector for one AppDir.
 ///
@@ -77,9 +75,7 @@ pub(crate) fn linuxdeploy_env(
     env
 }
 
-// ---------------------------------------------------------------------------
 // AppImageJob — fully-owned, ready for parallel execution
-// ---------------------------------------------------------------------------
 
 /// One fully-prepared AppImage job (one per matching target). The serial
 /// phase renders templates + assembles the static parts; the parallel phase

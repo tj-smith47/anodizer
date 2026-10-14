@@ -82,7 +82,7 @@ pub fn validate_token_shape(token: &str) -> Result<()> {
 /// 2. POST the share to `/v2/shares`.
 ///
 /// Error categorisation mirrors upstream commit 0944b0e: API errors
-/// (HTTP 4xx/5xx) wrap the response body in the surfaced error message,
+/// (HTTP 4xx/5xx) wrap the response body in the reported error message,
 /// transport errors are classified separately. `policy` enables retry on
 /// 5xx / 429 / network failures via `retryx.HTTP` semantics.
 pub fn send_linkedin(
@@ -323,7 +323,7 @@ mod tests {
     use serde_json::json;
 
     /// The typed 403-fallback sentinel's `Display` names the endpoint and the
-    /// fall-back target so a surfaced error (when the downcast misses) is still
+    /// fall-back target so a reported error (when the downcast misses) is still
     /// actionable. Pins the exact text the `LinkedinFallback` sentinel renders.
     #[test]
     fn fallback_sentinel_display_names_endpoints() {
@@ -336,7 +336,7 @@ mod tests {
 
     #[test]
     fn http_error_includes_endpoint_status_and_body() {
-        // Upstream commit 0944b0e: the error surfaced to the user must
+        // Upstream commit 0944b0e: the error shown to the user must
         // name the endpoint, the HTTP status, AND the response body so
         // LinkedIn's structured error (`message`, `serviceErrorCode`) reaches
         // the user.
@@ -621,7 +621,7 @@ mod tests {
     #[test]
     fn share_transport_error_is_classified_and_surfaced() {
         // The connect gets ECONNREFUSED, which the userinfo arm classifies
-        // as a (retriable) transport error and surfaces after attempts are
+        // as a (retriable) transport error and returns after attempts are
         // exhausted.
         let addr = anodizer_core::test_helpers::refusing_addr::refusing_addr();
         let log = StageLogger::new("announce", Verbosity::Quiet);

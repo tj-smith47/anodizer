@@ -12,7 +12,7 @@ use sha2::Digest as Sha2Digest;
 use sha3::Digest as Sha3Digest;
 
 pub(super) fn register(tera: &mut tera::Tera) {
-    // --- Hash functions (all 14 algorithms) ---
+    // Hash functions (all 14 algorithms)
 
     macro_rules! register_hash_fn {
         ($tera:expr, $name:expr, $hash_fn:expr) => {

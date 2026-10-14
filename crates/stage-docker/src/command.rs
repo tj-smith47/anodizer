@@ -57,7 +57,8 @@ pub fn resolve_backend(
 /// The config loader and `check config` do not call this; the docker stage
 /// does, before it spawns anything. A macOS or Windows host that sets
 /// `use: podman` would otherwise get a confusing `podman: command not found`;
-/// this error points back at the field instead.
+/// this error points back at the field. Podman on macOS or Windows is an
+/// error; the stage does not fall back to docker.
 pub fn enforce_podman_linux_only() -> Result<()> {
     let os = std::env::consts::OS;
     if os != "linux" {
@@ -528,7 +529,8 @@ pub(crate) fn has_annotation_scope(key: &str) -> bool {
 /// compare one kind of value whichever backend built the image.
 ///
 /// Podman 2.0 is the minimum a podman backend needs: an older podman exits
-/// non-zero on the unknown option, and the push fails.
+/// non-zero on the unknown option and the push fails; it does not push
+/// without the digest file.
 /// `podman push` took the flag in 1.6.0 ("The `podman push` command now
 /// supports the `--digestfile` option to save a file containing the pushed
 /// digest", RELEASE_NOTES.md at the v1.6.0 tag, 1.6.0 Features).

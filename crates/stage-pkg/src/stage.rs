@@ -13,9 +13,7 @@ use anodizer_core::stage::Stage;
 use crate::build::build_flat_pkg_linux;
 use crate::builder::{PkgBuilder, pkgbuild_command, resolve_pkg_builder};
 
-// ---------------------------------------------------------------------------
 // PkgStage
-// ---------------------------------------------------------------------------
 
 /// Default output filename template (no version component).
 ///
@@ -316,7 +314,7 @@ impl Stage for PkgStage {
                     })?;
 
                     // Resolve the build path once per config entry before the
-                    // per-binary loop so the error surfaces early naming both
+                    // per-binary loop so the error is reported early naming both
                     // options. `pkgbuild` (macOS) is preferred; otherwise the
                     // Linux flat-package toolchain assembles the identical XAR
                     // layout by hand. Dry-run never requires a tool.

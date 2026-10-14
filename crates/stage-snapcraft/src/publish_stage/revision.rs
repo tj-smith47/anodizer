@@ -14,10 +14,8 @@ use crate::command::{
 
 use super::*;
 
-// ---------------------------------------------------------------------------
 // Pre-pass: render every config's `publish.skip` template upfront so a
 // template error fast-fails as a stage error before any upload begins.
-// ---------------------------------------------------------------------------
 
 /// Per-config skip flag, indexed parallel to the
 /// `(crate_index, snap_cfg_index)` ordering of

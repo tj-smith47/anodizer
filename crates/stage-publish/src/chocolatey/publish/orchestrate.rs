@@ -287,7 +287,7 @@ pub(crate) fn render_nuspec_for_crate(
 /// build pass while a real publish aborts in [`build_install_mode`] with
 /// `chocolatey: no windows artifact found` (or an empty-sha256 bail). This runs
 /// the SAME `select_windows_artifacts` + `build_install_mode` the live publish
-/// runs and propagates only their `Err`, so that defect surfaces in
+/// runs and propagates only their `Err`, so that defect shows up in
 /// `check`/`--snapshot`.
 ///
 /// Returns `Ok(false)` when `partial_shard` is set and the crate built no

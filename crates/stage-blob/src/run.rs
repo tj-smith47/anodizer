@@ -18,9 +18,7 @@ use crate::upload::{
     upload_files_owned,
 };
 
-// ---------------------------------------------------------------------------
 // validate_only — config-validation entry point, no I/O dispatched
-// ---------------------------------------------------------------------------
 
 /// Render the provider template, parse it through [`Provider::parse`], and
 /// build the corresponding `ObjectStore` so any provider-keyed validators
@@ -29,7 +27,7 @@ use crate::upload::{
 ///
 /// Used by Q9.1 regression tests to pin the contract that a templated
 /// `provider:` field flows through the same dispatch as a literal one. The
-/// surface is `pub(crate)` (test-only consumption); production callers
+/// function is `pub(crate)` (test-only consumption); production callers
 /// should use [`BlobStage::run`].
 #[cfg(test)]
 pub(crate) fn validate_only(
@@ -60,9 +58,7 @@ pub(crate) fn validate_only(
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
 // BlobStage
-// ---------------------------------------------------------------------------
 
 pub struct BlobStage;
 
@@ -191,7 +187,7 @@ impl Stage for BlobStage {
 
         let report = self.run_report(ctx)?;
         if let Some(exec_result) = report.exec {
-            // Surface the real cause at default visibility: a failed upload
+            // Report the real cause at default visibility: a failed upload
             // otherwise recorded only `blob  Assets  required  failed` with no
             // reason in the log (the cause lived solely in report.json). A
             // failure banner stays at `status` per the log register.
@@ -652,7 +648,7 @@ impl BlobStage {
 
                 // Determine if client-side KMS encryption is needed.
                 // Validate KMS scheme matches the bucket provider so a misconfig
-                // surfaces here, not deep inside the upload phase. Preflight
+                // is reported here, not deep inside the upload phase. Preflight
                 // the CLI tool too — a missing `aws`/`gcloud`/`az` binary on
                 // PATH used to fail per-artifact during fan-out, producing N
                 // identical errors. One check, one error.
@@ -881,10 +877,8 @@ mod run_tests {
         });
     }
 
-    // -------------------------------------------------------------------
     // run_blob_job — the keys a job wrote reach the rollback targets
     // whether or not the job then failed.
-    // -------------------------------------------------------------------
 
     /// A job of three files under `bucket`, whose store refuses `c.txt`.
     fn job_refusing_c(dir: &std::path::Path, bucket: &str) -> BlobJob {
@@ -1003,10 +997,8 @@ mod run_tests {
         );
     }
 
-    // -------------------------------------------------------------------
     // validate_only — config-validation entry point. Empty required fields
     // bail before any store is built.
-    // -------------------------------------------------------------------
 
     #[test]
     fn validate_only_bails_on_empty_provider() {
@@ -1053,11 +1045,9 @@ mod run_tests {
         );
     }
 
-    // -------------------------------------------------------------------
     // run_report pre-flight — a literal (non-templated) provider typo must
     // fail FAST, before any store build or upload, as a catastrophic Err
     // bubbling out of Stage::run.
-    // -------------------------------------------------------------------
 
     #[test]
     fn literal_provider_typo_fails_preflight() {
@@ -1077,10 +1067,8 @@ mod run_tests {
         );
     }
 
-    // -------------------------------------------------------------------
     // skip / if gates — a skipped or falsy-`if` blob config produces no
     // jobs and no publish-report entry (no work attempted).
-    // -------------------------------------------------------------------
 
     #[test]
     fn skip_true_produces_no_publish_report_entry() {
@@ -1119,9 +1107,7 @@ mod run_tests {
         );
     }
 
-    // -------------------------------------------------------------------
     // snapshot skip — `--snapshot` runs short-circuit the whole stage.
-    // -------------------------------------------------------------------
 
     #[test]
     fn snapshot_run_skips_stage_entirely() {
@@ -1148,9 +1134,7 @@ mod run_tests {
         );
     }
 
-    // -------------------------------------------------------------------
     // non-release version guard — wiring proof.
-    // -------------------------------------------------------------------
 
     /// Pins that the non-release version guard is WIRED into `BlobStage::run`,
     /// not merely that the shared `guard_release_version` works in isolation.
@@ -1283,10 +1267,8 @@ mod run_tests {
         );
     }
 
-    // -------------------------------------------------------------------
     // selected_crates filtering — only the selected crate's blob config is
     // considered (workspace per-crate selection).
-    // -------------------------------------------------------------------
 
     #[test]
     fn selected_crates_excludes_unselected_blob_configs() {
@@ -1337,7 +1319,6 @@ mod run_tests {
             .expect("only the selected (valid) crate is considered");
     }
 
-    // -------------------------------------------------------------------
     // KMS scheme mismatch — caught in the serial prep phase before any
     // upload (gcpkms:// against an s3 bucket). This is a per-job
     // catastrophic Err that bubbles out of Stage::run.
@@ -1345,7 +1326,6 @@ mod run_tests {
     // Uses a NON-dry-run ctx: the KMS validate-match runs in the store-build
     // path, which dry-run skips. No real store/network is reached because
     // validate_kms_provider_match bails first.
-    // -------------------------------------------------------------------
 
     #[test]
     fn kms_scheme_mismatch_bails_before_upload() {
@@ -1372,10 +1352,8 @@ mod run_tests {
         );
     }
 
-    // -------------------------------------------------------------------
     // No-files path — a blob config whose crate has no artifacts attempts
     // no upload and records no report entry (warn-and-continue).
-    // -------------------------------------------------------------------
 
     #[test]
     fn no_files_to_upload_records_no_entry() {
@@ -1393,12 +1371,10 @@ mod run_tests {
         );
     }
 
-    // -------------------------------------------------------------------
     // Dry-run remote-path assembly — the dry-run branch logs the assembled
     // provider://bucket/directory/key for each file WITHOUT building a
     // store. The captured log lines must carry the templated target
     // (region/endpoint/custom directory all rendered).
-    // -------------------------------------------------------------------
 
     #[test]
     fn dry_run_logs_templated_remote_target() {

@@ -1,6 +1,6 @@
 //! Podman backend integration coverage.
 //!
-//! These tests drive the public surface of `anodizer-stage-docker`'s
+//! These tests drive the public API of `anodizer-stage-docker`'s
 //! podman path end-to-end at the command-construction level, mirroring
 //! how the docker stage assembles argv before spawning `podman build`.
 //! They exercise:
@@ -24,7 +24,7 @@ use anodizer_stage_docker::{
     resolve_backend, validate_podman_flag_compat,
 };
 // Argv-shape assertions only run on linux (podman is linux-only), so the
-// builder surface they exercise is in scope solely for that target.
+// builder API they exercise is in scope solely for that target.
 #[cfg(target_os = "linux")]
 use anodizer_stage_docker::{DockerV2Spec, build_docker_v2_command};
 

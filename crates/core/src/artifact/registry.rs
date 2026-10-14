@@ -31,7 +31,7 @@ pub struct Artifact {
 /// but emitting them in `artifacts.json` makes the manifest's bytes
 /// shadow whatever non-determinism the underlying artifact has.
 /// The `.sha256` sidecar files on disk remain the canonical hash
-/// surface for external tooling.
+/// source for external tooling.
 const METADATA_HASH_KEYS: &[&str] = &[
     "Checksum", "sha256", "sha512", "sha384", "sha224", "sha1", "md5", "blake2b", "blake3", "crc32",
 ];
@@ -232,7 +232,7 @@ impl ArtifactRegistry {
     ///
     /// Per-target duplicates (`target: Some(_)`) are left untouched —
     /// those indicate a real shard-overlap bug and downstream
-    /// validators must surface them.
+    /// validators must report them.
     pub fn dedupe_targetless_duplicates(&mut self) {
         let mut seen: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
         self.artifacts.retain(|a| {

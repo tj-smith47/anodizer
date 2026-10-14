@@ -36,7 +36,7 @@ use anodizer_core::retry::RetryPolicy;
 
 /// Wall-clock bound on the rollback `git push` of a revert commit. The push hits
 /// the publisher remote, so a wedged connection must not hang the rollback
-/// forever; on expiry the subtree is killed and the failure surfaces. Sized as a
+/// forever; on expiry the subtree is killed and the failure is reported. Sized as a
 /// remote push.
 const GIT_REVERT_PUSH_TIMEOUT: Duration = Duration::from_secs(600);
 
@@ -53,7 +53,7 @@ const GIT_REVERT_PUSH_TIMEOUT: Duration = Duration::from_secs(600);
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RevertTarget {
     /// Per-publisher human label for the target — typically the
-    /// crate name, formula name, or cask name. Surfaces in log lines.
+    /// crate name, formula name, or cask name. Appears in log lines.
     pub target: String,
     /// HTTPS clone URL (`https://github.com/owner/name.git`) OR a non-
     /// HTTPS git URL (AUR: `ssh://aur@aur.archlinux.org/<pkg>.git`).
@@ -297,7 +297,7 @@ fn revert_commit_in(path: &Path, commit: &str) -> Result<()> {
     // Reject a dirty working tree up front. `git revert` would otherwise
     // either succeed against a clean tree or fail with a less actionable
     // "your local changes would be overwritten" message. The dirty-tree
-    // condition is surfaced explicitly so the warn line a caller logs
+    // condition is reported explicitly so the warn line a caller logs
     // points at the right cause.
     let status = anodizer_core::git::git_command()
         .args(["status", "--porcelain"])

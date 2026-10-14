@@ -126,7 +126,7 @@ mod tests {
         assert!(!is_macho(b"#!/bin/sh\n"));
     }
 
-    // ---- Synthetic Mach-O fixtures ------------------------------------
+    // Synthetic Mach-O fixtures
     //
     // The `object` crate is built without its `write` feature, so the parse
     // paths (thin/fat headers, LC_BUILD_VERSION vs LC_VERSION_MIN_MACOSX) are

@@ -156,7 +156,7 @@ pub(super) fn check_not_burned_on_crates_io(
     // must not serialize 20 network ladders during a registry outage. Each
     // probe's own Result is wrapped so a failed probe (fail-closed evidence,
     // classified below) doesn't abort its in-flight siblings; a worker panic
-    // surfaces as an attributed error.
+    // is reported as an attributed error.
     let results = anodizer_core::parallel::run_parallel_chunks(
         &pending,
         MAX_PROBE_WORKERS,
@@ -367,7 +367,7 @@ pub(super) fn check_not_burned_on_npm_pypi(
     }
     // Pass 2 — probe the registries concurrently; each probe's own Result is
     // wrapped so a failed probe (fail-closed evidence, classified below)
-    // doesn't abort its in-flight siblings, and a worker panic surfaces as an
+    // doesn't abort its in-flight siblings, and a worker panic is reported as an
     // attributed error.
     let results = anodizer_core::parallel::run_parallel_chunks(
         &pending,

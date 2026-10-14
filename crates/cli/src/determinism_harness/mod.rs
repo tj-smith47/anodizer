@@ -115,7 +115,7 @@ static PRESERVE_SET: LazyLock<Vec<&'static str>> = LazyLock::new(|| {
 /// archive/upx/sign/checksum chain, docker) needs a compiled binary on disk.
 /// If [`compute_extra_skip`] let the child skip `build` in that case, the run
 /// either trips [`anodizer_core::binary_artifact_guard`] (for guard-armed
-/// surfaces like `flatpak`/`nfpm`) or silently produces nothing — a false
+/// stages like `flatpak`/`nfpm`) or silently produces nothing — a false
 /// determinism pass. So `build` is force-retained whenever any requested stage
 /// returns `true` here.
 ///
@@ -296,7 +296,7 @@ fn stage_docker_context(
 /// `<worktree>/.det-tmp/target/<triple>/release/<bin>` as
 /// `(triple, binary_path)` pairs.
 ///
-/// Only the per-triple builds are surfaced — the bare host
+/// Only the per-triple builds are included — the bare host
 /// `release/<bin>` is a non-shipped tooling byproduct (the man-page
 /// `before:` hook's `cargo run`) and never ends up in an image. The file
 /// filter matches [`artifacts::discover_artifacts`]: regular files with
@@ -388,7 +388,7 @@ pub struct Harness {
     pub commit: String,
     /// Resolved stage set under test — the operator's `--stages=` subset
     /// when given, otherwise `super::commands::check::determinism::default_stages_for_host`'s
-    /// OS-native partition. Surfaced into the report's `stages_under_test`
+    /// OS-native partition. Written into the report's `stages_under_test`
     /// field and drives what the child release subprocess builds.
     pub stages: Vec<StageId>,
     /// The stages the operator EXPLICITLY typed into `--stages=` (empty when
@@ -572,7 +572,7 @@ pub struct Harness {
 /// env wires in for cc-rs/cmake-driven crates (see
 /// [`env::build_subprocess_env`] /
 /// `anodizer_core::determinism::msvc_c_toolchain_env`). Without this gate a
-/// missing `clang-cl` surfaces deep inside the child build as a confusing
+/// missing `clang-cl` fails deep inside the child build as a confusing
 /// cc-rs "failed to find tool" spawn error, well after worktree setup and
 /// registry prefetch have already run. `probe` is injected (not a bare
 /// [`anodizer_core::tool_detect::on_path`] call) so the hard-fail wiring is

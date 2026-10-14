@@ -21,9 +21,7 @@ pub(crate) use uploads::*;
 // re-exports them to the sibling upload/revision modules).
 pub(crate) use crate::command::{SNAPCRAFT_PROBE_TIMEOUT, SNAPCRAFT_UPLOAD_TIMEOUT};
 
-// ---------------------------------------------------------------------------
 // SnapcraftPublishStage — uploads previously built .snap artifacts
-// ---------------------------------------------------------------------------
 //
 // `SnapcraftPublishStage` is the snapcraft runner that actually publishes. Following
 // the `BlobStage` pattern (commit 026c854), the stage writes its own
@@ -80,7 +78,7 @@ impl Stage for SnapcraftPublishStage {
         }
 
         // Submitter-gate check: SnapcraftPublishStage is a Submitter-group
-        // surface (irreversible snap-store upload — once a revision is
+        // publisher (irreversible snap-store upload — once a revision is
         // pushed there is no programmatic rollback). It runs as its own
         // stage AFTER the trait-based publisher dispatch, so the report it
         // consults already carries every Assets/Manager outcome AND every
@@ -161,7 +159,7 @@ impl Stage for SnapcraftPublishStage {
 
         // Pre-submitter verify-release gate: the same post-publish
         // content check the in-dispatch Submitter loop consults, run here
-        // too because snapcraft is a Submitter-group surface that executes
+        // too because snapcraft is a Submitter-group publisher that executes
         // as its own pipeline stage OUTSIDE that loop. Deferred until after
         // the crates/snap_artifacts emptiness checks above: a release with
         // no snapcraft work to do must leave `publish_report` untouched

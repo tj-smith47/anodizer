@@ -423,7 +423,7 @@ fn sprintf(format: &str, args: &[Value]) -> Result<String, tera::Error> {
 }
 
 pub(super) fn register(tera: &mut tera::Tera) {
-    // --- Go `printf` builtin ---
+    // Go `printf` builtin
     // printf(format="%04d", args=[Patch]) — formats args per a bounded Go/C
     // verb subset. Unsupported verbs return a clear error (never silent-wrong).
     tera.register_json_function(
@@ -442,7 +442,7 @@ pub(super) fn register(tera: &mut tera::Tera) {
         },
     );
 
-    // --- Go `print` / `println` builtins ---
+    // Go `print` / `println` builtins
     // print(args=[a, b]) follows Go `Sprint`: a space is added between two
     // adjacent operands only when NEITHER is a string (`print 1 2` → "1 2";
     // `print "a" "b"` → "ab"; `print "a" 1` → "a1").

@@ -18,9 +18,7 @@ pub(crate) static PACKAGE_IDENTIFIER_RE: LazyLock<Regex> = LazyLock::new(|| {
     )
 });
 
-// ---------------------------------------------------------------------------
 // PackageIdentifier validation
-// ---------------------------------------------------------------------------
 
 /// Resolve the `winget-pkgs` package identifier for a crate's
 /// `publish.winget` block without a template context: the configured
@@ -178,9 +176,7 @@ pub fn validate_package_identifier(id: &str) -> Result<()> {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Winget commit message rendering
-// ---------------------------------------------------------------------------
 
 /// Render a commit message for WinGet with PackageIdentifier in the context.
 /// `PackageIdentifier` is exposed as an extra template field.
@@ -221,6 +217,4 @@ pub(crate) fn render_winget_commit_msg(
     }
 }
 
-// ---------------------------------------------------------------------------
 // WingetManifestParams
-// ---------------------------------------------------------------------------

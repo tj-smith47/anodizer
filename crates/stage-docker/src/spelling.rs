@@ -1,8 +1,6 @@
 use anodizer_core::artifact::{Artifact, ArtifactKind};
 
-// ---------------------------------------------------------------------------
 // levenshtein_distance
-// ---------------------------------------------------------------------------
 
 /// Compute Levenshtein edit distance between two strings.
 pub(crate) fn levenshtein_distance(a: &str, b: &str) -> usize {
@@ -31,9 +29,7 @@ pub(crate) fn levenshtein_distance(a: &str, b: &str) -> usize {
     prev[b_len]
 }
 
-// ---------------------------------------------------------------------------
 // find_image_digest
-// ---------------------------------------------------------------------------
 
 /// Look up the digest for a docker image tag from the list of artifacts.
 ///

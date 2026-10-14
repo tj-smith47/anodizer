@@ -4,9 +4,7 @@ use serde::{Deserialize, Serialize};
 use super::super::{Amd64Variant, StringOrBool, deserialize_string_or_bool_opt};
 use super::{CommitAuthorConfig, RepositoryConfig};
 
-// ---------------------------------------------------------------------------
 // NixConfig
-// ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default, deny_unknown_fields)]

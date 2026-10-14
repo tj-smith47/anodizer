@@ -71,7 +71,7 @@ const SEEDED_VARS: &[&str] = &[
 ];
 
 /// The template-var keys the templatefiles stage binds [`InstallerCases`] to
-/// ([`InstallerCases::bind`]) — the full surface through which a
+/// ([`InstallerCases::bind`]) — the full set of keys through which a
 /// `template_files:` entry can consume the engine-derived installer tables.
 pub const INSTALLER_TEMPLATE_VARS: &[&str] = &[
     "InstallerAssetCases",
@@ -119,7 +119,7 @@ pub struct InstallerCases {
 impl InstallerCases {
     /// Bind the case tables to their template vars — the keys listed in
     /// [`INSTALLER_TEMPLATE_VARS`] — so the templatefiles stage and any
-    /// consumption probe share one binding surface.
+    /// consumption probe share one set of bindings.
     pub fn bind(&self, vars: &mut crate::template::TemplateVars) {
         vars.set("InstallerAssetCases", &self.asset_cases);
         vars.set("InstallerDetectOsCases", &self.detect_os_cases);
@@ -859,7 +859,7 @@ mod tests {
 
     /// [`InstallerCases::bind`] must write exactly the keys listed in
     /// [`INSTALLER_TEMPLATE_VARS`] — the const is the consumption probe's
-    /// view of the binding surface, so drift between the two silently blinds
+    /// view of the bindings, so drift between the two silently blinds
     /// the probe.
     #[test]
     fn bind_writes_exactly_the_installer_template_vars() {
@@ -1021,7 +1021,7 @@ mod tests {
     }
 
     /// A v3-tuned linux build (`RUSTFLAGS -Ctarget-cpu=x86-64-v3` in the
-    /// per-target build env) must surface the SAME `amd64v3` suffix in the
+    /// per-target build env) must produce the SAME `amd64v3` suffix in the
     /// installer's asset arm the archive stage bakes into the uploaded name —
     /// with zero overrides. Untuned targets keep the baseline names.
     #[test]
@@ -1558,7 +1558,7 @@ mod tests {
     /// The same libc split, but with the installer crate reachable only
     /// through `workspaces[].crates[]` (the per-crate config mode) instead of
     /// top-level `crates:` — the split operates on the derived asset map
-    /// regardless of which config mode surfaced the crate.
+    /// regardless of which config mode supplied the crate.
     #[test]
     fn dual_libc_split_holds_under_workspaces_config() {
         let name_template = "{{ ProjectName }}-{{ Version }}-{{ Target }}";

@@ -57,14 +57,12 @@ fn tagless_project_root() -> (tempfile::TempDir, anodizer_core::context::Context
     (dir, options)
 }
 
-// ---------------------------------------------------------------
 // Idempotent retry floor — the snapcraft upload is an opaque subprocess
 // (`run_capture_timeout`) with no in-process retry-mock point, so the
 // strongest feasible proof is that the effective upload policy equals
 // `max(global, IDEMPOTENT_PUT_ATTEMPTS)`. This is the same expression the
 // production upload site applies (`retry_policy.with_idempotent_floor()`),
 // so reverting the floor fails this test.
-// ---------------------------------------------------------------
 
 #[test]
 fn upload_policy_applies_idempotent_floor() {
@@ -96,9 +94,7 @@ fn upload_policy_applies_idempotent_floor() {
     );
 }
 
-// ---------------------------------------------------------------
 // build_snapcraft_evidence — pin the success-path wire shape
-// ---------------------------------------------------------------
 
 #[test]
 fn build_snapcraft_evidence_pins_success_wire_shape() {
@@ -159,9 +155,7 @@ fn build_snapcraft_evidence_handles_empty_targets() {
     assert_eq!(decode_snapcraft_targets(&evidence.extra), Vec::new());
 }
 
-// ---------------------------------------------------------------
 // PublisherResult recording behavior
-// ---------------------------------------------------------------
 
 #[test]
 fn snapshot_mode_records_nothing() {
@@ -314,14 +308,12 @@ fn submitter_gate_stays_open_on_optional_upstream_failure() {
     );
 }
 
-// ---------------------------------------------------------------
 // Pre-submitter verify-release gate — the post-publish content check
 // the in-dispatch Submitter loop also consults, run here too because
 // snapcraft executes as its own pipeline stage outside that loop. A
 // release configuring ONLY `snapcraft:` never puts a single publisher
 // through the in-dispatch loop, so its lazy eval never fires without
 // this stage running the check itself.
-// ---------------------------------------------------------------
 
 #[test]
 #[serial_test::serial(path_env)]
@@ -566,9 +558,7 @@ fn dry_run_with_publishable_config_records_nothing() {
     );
 }
 
-// ---------------------------------------------------------------
 // record_snapcraft_result direct point — Failed(_) entry coverage
-// ---------------------------------------------------------------
 
 #[test]
 fn record_snapcraft_result_initializes_report_if_missing() {
@@ -602,7 +592,7 @@ fn record_snapcraft_result_failed_entry_announce_gate_visibility() {
     // `Failed(_)` entry, NOT a stage-error bail. This is the
     // property the announce gate (`AnnounceGate::AllPublishers`)
     // and `anodizer tag rollback` consumers depend on —
-    // without this entry, neither downstream surface knows the
+    // without this entry, neither downstream consumer knows the
     // snap upload tried and failed.
     let mut ctx = TestContextBuilder::new().build();
     // Pre-seed something innocuous to also prove the write APPENDS to
@@ -669,12 +659,10 @@ fn record_snapcraft_result_succeeded_carries_evidence() {
     assert_eq!(snap.evidence.as_ref(), Some(&evidence));
 }
 
-// ---------------------------------------------------------------
 // derive_snapcraft_required — Finding 1: an unset/false snapcraft
-// `required:` must still let verify-release surface a failed upload,
+// `required:` must still let verify-release report a failed upload,
 // but must NOT abort the pipeline; an opt-in `required: true` must.
 // Exercised across all three config modes.
-// ---------------------------------------------------------------
 
 #[test]
 fn derive_snapcraft_required_defaults_false_single_crate() {
@@ -842,14 +830,12 @@ fn derive_snapcraft_required_ignores_build_only_config() {
     );
 }
 
-// ---------------------------------------------------------------
 // Pre-pass: skip-template render uniformity
-// ---------------------------------------------------------------
 
 #[test]
 fn skip_template_error_fast_fails_stage_without_recording() {
     // Important #3 invariant: a malformed `publish.skip` template
-    // surfaces as a STAGE ERROR (Err(_) from Stage::run), NOT as
+    // comes back as a STAGE ERROR (Err(_) from Stage::run), NOT as
     // a `Failed(_)` PublisherResult — and `publish_report` stays
     // untouched. Two operationally-identical config bugs must not
     // produce different pipeline behaviors depending on which
@@ -919,7 +905,7 @@ fn skip_template_error_fast_fails_stage_without_recording() {
 /// undefined var — reaching the pre-pass would hard-error. Used as a
 /// non-invocation oracle: a correctly-firing deselect gate returns
 /// `Ok(Deselected)` before the pre-pass, so the render error never
-/// surfaces; a leaked gate hits the error.
+/// appears; a leaked gate hits the error.
 fn render_error_snap_crate(name: &str) -> CrateConfig {
     use anodizer_core::config::StringOrBool;
     CrateConfig {
@@ -1030,7 +1016,7 @@ fn snapcraft_deselected_skip_wins_over_allowlist() {
 #[test]
 fn snapcraft_in_allowlist_is_not_deselected() {
     // `--publishers snapcraft-publish`: snapcraft IS selected, so the
-    // deselect gate must NOT fire — the render-error config then surfaces
+    // deselect gate must NOT fire — the render-error config then returns
     // its error, proving the upload pre-pass WAS entered.
     use anodizer_core::artifact::{Artifact, ArtifactKind};
     use std::collections::HashMap;
@@ -1348,14 +1334,12 @@ fn content_dedup_rejection_fails_fast_without_retry() {
     }
 }
 
-// -----------------------------------------------------------------
 // Two co-occurring RETRIABLE markers — a `[503]` and the Store's
 // uniqueness-check fault ("Error checking upload uniqueness.") in the
 // same output — must retry. Neither is a confirmed content duplicate
 // (both are transient store errors), so the second attempt gets a
 // clean shot. This is NOT the 5xx-vs-dedup straddle (no definitive
 // dedup marker is present); that ordering case is the next test.
-// -----------------------------------------------------------------
 
 // The stubbed snapcraft uses FakeToolDir::script, which is unix-only.
 #[cfg(unix)]
@@ -1457,7 +1441,6 @@ fn co_occurring_5xx_and_uniqueness_fault_still_retries() {
     );
 }
 
-// -----------------------------------------------------------------
 // Classifier ordering — `is_retriable_snap_push` is checked BEFORE
 // `is_content_dedup_rejection`, so a `[503]` co-occurring with the
 // DEFINITIVE content-dedup marker ("a file with this exact same
@@ -1468,7 +1451,6 @@ fn co_occurring_5xx_and_uniqueness_fault_still_retries() {
 // block is reached. This is the true straddle of the two classifiers,
 // distinct from the uniqueness-fault case above (which carries no
 // dedup marker at all).
-// -----------------------------------------------------------------
 
 // The stubbed snapcraft uses FakeToolDir::script, which is unix-only.
 #[cfg(unix)]
@@ -1570,7 +1552,6 @@ fn co_occurring_5xx_and_definitive_dedup_marker_still_retries() {
     );
 }
 
-// -----------------------------------------------------------------
 // Regression guard for the misclassified transient: `Error checking
 // upload uniqueness.` with NO co-occurring 5xx must retry (it reports
 // the store's uniqueness-check step faulting, a transient backend
@@ -1579,7 +1560,6 @@ fn co_occurring_5xx_and_definitive_dedup_marker_still_retries() {
 // verdict, which sank the whole release. A freshly-versioned snap's
 // bytes cannot collide with an older revision, so this marker is never a
 // real dedup.
-// -----------------------------------------------------------------
 
 // The stubbed snapcraft uses FakeToolDir::script, which is unix-only.
 #[cfg(unix)]
@@ -1678,10 +1658,8 @@ fn uniqueness_check_fault_alone_retries_and_recovers() {
     );
 }
 
-// -----------------------------------------------------------------
 // Dedup-rejection recovery — a matching-version colliding revision is
 // promoted rather than reported as a permanent repack error.
-// -----------------------------------------------------------------
 
 // The stubbed snapcraft uses FakeToolDir::script, which is unix-only.
 #[cfg(unix)]
@@ -2190,11 +2168,9 @@ fn preupload_promotion_failure_is_reported_as_failed() {
     }
 }
 
-// -----------------------------------------------------------------
 // Dual-arch isolation — a dual-arch snap config (`crates:` targeting
 // both x86_64 and aarch64) creates one `list-revisions` row per arch per
 // version; the amd64 and arm64 legs must be probed independently.
-// -----------------------------------------------------------------
 
 // The stubbed snapcraft uses FakeToolDir::script, which is unix-only.
 #[cfg(unix)]
@@ -2296,14 +2272,12 @@ fn dual_arch_arm64_not_skipped_when_only_amd64_published() {
     );
 }
 
-// -----------------------------------------------------------------
 // Per-arch revision recording — a fresh dual-arch upload must record ONE
 // evidence entry per architecture, each carrying that arch's issued Snap
 // Store revision, so a later `promote --from-run` can release every arch.
 // Before the fix the evidence recorded `revision: None` and one entry per
 // config, making `--from-run` a dead selector for multi-arch snaps.
 // The stubbed snapcraft uses FakeToolDir::script, which is unix-only.
-// -----------------------------------------------------------------
 #[cfg(unix)]
 #[test]
 #[serial_test::serial(path_env)]
@@ -2427,12 +2401,10 @@ fn fresh_dual_arch_upload_records_a_revision_per_arch() {
     );
 }
 
-// -----------------------------------------------------------------
 // Dedup rejection against a DIFFERENT version's bytes — no revision
 // exists at the current version, so there is nothing to promote and the
 // upload must fail with a repack-required error rather than silently
 // succeed or promote the wrong revision.
-// -----------------------------------------------------------------
 
 // The stubbed snapcraft uses FakeToolDir::script, which is unix-only.
 #[cfg(unix)]
@@ -2530,12 +2502,10 @@ fn dedup_rejection_against_different_version_reports_repack_error() {
     }
 }
 
-// -----------------------------------------------------------------
 // Rendered-channel/grade preflight re-check — a template that only
 // resolves to a forbidden channel at render time (or a `--publish-only`
 // run, which never executes the build stage's raw preflight at all)
 // must still be caught before the Snap Store ever sees the upload.
-// -----------------------------------------------------------------
 
 #[test]
 fn rendered_channel_rejected_even_though_raw_template_is_not_literally_restricted() {

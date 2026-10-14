@@ -244,7 +244,7 @@ mod tests {
         assert_eq!(expand_with("plain text", |_| None), "plain text");
     }
 
-    // --- expand_with_preserve ---------------------------------------------
+    // expand_with_preserve
 
     #[test]
     fn preserve_known_var_expands() {

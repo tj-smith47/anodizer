@@ -18,7 +18,7 @@ use super::publisher::HomebrewCoreTargetSnapshot;
 use super::resolve::{
     ResolvedToken, TOKEN_ENV_VARS, bump_branch, is_homebrew_core, resolve_commit_identity,
     resolve_commit_message, resolve_download_url, resolve_formula_name, resolve_token,
-    resolve_upstream,
+    resolve_upstream, token_order_hint,
 };
 
 /// Top-level publish entrypoint. Iterates each `homebrew_cores[]` entry and
@@ -40,7 +40,7 @@ pub(crate) fn publish_to_homebrew_core(
             .unwrap_or_else(|| format!("homebrew_cores[{}]", idx));
         log.status(&format!("processing homebrew-core bump '{}'", label));
 
-        // ---- Skip gates ----
+        // Skip gates
         if let Some(skip) = cfg.skip.as_ref() {
             let off = skip
                 .try_evaluates_to_true(|tmpl| ctx.render_template(tmpl))
@@ -95,19 +95,17 @@ pub(crate) fn publish_to_homebrew_core(
         let Some(ResolvedToken { token, env_var }) = resolve_token(ctx, cfg)? else {
             bail!(
                 "homebrew-core: a GitHub token is required to bump {}/{} (entry '{}'). \
-                 Set ${} (or ${}, or {}), or `homebrew_cores[].repository.token`.",
+                 Set one of these, read in this order: {}.",
                 up_owner,
                 up_repo,
                 label,
-                TOKEN_ENV_VARS[0],
-                TOKEN_ENV_VARS[1],
-                anodizer_core::git::GITHUB_TOKEN_ENV_LADDER.join(" / "),
+                token_order_hint(),
             );
         };
         let token_env_var = env_var;
         let api = GithubApi::new(ctx.env_source(), &token)?;
 
-        // ---- Resolve base branch + commit path ----
+        // Resolve base branch + commit path
         let core = is_homebrew_core(&up_owner, &up_repo);
         let cfg_branch = cfg
             .repository
@@ -133,7 +131,7 @@ pub(crate) fn publish_to_homebrew_core(
             .or_else(|| repo_info.as_ref().map(|r| r.default_branch.clone()))
             .unwrap_or_else(|| "main".to_string());
 
-        // ---- Locate + rewrite the formula ----
+        // Locate + rewrite the formula
         let Some(file) =
             locate_formula(ctx, cfg, &api, &up_owner, &up_repo, &base_branch, &formula)?
         else {
@@ -203,7 +201,7 @@ pub(crate) fn publish_to_homebrew_core(
             summary.revision_removed,
         ));
 
-        // ---- Commit path ----
+        // Commit path
         let commit_identity = resolve_commit_identity(ctx, cfg, log)?;
         let identity_ref = commit_identity
             .as_ref()

@@ -22,9 +22,7 @@ use crate::upload::{
 };
 use anodizer_core::config::RetryConfig;
 
-// -----------------------------------------------------------------------
 // Provider tests
-// -----------------------------------------------------------------------
 
 #[test]
 fn test_provider_s3() {
@@ -56,9 +54,7 @@ fn test_provider_display_name() {
     assert_eq!(Provider::AzBlob.display_name(), "azblob");
 }
 
-// -----------------------------------------------------------------------
 // S3 store builder tests
-// -----------------------------------------------------------------------
 
 #[test]
 fn test_s3_basic_build() {
@@ -104,9 +100,7 @@ fn test_s3_force_path_style_explicit_false_with_endpoint() {
     let _ = build_s3_store(&config, "b", &make_ctx(), &RetryConfig::default());
 }
 
-// -----------------------------------------------------------------------
 // Put options tests
-// -----------------------------------------------------------------------
 
 #[test]
 fn test_put_options_cache_control_array_joined() {
@@ -198,9 +192,7 @@ fn test_put_options_content_disposition_custom() {
     assert_eq!(cd.as_ref(), "inline");
 }
 
-// -----------------------------------------------------------------------
 // Disable evaluation tests
-// -----------------------------------------------------------------------
 
 #[test]
 fn test_is_disabled_none() {
@@ -284,9 +276,7 @@ fn test_is_disabled_template_render_failure_propagates() {
     assert!(err.contains("evaluate skip expression"), "{err}");
 }
 
-// -----------------------------------------------------------------------
 // Remote path formatting
-// -----------------------------------------------------------------------
 
 #[test]
 fn test_format_remote_path_s3() {
@@ -318,9 +308,7 @@ fn test_format_remote_path_trims_slashes() {
     assert_eq!(path, "s3://b/dir/file.tar.gz");
 }
 
-// -----------------------------------------------------------------------
 // KMS provider detection tests
-// -----------------------------------------------------------------------
 
 #[test]
 fn test_parse_kms_provider_aws() {
@@ -436,9 +424,7 @@ fn test_encrypt_with_kms_server_side_passthrough() {
     assert_eq!(result, data);
 }
 
-// -----------------------------------------------------------------------
 // Error handling tests
-// -----------------------------------------------------------------------
 
 #[test]
 fn test_handle_upload_error_not_found() {
@@ -491,9 +477,7 @@ fn test_handle_upload_error_generic() {
     assert!(anyhow_err.to_string().contains("upload failed"));
 }
 
-// -----------------------------------------------------------------------
 // Config parsing tests
-// -----------------------------------------------------------------------
 
 #[test]
 fn test_blob_config_parses_s3() {
@@ -748,9 +732,7 @@ fn test_partial_config_defaults() {
     assert!(config.partial.unwrap().by.is_none());
 }
 
-// -----------------------------------------------------------------------
 // Extra files resolution tests
-// -----------------------------------------------------------------------
 
 #[test]
 fn test_resolve_extra_files_basic() {
@@ -805,9 +787,7 @@ fn test_resolve_extra_files_no_match_warns_and_continues() {
     assert!(result.is_empty());
 }
 
-// -----------------------------------------------------------------------
 // Artifact filtering tests
-// -----------------------------------------------------------------------
 
 #[test]
 fn test_collect_artifacts_filters_by_crate() {
@@ -1009,9 +989,7 @@ fn binary_sign_outputs_upload_under_their_registered_name() {
     }
 }
 
-// -----------------------------------------------------------------------
 // Stage behavior tests
-// -----------------------------------------------------------------------
 
 #[test]
 fn test_blob_stage_skips_when_no_config() {
@@ -1197,12 +1175,11 @@ fn test_blob_stage_dry_run_logs_commands() {
     assert!(result.is_ok());
 }
 
-// -----------------------------------------------------------------------
 // Q9.1 — provider must be Tera-template-rendered before any provider-keyed
 // dispatch (S3-ACL gate, GCS-ACL gate, …). `provider == "s3"` was a raw
 // string compare, so `provider: "{{ .ProviderName }}"` skipped the ACL
 // branch. Anodizer renders `provider` once via `ctx.render_template` then
-// dispatches against `Provider::S3` (an enum) so the bug has no surface,
+// dispatches against `Provider::S3` (an enum) so the bug cannot occur,
 // but two tests pin the contract:
 //   - `..._for_acl_dispatch` — full stage dry-run: templated provider +
 //     ACL must not error.
@@ -1210,7 +1187,6 @@ fn test_blob_stage_dry_run_logs_commands() {
 //     S3 builder directly with an invalid ACL; it must reject (proves
 //     the ACL gate runs on the S3 path that a templated provider
 //     resolves into).
-// -----------------------------------------------------------------------
 
 #[test]
 fn test_q9_1_provider_template_resolves_to_s3_for_acl_dispatch() {
@@ -1342,9 +1318,7 @@ fn test_q9_1_templated_provider_routes_through_s3_acl_validator() {
     );
 }
 
-// -----------------------------------------------------------------------
 // StringOrBool unit tests
-// -----------------------------------------------------------------------
 
 #[test]
 fn test_string_or_bool_as_bool() {
@@ -1363,9 +1337,7 @@ fn test_string_or_bool_is_template() {
     assert!(!StringOrBool::Bool(true).is_template());
 }
 
-// -----------------------------------------------------------------------
 // Integration test with InMemory store
-// -----------------------------------------------------------------------
 
 #[test]
 fn test_upload_to_in_memory_store() {
@@ -1602,9 +1574,7 @@ fn test_upload_with_content_disposition() {
     assert!(result.is_ok());
 }
 
-// -----------------------------------------------------------------------
 // Helpers
-// -----------------------------------------------------------------------
 
 fn test_log() -> anodizer_core::log::StageLogger {
     anodizer_core::log::StageLogger::new("test", anodizer_core::log::Verbosity::Quiet)
@@ -1639,7 +1609,6 @@ fn make_ctx_with_snapshot() -> Context {
     ctx
 }
 
-// -----------------------------------------------------------------------
 // Publish-report wire-up tests
 //
 // BlobStage runs as its own Stage (positioned BEFORE
@@ -1648,7 +1617,6 @@ fn make_ctx_with_snapshot() -> Context {
 // see a required-blob failure via the same
 // `any_failed(Assets, required_only=true)` check that already gates
 // every other Submitter publisher.
-// -----------------------------------------------------------------------
 
 /// Build a `BlobTarget` for the `s3://my-bucket/<key>` shape used by the
 /// `record_blob_result` test fixtures. `record_blob_result` takes
@@ -1926,7 +1894,7 @@ fn blob_deselected_skip_wins_over_allowlist() {
 #[test]
 fn blob_in_allowlist_is_not_deselected() {
     // `--publishers blob`: blob IS selected, so the deselect gate must NOT
-    // fire — the empty-provider config then surfaces its real error, proving
+    // fire — the empty-provider config then reports its real error, proving
     // the upload path WAS entered.
     let opts = ContextOptions {
         publisher_allowlist: vec!["blob".to_string()],
@@ -2021,7 +1989,6 @@ fn blob_stage_does_not_touch_publish_report_when_no_work() {
     );
 }
 
-// -----------------------------------------------------------------------
 // `BlobConfig.required` wire-up
 //
 // `record_blob_result` now takes a `required: bool` parameter derived
@@ -2030,7 +1997,6 @@ fn blob_stage_does_not_touch_publish_report_when_no_work() {
 // (any-true-makes-the-stage-required). Aggregation matches the
 // "any failed required publisher in Assets group fails the release"
 // semantics in `PublishReport::any_failed`.
-// -----------------------------------------------------------------------
 
 #[test]
 fn record_blob_result_required_false_by_default() {

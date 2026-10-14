@@ -542,7 +542,7 @@ fn add_high_schema_version_handles_empty_array() {
     );
 }
 
-// --- rollback touches no catalog ---------------------------------------
+// rollback touches no catalog
 
 /// SchemaStore rollback closes the registration PR and nothing else: it must
 /// never edit `catalog.json`, because a name-matched upstream entry the publish
@@ -580,7 +580,7 @@ fn rollback_never_edits_the_catalog() {
     }
 }
 
-// --- per-file validator `options` --------------------------------------
+// per-file validator `options`
 //
 // The fixture models the shape SchemaStore's `src/schema-validation.jsonc`
 // really has when cfgd is already registered: comments, a `highSchemaVersion`
@@ -769,7 +769,7 @@ fn schema_options_block_is_absent_for_an_unlisted_file() {
     assert!(schema_options_block("{ \"highSchemaVersion\": [] }", "any.json").is_none());
 }
 
-// --- unknown `format` derivation ---------------------------------------
+// unknown `format` derivation
 
 #[test]
 fn unknown_formats_finds_formats_at_any_depth() {

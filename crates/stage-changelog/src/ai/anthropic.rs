@@ -55,7 +55,9 @@ impl AiProvider for AnthropicProvider {
             .as_deref()
             .and_then(anodizer_core::git::non_blank_token)
             .ok_or_else(|| {
-                anyhow::anyhow!("ANTHROPIC_API_KEY is not set; required for the anthropic provider")
+                anyhow::anyhow!(
+                    "ANTHROPIC_API_KEY is unset or blank; required for the anthropic provider"
+                )
             })?;
 
         let model = model.unwrap_or(DEFAULT_MODEL);

@@ -42,7 +42,7 @@ pub(super) fn probe_release_for_tag(
         },
         Err(e) => {
             let msg = e.to_string();
-            // gh surfaces missing releases as `HTTP 404: Not Found`.
+            // gh reports missing releases as `HTTP 404: Not Found`.
             if msg.contains("HTTP 404") || msg.contains("Not Found") {
                 ReleaseProbe::NotBlocking
             } else {
@@ -89,7 +89,7 @@ pub(super) fn check_no_published_releases(
         Ok(slug) => (slug.owner().to_string(), slug.name().to_string()),
         Err(e) if git::has_remote_in(cwd, "origin") => {
             // The slug resolver already redacts URL credentials in its
-            // parse-failure message, so `e` is safe to surface.
+            // parse-failure message, so `e` is safe to show.
             log.warn(&format!(
                 "skipped the published-release probe — origin is not a github.com \
                  remote ({e}); no github.com release can exist there \

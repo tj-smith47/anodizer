@@ -95,7 +95,7 @@ pub fn resolve_rollback_identity(cwd: &Path) -> CommitterIdentity {
 /// Run `git revert --no-edit <sha>` in `cwd`, optionally followed by
 /// `git commit --amend -m <message>`.
 ///
-/// Refuses against a dirty working tree (`git revert` would surface a
+/// Refuses against a dirty working tree (`git revert` would print a
 /// less actionable "your local changes would be overwritten" message
 /// otherwise). Mirrors the dirty-tree guard used by
 /// `stage-publish/src/util/git_revert.rs`. The guard counts only
@@ -184,7 +184,7 @@ pub fn revert_commit_in(
 }
 
 /// Run `git reset --hard <sha>` in `cwd`. **Destructive** — rewrites HEAD
-/// and the index in place; callers must surface a warning before invoking.
+/// and the index in place; callers must show a warning before invoking.
 pub fn reset_hard_in(cwd: &Path, sha: &str) -> Result<()> {
     git_output_in(cwd, &["reset", "--hard", sha])?;
     Ok(())

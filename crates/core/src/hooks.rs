@@ -101,7 +101,7 @@ fn hook_cmd_summary(cmd: &str) -> String {
     }
 }
 
-/// How [`run_hooks_inner`] surfaces the per-entry `ran <label> hook` result.
+/// How [`run_hooks_inner`] reports the per-entry `ran <label> hook` result.
 /// All three modes log exactly one line per executed entry; they differ only
 /// in level and wording so a caller that prints its own single summary line
 /// does not produce a second default-visible line for the same hook.
@@ -118,7 +118,7 @@ enum HookResultLine<'a> {
     Suppressed,
 }
 
-/// [`run_hooks`] with control over how the per-entry result line is surfaced
+/// [`run_hooks`] with control over how the per-entry result line is reported
 /// (see [`HookResultLine`]). The verbose-suppressing modes converge every
 /// caller that prints its own single summary onto the SAME inner runner, so the
 /// joined hook command is never echoed at `status` and the default level shows
@@ -273,7 +273,7 @@ fn run_hooks_inner(
                     command.env(k, v);
                 }
             }
-            // Run via the shared helper: captures stdout+stderr, surfaces
+            // Run via the shared helper: captures stdout+stderr, shows
             // them on failure, and (at verbose) streams the hook's output
             // live so a long-running before/after hook shows progress. Hook
             // output may contain secrets from the inherited host env, so the
@@ -337,7 +337,7 @@ fn run_hooks_inner(
 /// 2. For each match, bind per-artifact template variables
 ///    (`ArtifactPath`, `ArtifactName`, `ArtifactExt`, `Os`, `Arch`,
 ///    plus `ArtifactID` / `ArtifactKind` for parity with the publisher
-///    template surface) and render `cmd` / `dir` / `env` / `if`.
+///    template variables) and render `cmd` / `dir` / `env` / `if`.
 /// 3. Execute the rendered hook (or log it under `--dry-run`).
 ///
 /// `HookEntry::Simple` (bare string) implies `artifacts: all` and no
@@ -412,9 +412,9 @@ enum CrateLifecycleKind {
 
 impl CrateLifecycleKind {
     /// Stage name + hook label. Matches the top-level `before:` / `after:`
-    /// labels so the per-crate and top-level surfaces read identically in
+    /// labels so the per-crate and top-level hooks read identically in
     /// logs and so the pipeline's `--skip=before` / `--skip=after` gate
-    /// (keyed on `Stage::name`) suppresses both surfaces with one flag.
+    /// (keyed on `Stage::name`) suppresses both with one flag.
     fn label(self) -> &'static str {
         match self {
             CrateLifecycleKind::Before => "before",
@@ -722,7 +722,7 @@ fn run_before_publish_entry(
 
 /// Bind per-artifact template variables onto `vars` for a single
 /// `before_publish:` iteration. Mirrors the publisher-side template
-/// surface (`crates/cli/src/commands/publisher.rs::build_publisher_command`)
+/// variables (`crates/cli/src/commands/publisher.rs::build_publisher_command`)
 /// so user templates work identically across `publishers:` and
 /// `before_publish:`.
 fn bind_per_artifact_vars(vars: &mut TemplateVars, artifact: &Artifact) {
@@ -1425,7 +1425,7 @@ mod tests {
     #[test]
     fn hook_output_summary_present_at_normal() {
         // The complementary pin: at non-verbose verbosity the live stream is
-        // suppressed, so the `[hook output]` summary IS the only surface for
+        // suppressed, so the `[hook output]` summary IS the only output for
         // the hook's stdout and must still fire.
         let (log, cap) = StageLogger::with_capture("test", Verbosity::Normal);
         let hooks = vec![HookEntry::Structured(StructuredHook {
@@ -2134,7 +2134,7 @@ mod tests {
     /// A WORKSPACE-only crate's `crates[].before` fires on the plain-release
     /// path (empty selection): the walk is the crate universe, not the
     /// top-level `crates:` list, so a pure-`workspaces:` config gets the same
-    /// hook surface `--publish-only`'s per-crate loop already honors.
+    /// hooks `--publish-only`'s per-crate loop already honors.
     #[test]
     fn per_crate_lifecycle_fires_for_workspace_only_crates() {
         let tmp = tempfile::tempdir().unwrap();
@@ -2173,7 +2173,7 @@ mod tests {
 
     /// A WORKSPACE-only crate's `crates[].before_publish` fires on the
     /// plain-release path (empty selection) — same universe conversion as the
-    /// lifecycle hooks, on the publish-head surface.
+    /// lifecycle hooks, on the publish-head path.
     #[test]
     fn per_crate_before_publish_fires_for_workspace_only_crates() {
         let tmp = tempfile::tempdir().unwrap();

@@ -5,15 +5,13 @@ use anodizer_core::{
 
 use crate::targets::SnapcraftTarget;
 
-// ---------------------------------------------------------------------------
 // PublisherResult recording
-// ---------------------------------------------------------------------------
 
 /// Build the `PublishEvidence` recorded on a successful snapcraft run.
 ///
 /// `primary_ref` points at the first uploaded package's snapcraft.io
 /// listing; `extra.snapcraft_targets` carries the full per-target
-/// snapshot used by `anodizer tag rollback` to surface the
+/// snapshot used by `anodizer tag rollback` to report the
 /// (package, channel) tuples an operator needs to address manually.
 pub(crate) fn build_snapcraft_evidence(targets: &[SnapcraftTarget]) -> PublishEvidence {
     let mut evidence = PublishEvidence::new("snapcraft");
@@ -79,7 +77,7 @@ pub(crate) fn record_snapcraft_result(
 ///
 /// Unset (`None`) resolves to `false`: `required` only governs whether the
 /// pipeline ABORTS on a failed snap upload. `verify-release`'s landing
-/// check surfaces an attempted-and-failed upload as an issue regardless of
+/// check reports an attempted-and-failed upload as an issue regardless of
 /// this flag — see `landing::run_landing_checks`.
 pub(crate) fn derive_snapcraft_required(ctx: &Context) -> bool {
     let selected = &ctx.options.selected_crates;

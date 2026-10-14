@@ -58,9 +58,7 @@ fn ctx_with_packages() -> anodizer_core::context::Context {
     ctx
 }
 
-// -----------------------------------------------------------------------------
 // Config parsing
-// -----------------------------------------------------------------------------
 
 #[test]
 fn parse_minimal_gemfury_block() {
@@ -141,9 +139,7 @@ fn warn_on_legacy_furies_alias_detects_legacy_key() {
     anodizer_core::config::warn_on_legacy_furies_alias(&yaml_new);
 }
 
-// -----------------------------------------------------------------------------
 // Defaults / helpers
-// -----------------------------------------------------------------------------
 
 #[test]
 fn default_formats_match_gr_v27() {
@@ -233,9 +229,7 @@ fn token_env_vars_render_templated_secret_name() {
     );
 }
 
-// -----------------------------------------------------------------------------
 // Auth resolution
-// -----------------------------------------------------------------------------
 
 #[test]
 fn resolve_push_token_falls_back_to_env_var() {
@@ -301,9 +295,7 @@ fn publish_errors_when_account_missing() {
     );
 }
 
-// -----------------------------------------------------------------------------
 // Skip / if-condition / dry-run paths
-// -----------------------------------------------------------------------------
 
 #[test]
 fn publish_dry_run_returns_no_targets() {
@@ -360,9 +352,7 @@ fn publish_if_condition_falsy_returns_no_targets() {
     assert!(out.is_empty());
 }
 
-// -----------------------------------------------------------------------------
 // Multi-format preflight
-// -----------------------------------------------------------------------------
 
 #[test]
 fn multi_format_archive_overlap_errors() {
@@ -402,9 +392,7 @@ fn multi_format_archive_with_single_overlap_passes() {
     run_publish(&ctx, &log).expect("single-overlap dry-run ok");
 }
 
-// -----------------------------------------------------------------------------
 // Publisher contract
-// -----------------------------------------------------------------------------
 
 #[test]
 fn gemfury_publisher_classification() {
@@ -442,9 +430,7 @@ fn gemfury_publisher_run_with_no_entries_is_noop() {
     assert!(ev.primary_ref.is_none());
 }
 
-// -----------------------------------------------------------------------------
 // Rollback evidence shape
-// -----------------------------------------------------------------------------
 
 #[test]
 fn gemfury_evidence_carries_no_token_value() {
@@ -528,11 +514,9 @@ impl From<GemFuryTarget> for anodizer_core::publish_evidence::GemFuryTargetSnaps
     }
 }
 
-// -----------------------------------------------------------------------------
 // Probe classifier: a 404 from the API base means "version not present" and
-// must surface as Ok(false) so the publish path proceeds. Hermetic via the
+// must return Ok(false) so the publish path proceeds. Hermetic via the
 // ANODIZE_GEMFURY_API_BASE override pointing at a local responder.
-// -----------------------------------------------------------------------------
 
 #[test]
 fn version_already_published_returns_false_on_404() {
@@ -659,9 +643,7 @@ fn version_already_published_bails_on_transport_failure() {
     );
 }
 
-// -----------------------------------------------------------------------------
 // Idempotency: package-name derivation + 409/422 conflict-as-success
-// -----------------------------------------------------------------------------
 
 #[test]
 fn fury_package_name_strips_version_suffix() {
@@ -719,7 +701,7 @@ fn fury_package_name_version_at_start_falls_through_to_ext_strip() {
 }
 
 /// A re-run against an already-published version must succeed (idempotent):
-/// the probe 404s (Fury's probe surface), then the push returns 409 Conflict
+/// the probe 404s (Fury's version probe), then the push returns 409 Conflict
 /// → treated as success with no rollback target recorded. A genuine failure
 /// (400) still errors.
 #[test]
@@ -907,7 +889,7 @@ fn gemfury_recorded_rollback_target_uses_derived_package_name() {
 /// The idempotent retry floor must keep a Fury push alive across a transient
 /// 503 even when the operator's resolved policy caps `attempts: 1` (the
 /// `--publish-only` shape). With the floor reverted to 1 this fails: the 503
-/// would surface as a hard error and the responder would be hit only once.
+/// would show up as a hard error and the responder would be hit only once.
 /// Scripts `[503, 200]` on the push responder under `attempts: 1` and asserts
 /// the push SUCCEEDS and the responder was hit twice.
 #[test]
@@ -1065,7 +1047,7 @@ fn gemfury_partial_push_records_landed_target_on_later_failure() {
 
 /// Concurrent partial-evidence: with parallel pushes, an artifact that arrives
 /// (200) CONCURRENTLY with a sibling that fails (400) must still be recorded
-/// for rollback — the fan-out folds every published target before surfacing the
+/// for rollback — the fan-out folds every published target before reporting the
 /// first error, so a concurrent success is never dropped. Which artifact gets
 /// the 200 vs 400 is nondeterministic under parallelism, so the assertion is
 /// order-agnostic: exactly one published, and it is one of the two candidates.
@@ -1141,13 +1123,11 @@ fn gemfury_concurrent_push_records_landed_target_despite_sibling_failure() {
     );
 }
 
-// -----------------------------------------------------------------------------
 // Push wire shape — assert the POST hits `push_base/<account>` with HTTP Basic
 // auth (push token as username, empty password) and a multipart `package` part.
 // Existing push tests only asserted the OUTCOME; these pin the on-the-wire
 // request so an auth/path regression is caught. Driven via the scripted
 // responder so (method, path, headers, body) are recorded.
-// -----------------------------------------------------------------------------
 
 /// Build a one-deb context wired to the given probe + push responder
 /// addresses, with a resolvable push token AND both responder bases injected
@@ -1251,14 +1231,12 @@ fn gemfury_push_wire_uses_basic_auth_and_account_path() {
     );
 }
 
-// -----------------------------------------------------------------------------
 // Rollback DELETE wire path — `GemFuryPublisher::rollback` decodes evidence and
 // issues `DELETE api_base/<account>/packages/<name>/versions/<version>` with
 // HTTP Basic auth (API token as username). These cover the previously
 // unmeasured `delete_recorded_targets` / `delete_version` branches. The API
 // base is injected via the context's `MapEnvSource` (read through the
 // `api_base_from` injection point), so each test stays hermetic and needs no `#[serial]`.
-// -----------------------------------------------------------------------------
 
 /// A 1-attempt, zero-delay retry policy so a rollback DELETE that 500s gives up
 /// immediately instead of sleeping through the default 10-attempt backoff.

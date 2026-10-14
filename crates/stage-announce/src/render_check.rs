@@ -2,7 +2,7 @@
 //!
 //! Announcers render `{{ ReleaseURL }}`-class templates only after the release
 //! and every publisher have run, so a broken announce template (an undefined
-//! variable, a malformed Tera expression) historically surfaced AFTER an
+//! variable, a malformed Tera expression) historically showed up AFTER an
 //! irreversible publisher (chocolatey/winget moderation, AUR push) had already
 //! fired. [`validate_announce_templates`] closes that window: it renders every
 //! enabled announcer's templates against the real context — with the real /
@@ -182,7 +182,7 @@ mod tests {
         assert!(format!("{err:#}").contains("teams"));
     }
 
-    /// Multiple broken announcers surface in one combined error (no
+    /// Multiple broken announcers are reported in one combined error (no
     /// short-circuit after the first).
     #[test]
     fn all_broken_announcers_are_listed() {
@@ -330,7 +330,7 @@ mod tests {
             .expect("announce.skip=true short-circuits the guard");
     }
 
-    // ---- Config-shape errors fail PRE-publish, across every crate mode ----
+    // Config-shape errors fail PRE-publish, across every crate mode
     //
     // A pure config-shape typo that needs no secret/network (Discourse
     // `category_id: 0`, Email empty `username:` on the SMTP path) must fail at

@@ -3,9 +3,7 @@ use base64::Engine as _;
 
 use crate::provider::Provider;
 
-// ---------------------------------------------------------------------------
 // KMS provider detection and client-side encryption
-// ---------------------------------------------------------------------------
 
 /// Identifies how the KMS key should be used for encryption.
 ///
@@ -42,7 +40,7 @@ pub(crate) fn parse_kms_provider(kms_key: &str) -> KmsProvider {
 /// `awskms://` only makes sense alongside `provider: s3` (AWS CLI signs with
 /// AWS creds), `gcpkms://` alongside `gs`, `azurekeyvault://` alongside
 /// `azblob`. A plain ARN/ID (ServerSide) is only accepted on S3 because GCS
-/// and Azure object_store backends don't surface SSE-KMS through canned
+/// and Azure object_store backends don't expose SSE-KMS through canned
 /// headers. Catching this at config-time prevents a confusing
 /// "AccessDenied"-or-similar failure deep inside the upload phase.
 pub(crate) fn validate_kms_provider_match(
@@ -75,7 +73,7 @@ pub(crate) fn validate_kms_provider_match(
 
 /// Verify the CLI tool needed for `provider`'s client-side encryption is on
 /// PATH. Runs `<tool> --version` (or equivalent) once before fanning out so
-/// missing-CLI failures surface at config-validate time, not deep inside the
+/// missing-CLI failures are reported at config-validate time, not deep inside the
 /// upload phase where the failure shape is opaque.
 pub(crate) fn preflight_kms_cli(provider: KmsProvider) -> Result<()> {
     let tool = match provider {
@@ -434,12 +432,10 @@ mod tests {
         anodizer_core::log::StageLogger::new("blob-test", anodizer_core::log::Verbosity::Normal)
     }
 
-    // -------------------------------------------------------------------
     // validate_kms_provider_match — scheme↔provider compatibility gate.
     // Accepted: S3↔Aws, S3↔ServerSide, Gcs↔Gcp, AzBlob↔Azure. Every other
     // pairing must bail with a message naming the expected scheme so the
-    // misconfig surfaces at config-validate, not deep in the upload phase.
-    // -------------------------------------------------------------------
+    // misconfig is reported at config-validate, not deep in the upload phase.
 
     #[test]
     fn validate_match_accepts_each_native_pairing() {
@@ -466,7 +462,7 @@ mod tests {
     #[test]
     fn validate_match_rejects_serverside_on_non_s3() {
         // Plain ARN (ServerSide) is only honored on S3 — GCS/Azure object_store
-        // backends don't surface SSE-KMS through canned headers.
+        // backends don't expose SSE-KMS through canned headers.
         let err = validate_kms_provider_match(Provider::Gcs, KmsProvider::ServerSide, "plain-key")
             .unwrap_err()
             .to_string();
@@ -501,10 +497,8 @@ mod tests {
         );
     }
 
-    // -------------------------------------------------------------------
     // preflight_kms_cli — ServerSide is a no-op (no CLI needed); a missing
-    // client-side CLI must surface as an error before fan-out.
-    // -------------------------------------------------------------------
+    // client-side CLI must be reported as an error before fan-out.
 
     #[test]
     fn preflight_serverside_is_noop() {
@@ -516,7 +510,7 @@ mod tests {
     #[test]
     fn preflight_errors_when_cli_missing() {
         // A nonexistent binary path exercises the spawn-failure branch
-        // and must surface the "not found on PATH" context. Driven
+        // and must report the "not found on PATH" context. Driven
         // through the binary-path override: replacing the process-wide PATH
         // instead would make every concurrent PATH-resolved spawn in
         // this test binary flaky.
@@ -550,11 +544,9 @@ mod tests {
         );
     }
 
-    // -------------------------------------------------------------------
     // run_kms_cli_with_stdin — central spawn/write/wait helper. Asserts the
     // exact argv reaches the tool, stdin is piped through, stdout is
-    // returned on success, and a nonzero exit surfaces stderr.
-    // -------------------------------------------------------------------
+    // returned on success, and a nonzero exit returns stderr.
 
     #[cfg(unix)]
     #[test]
@@ -610,12 +602,10 @@ mod tests {
         );
     }
 
-    // -------------------------------------------------------------------
     // encrypt_with_kms — per-provider client-side encryption. Each arm
     // strips the scheme, builds the right argv, and decodes the response.
     // Stubs emit canned tool output; the assertions cover the argv AND the
     // decoded ciphertext.
-    // -------------------------------------------------------------------
 
     #[cfg(unix)]
     #[test]
@@ -930,7 +920,7 @@ mod tests {
         );
     }
 
-    // -- test helpers --------------------------------------------------
+    // test helpers
 
     /// Return the argv element immediately following `flag`.
     #[cfg(unix)]

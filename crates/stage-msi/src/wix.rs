@@ -9,9 +9,7 @@ use std::fs;
 
 use anodizer_core::context::Context;
 
-// ---------------------------------------------------------------------------
 // WiX version detection
-// ---------------------------------------------------------------------------
 
 /// WiX toolset version — determines which CLI commands to use.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -92,9 +90,7 @@ impl WixVersion {
     }
 }
 
-// ---------------------------------------------------------------------------
 // MSI command construction
-// ---------------------------------------------------------------------------
 
 /// Construct the WiX CLI commands for building an MSI.
 ///
@@ -202,9 +198,7 @@ pub fn msi_command(
     }
 }
 
-// ---------------------------------------------------------------------------
 // Architecture mapping
-// ---------------------------------------------------------------------------
 
 /// Convert a Go/Rust-style architecture name to the MSI architecture identifier.
 ///
@@ -218,9 +212,7 @@ pub fn map_arch_to_msi(arch: &str) -> &str {
     }
 }
 
-// ---------------------------------------------------------------------------
 // WiX version resolution
-// ---------------------------------------------------------------------------
 
 /// Determine the WiX toolchain version: explicit `version:` config wins,
 /// otherwise sniff the `.wxs` namespace, otherwise probe installed tools.
@@ -264,7 +256,7 @@ pub fn resolve_wix_version_quiet(
     // v3 toolchain is honored (V3 is kept when candle+light are present); an
     // explicit `version: wixl` already resolved to Wixl above and is untouched.
     // Never downgrade V4 — its wxs is incompatible with wixl's v3 dialect, so a
-    // missing v4 toolchain must surface as a real build error, not silent reroute.
+    // missing v4 toolchain must fail as a real build error, not silent reroute.
     if candidate == WixVersion::V3
         && !(anodizer_core::tool_detect::on_path("candle")
             && anodizer_core::tool_detect::on_path("light"))

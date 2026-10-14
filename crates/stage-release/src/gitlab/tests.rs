@@ -1,6 +1,6 @@
 use super::*;
 
-// -- gitlab_project_id ---------------------------------------------------
+// gitlab_project_id
 
 #[test]
 fn project_id_with_owner_and_name() {
@@ -23,7 +23,7 @@ fn project_id_with_nested_group() {
     );
 }
 
-// -- encode_project_id ---------------------------------------------------
+// encode_project_id
 
 #[test]
 fn encode_simple_project_id() {
@@ -47,7 +47,7 @@ fn encode_project_id_no_slash() {
     assert_eq!(encode_project_id("myproject"), "myproject");
 }
 
-// -- encode_tag ---------------------------------------------------------
+// encode_tag
 
 #[test]
 fn encode_tag_simple() {
@@ -66,7 +66,7 @@ fn encode_tag_with_special_chars() {
     assert_eq!(encode_tag("v1 beta#2?rc"), "v1%20beta%232%3Frc");
 }
 
-// -- encode_path_segment -------------------------------------------------
+// encode_path_segment
 
 #[test]
 fn encode_path_segment_simple() {
@@ -83,7 +83,7 @@ fn encode_path_segment_preserves_dots_and_dashes() {
     assert_eq!(encode_path_segment("my-project.v2"), "my-project.v2");
 }
 
-// -- is_pre_v17 (version parsing) ------------------------------------------
+// is_pre_v17 (version parsing)
 
 #[test]
 fn is_pre_v17_with_v16() {
@@ -115,7 +115,7 @@ fn is_pre_v17_with_garbage() {
     assert!(!is_pre_v17("not-a-version"));
 }
 
-// -- gitlab_release_url --------------------------------------------------
+// gitlab_release_url
 
 #[test]
 fn release_url_with_owner() {
@@ -138,7 +138,7 @@ fn release_url_trailing_slash_stripped() {
     assert_eq!(url, "https://gitlab.example.com/org/repo/-/releases/v2.0.0");
 }
 
-// -- build_gitlab_client -------------------------------------------------
+// build_gitlab_client
 
 #[test]
 fn build_client_with_private_token() {
@@ -164,7 +164,7 @@ fn build_client_with_all_options() {
     assert!(client.is_ok());
 }
 
-// -- gitlab_head_asset_size host guard ------------------------------------
+// gitlab_head_asset_size host guard
 
 #[test]
 fn link_host_guard_matches_api_and_download_hosts_only() {
@@ -304,7 +304,7 @@ async fn head_probe_does_not_follow_redirects() {
     );
 }
 
-// -- auth_header ---------------------------------------------------------
+// auth_header
 
 #[test]
 fn auth_header_private_token() {
@@ -316,7 +316,7 @@ fn auth_header_job_token() {
     assert_eq!(auth_header(true), "JOB-TOKEN");
 }
 
-// -- resolve_use_job_token -----------------------------------------------
+// resolve_use_job_token
 // Drives the `CI_JOB_TOKEN`-based branches via injected
 // `MapEnvSource` — no `unsafe set_var`, no env-mutex serialization.
 
@@ -356,7 +356,7 @@ fn resolve_use_job_token_empty_ci_env() {
     assert!(!resolve_use_job_token_with_env(true, "", &env));
 }
 
-// -- gitlab_create_release retry behaviour (P1.4) ------------------------
+// gitlab_create_release retry behaviour (P1.4)
 //
 // Pin: a 503 on the GET-release-by-tag probe must be retried (transient
 // GitLab 5xx), not fast-failed. Mirror the equivalent core::retry test
@@ -535,7 +535,7 @@ async fn gitlab_release_tag_empty_bails_with_actionable_error() {
 #[tokio::test]
 async fn gitlab_release_commit_empty_bails_with_actionable_error() {
     // The create-branch path requires `ref` (commit SHA). Empty `ref`
-    // surfaces as a vague GitLab 400 (`ref is missing`); bail upfront
+    // comes back as a vague GitLab 400 (`ref is missing`); bail upfront
     // so the user sees that `ctx.git_info.commit` was not populated.
     // Use a hermetic responder that 404s the GET probe so the
     // create-branch path is reached without hitting a real GitLab.
@@ -694,7 +694,7 @@ async fn gitlab_upload_asset_replace_existing_422_deletes_and_retries() {
     );
 }
 
-// -- HTTP-flow tests (route-aware) --------------------------------------
+// HTTP-flow tests (route-aware)
 //
 // Where the `spawn_oneshot_http_responder` tests above serve responses in
 // strict arrival order (blind to URL), these point `GitlabCtx.api_url` at a
@@ -702,7 +702,7 @@ async fn gitlab_upload_asset_replace_existing_422_deletes_and_retries() {
 // exact method/path/body of every GET probe, PUT update, POST create,
 // package-registry PUT, project-uploads POST, version probe, link POST,
 // link list, and link DELETE the backend issues against GitLab's
-// `/projects/...` surface. Project IDs encode the namespace slash as
+// `/projects/...` endpoints. Project IDs encode the namespace slash as
 // `%2F` (e.g. `myorg/myproj` -> `myorg%2Fmyproj`); tags keep their dots.
 
 use anodizer_core::test_helpers::scripted_responder::{
@@ -740,7 +740,7 @@ fn http_json(status: &str, body: String) -> &'static str {
         )
 }
 
-// -- gitlab_create_release: create path (release absent) ----------------
+// gitlab_create_release: create path (release absent)
 
 /// A 404 on the GET-release-by-tag probe is the "release does not exist"
 /// signal: the backend falls through to a POST create against the
@@ -903,7 +903,7 @@ async fn create_release_propagates_non_404_probe_error() {
     );
 }
 
-// -- gitlab_create_release: update path (release exists) ----------------
+// gitlab_create_release: update path (release exists)
 
 /// A 200 on the GET probe means the release exists: the backend PUTs the
 /// same `.../releases/{tag}` path with the composed body. `replace` mode
@@ -1081,7 +1081,7 @@ async fn update_release_retries_5xx_on_put() {
     assert_eq!(puts, 2, "503 PUT retried once, then 200");
 }
 
-// -- gitlab_upload_asset: project-uploads (markdown) path ---------------
+// gitlab_upload_asset: project-uploads (markdown) path
 
 /// With `pkg == None`, the file is uploaded via the project Markdown
 /// Uploads endpoint (POST multipart to `.../uploads`), the returned
@@ -1273,7 +1273,7 @@ async fn upload_asset_pre_v17_uses_legacy_filepath_field() {
     );
 }
 
-/// A project-uploads response missing the `full_path` field surfaces an
+/// A project-uploads response missing the `full_path` field returns an
 /// explicit error rather than constructing a broken link URL.
 #[tokio::test]
 async fn upload_asset_project_uploads_missing_full_path_errors() {
@@ -1327,7 +1327,7 @@ async fn upload_asset_project_uploads_missing_full_path_errors() {
     );
 }
 
-// -- gitlab_upload_asset: package-registry path -------------------------
+// gitlab_upload_asset: package-registry path
 
 /// With a `GitlabPackageRegistrySpec`, the file is PUT to the Generic
 /// Package Registry under `.../packages/generic/{project}/{version}/{file}`
@@ -1499,10 +1499,10 @@ async fn upload_asset_package_registry_retries_5xx_on_put() {
     assert_eq!(puts, 2, "503 registry PUT retried once, then 201");
 }
 
-// -- gitlab_upload_asset: link-creation error handling ------------------
+// gitlab_upload_asset: link-creation error handling
 
 /// A link POST that returns a non-success status with `replace_existing`
-/// FALSE bails immediately (no list/delete/retry) and surfaces the asset
+/// FALSE bails immediately (no list/delete/retry) and reports the asset
 /// name + status in the error.
 #[tokio::test]
 async fn upload_asset_link_conflict_without_replace_bails() {
@@ -2565,7 +2565,7 @@ async fn a_failed_version_probe_is_not_cached() {
     );
 }
 
-// -- detect_pre_v17_gitlab_with_env -------------------------------------
+// detect_pre_v17_gitlab_with_env
 
 /// The `CI_SERVER_VERSION` env var short-circuits the version detection:
 /// no `/version` HTTP call is made when the env reports a version.
@@ -2667,7 +2667,7 @@ async fn detect_pre_v17_unparseable_version_field_has_no_answer() {
     assert_eq!(entries.len(), 1, "exactly one /version GET was issued");
 }
 
-// -- gitlab_create_release: POST create error closure -------------------
+// gitlab_create_release: POST create error closure
 
 /// A 404 GET probe routes to the create POST; when that POST returns a
 /// 4xx the create-error closure formats the failing message (asset of
@@ -2724,7 +2724,7 @@ async fn create_release_post_4xx_surfaces_error() {
     assert_eq!(posts, 1, "a 4xx create POST fast-fails (no retry)");
 }
 
-// -- gitlab_upload_asset: project-uploads POST error closure ------------
+// gitlab_upload_asset: project-uploads POST error closure
 
 /// A 4xx on the project-uploads POST formats the multipart-upload error
 /// closure (asset of line range 713-724): the error names the failing
@@ -2786,7 +2786,7 @@ async fn upload_asset_project_uploads_4xx_surfaces_error() {
     );
 }
 
-// -- gitlab_upload_asset: replace path — list-links failure -------------
+// gitlab_upload_asset: replace path — list-links failure
 
 /// When the link POST 422s and `replace_existing` is true, the backend
 /// lists existing links; if that list GET fails (4xx), the list-error
@@ -2880,7 +2880,7 @@ async fn upload_asset_replace_list_links_failure_bails_with_original_status() {
     );
 }
 
-// -- run_gitlab_backend orchestration -----------------------------------
+// run_gitlab_backend orchestration
 //
 // These drive the production orchestrator (token resolution, URL
 // resolution, create-release, parallel upload loop, html_url

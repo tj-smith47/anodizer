@@ -5,7 +5,7 @@ use std::path::Path;
 use std::process::Command;
 
 // NTSTATUS process-creation failure codes (as the i32 `ExitStatus::code()`
-// surfaces them on Windows). Windows GitHub runners intermittently fail to
+// reports them on Windows). Windows GitHub runners intermittently fail to
 // *create* a child process under heavy parallel nextest load — desktop-heap /
 // handle pressure makes the loader abort before the program's first
 // instruction. The OS reports this as one of these NTSTATUS values, never as a

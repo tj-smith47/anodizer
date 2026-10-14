@@ -11,7 +11,7 @@
 //! "Submitter group, no-rollback" contract for chocolatey: record
 //! `(crate_name, package_id, version)` tuples in
 //! [`anodizer_core::PublishEvidence::extra`] so a `anodizer tag rollback`
-//! invocation can surface the exact package page the operator needs to
+//! invocation can report the exact package page the operator needs to
 //! address manually. The `rollback` method itself is warn-only and does
 //! not call out to the gallery.
 //!
@@ -294,7 +294,7 @@ impl anodizer_core::Publisher for ChocolateyPublisher {
                 }
                 // Exists-without-hash and absent both route to run(), whose
                 // conservative push path lets the registry's own conflict
-                // handling backstop. A probe failure surfaces as Absent from
+                // handling backstop. A probe failure shows up as Absent from
                 // the feed helper — same fail-safe-toward-publishing shape.
                 FeedHashResult::PresentNoHash | FeedHashResult::Absent => {
                     return Ok(ReconcileState::Absent);
@@ -406,7 +406,7 @@ impl anodizer_core::Publisher for ChocolateyPublisher {
             ));
             return Ok(());
         }
-        // Chocolatey has no programmatic withdraw endpoint. Surface a
+        // Chocolatey has no programmatic withdraw endpoint. Report a
         // warn per recorded target with the exact gallery URL the
         // operator needs to address. This is intentionally NOT an
         // error: a failed automated rollback should not gate the rest
@@ -817,7 +817,7 @@ mod publisher_tests {
 
     /// The DEFAULT chocolatey config is OPTIONAL (`required()==false`). A
     /// definitive 403 (key rejected) must therefore WARN, not Blocker — an
-    /// optional surface never aborts the whole release pre-tag. The severity now
+    /// optional publisher never aborts the whole release pre-tag. The severity now
     /// routes through `FailSeverity::for_required` like every sibling publisher.
     #[test]
     fn chocolatey_preflight_optional_warns_when_key_rejected() {
@@ -851,7 +851,7 @@ mod publisher_tests {
     }
 
     /// An OPTIONAL choco entry with no resolvable key ⇒ Warning (the push would
-    /// no-op/skip; do not abort the release for an optional surface).
+    /// no-op/skip; do not abort the release for an optional publisher).
     #[test]
     fn chocolatey_preflight_optional_warns_when_key_missing() {
         let ctx = TestContextBuilder::new()
@@ -922,7 +922,7 @@ mod publisher_tests {
     #[test]
     fn chocolatey_preflight_passes_when_skip_truthy() {
         // skip:true ⇒ inactive entry ⇒ Pass with no probe (the source points at
-        // a closed port that would otherwise surface as unreachable).
+        // a closed port that would otherwise show up as unreachable).
         let mut crate_cfg = choco_crate_src("demo", "http://127.0.0.1:1/");
         if let Some(ch) = crate_cfg
             .publish
@@ -1150,7 +1150,7 @@ mod publisher_tests {
         assert!(msg.starts_with("chocolatey publisher registered"), "{msg}");
         assert!(msg.contains("0 of 5 effective"), "{msg}");
         assert!(msg.contains("nothing pushed"), "{msg}");
-        // The warning must point the operator at the remediation surface
+        // The warning must point the operator at the remediation flags
         // (--crate / --all selection) — otherwise it's noise.
         assert!(msg.contains("--crate"), "{msg}");
         assert!(msg.contains("--all"), "{msg}");

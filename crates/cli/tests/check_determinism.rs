@@ -1,6 +1,6 @@
 //! Integration tests for `anodizer check determinism`.
 //!
-//! The fast tests below cover the CLI surface and the harness error
+//! The fast tests below cover the CLI flags and the harness error
 //! paths that don't require a real `cargo build`. The drift-injection
 //! integration test (`inject_drift_archive_reports_drift_on_minimal_workspace`)
 //! synthesizes a minimal cargo workspace and exercises the full
@@ -42,7 +42,7 @@ use tempfile::TempDir;
 
 /// `anodizer check determinism --help` must list every flag from the
 /// spec (`--runs`, `--stages`, `--report`, `--snapshot`). A regression
-/// in clap surface drops this signal silently otherwise.
+/// in the clap flags drops this signal silently otherwise.
 #[test]
 fn check_determinism_help_lists_every_flag() {
     let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
@@ -128,7 +128,7 @@ fn check_determinism_respects_report_flag_in_error_path() {
 
 /// `--inject-drift=<stage>` is a hidden test-harness flag — it must be
 /// rejected when `ANODIZE_TEST_HARNESS=1` is not set. This guards the
-/// production-release surface: an operator who accidentally types the
+/// production-release path: an operator who accidentally types the
 /// flag gets a hard error rather than silent test-mode behaviour.
 #[test]
 fn inject_drift_rejected_without_test_harness_env() {
@@ -161,7 +161,7 @@ fn inject_drift_rejected_without_test_harness_env() {
 
 /// `--inject-drift=<stage>` is hidden from `--help` output. This
 /// asserts the `hide = true` clap attribute is intact so a future
-/// review can't accidentally promote the flag into the public surface.
+/// review can't accidentally promote the flag into the public CLI.
 #[test]
 fn inject_drift_hidden_from_help() {
     let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
@@ -312,7 +312,7 @@ fn inject_drift_archive_reports_drift_on_minimal_workspace() {
 /// The env-preflight-skip logic under test is OS-agnostic, so Linux coverage is
 /// sufficient. `nfpm` is provisioned on the Linux test/coverage CI jobs; if it
 /// is ever absent the determinism gate hard-fails this test (never silently
-/// skips), surfacing the missing tool.
+/// skips), reporting the missing tool.
 #[cfg(target_os = "linux")]
 #[test]
 fn harness_skips_env_preflight_and_prints_header_and_config_warnings_once() {
@@ -429,7 +429,7 @@ fn harness_skips_env_preflight_and_prints_header_and_config_warnings_once() {
     );
 
     // The submitter moderation-queue advisory is verbose-only; this run uses
-    // the default log level, so it must not surface for either submitter.
+    // the default log level, so it must not appear for either submitter.
     for publisher in ["chocolatey", "winget"] {
         let needle = format!("publisher '{publisher}' submits to an external moderation queue");
         let count = stderr.matches(needle.as_str()).count();
@@ -441,7 +441,7 @@ fn harness_skips_env_preflight_and_prints_header_and_config_warnings_once() {
     }
 }
 
-/// The dispatcher must surface a crate-universe name collision (same crate
+/// The dispatcher must report a crate-universe name collision (same crate
 /// name at two different paths) as a warning BEFORE the harness runs: the
 /// harness resolves stages/producers through the deduped universe, which
 /// silently drops the shadowed entry — without the warning, an operator's

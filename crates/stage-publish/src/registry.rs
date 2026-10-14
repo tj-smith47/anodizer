@@ -294,7 +294,7 @@ pub fn configured_publishers(ctx: &Context) -> Vec<Box<dyn Publisher>> {
 /// decides membership, exactly as the publish dispatch loop decides it.
 ///
 /// [`configured_publishers`] answers a different question ("which publishers
-/// does the CONFIG declare?"). Any surface that instead asks "which publishers
+/// does the CONFIG declare?"). Any command that instead asks "which publishers
 /// does THIS run touch?" must read this list: a network probe of a deselected
 /// publisher reports on a registry the run will never write to, and its
 /// verdict can only produce false gates.
@@ -633,7 +633,7 @@ pub const fn group_dispatch_order() -> [PublisherGroup; 3] {
     ]
 }
 
-/// Publish surfaces that fire an external, irreversible publish from a
+/// Publishers that fire an external, irreversible publish from a
 /// PIPELINE STAGE rather than the trait-based dispatch chokepoint, keyed by
 /// the stage's [`anodizer_core::stage::Stage::name`] token.
 ///
@@ -888,7 +888,7 @@ mod tests {
 
     /// The selection chokepoint: `--publishers` (allowlist) and `--skip`
     /// (denylist) both narrow the configured set, through the same predicate
-    /// the publish loop consults. A surface that probes the WIDE set reports on
+    /// the publish loop consults. A command that probes the WIDE set reports on
     /// registries the run will never write to.
     #[test]
     fn selected_publishers_drops_deselected_publishers() {
@@ -1509,9 +1509,7 @@ mod tests {
         }
     }
 
-    // -------------------------------------------------------------------------
     // required-override tests
-    // -------------------------------------------------------------------------
 
     #[test]
     fn config_required_override_honored_homebrew() {

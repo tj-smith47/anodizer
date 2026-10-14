@@ -40,7 +40,7 @@
 //! tests redirect to `http://127.0.0.1:<port>`. There is no HTTPS
 //! variant of this helper; if a test needs TLS termination, use
 //! [`crate::test_helpers::https_responder::spawn_oneshot_https_responder`]
-//! instead — but the route-matching surface is intentionally limited to
+//! instead — but the route matching is intentionally limited to
 //! the simpler case.
 //!
 //! ## Example
@@ -279,7 +279,7 @@ fn serve_one(mut stream: TcpStream, entries: &[RouteEntry], log: &Mutex<Vec<Requ
     // Force `Connection: close`: the responder serves exactly one response
     // per connection and then `shutdown`s the socket, so a client (hyper's
     // pool) that keeps the connection alive will reuse an already-closed
-    // socket on its next request and surface `connection closed before
+    // socket on its next request and report `connection closed before
     // message completed`. Advertising `close` makes the client open a fresh
     // connection each time, eliminating that reuse race regardless of how
     // many sequential requests a single test drives.

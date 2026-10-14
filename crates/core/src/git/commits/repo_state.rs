@@ -349,7 +349,7 @@ pub fn stage_and_commit_in(cwd: &Path, files: &[&str], message: &str) -> Result<
     // Idempotency guard: `git add` happily stages nothing when the working
     // tree already matches HEAD for the given paths. Running `git commit`
     // after would fail with "nothing to commit" (printed to stdout, not
-    // stderr) and surface a confusing empty-stderr error. Detect the
+    // stderr) and report a confusing empty-stderr error. Detect the
     // no-diff case here so callers can re-run safely.
     let diff = crate::git::git_command()
         .current_dir(cwd)

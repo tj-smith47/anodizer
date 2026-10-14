@@ -3,7 +3,7 @@ use std::fmt;
 use std::time::Duration;
 
 /// Names the operation a retry engine is driving and carries the logger that
-/// surfaces per-attempt failures.
+/// reports per-attempt failures.
 ///
 /// A required parameter on every retry engine — not an optional builder — so
 /// a silent retry is unrepresentable: a backoff ladder can sleep for many
@@ -88,7 +88,7 @@ pub struct RetryPolicy {
     /// every construction path is safe:
     ///
     /// 1. [`crate::config::RetryConfig::to_policy`] clamps user YAML
-    ///    (`attempts: 0` -> `1`) at the config-surface boundary.
+    ///    (`attempts: 0` -> `1`) at the config boundary.
     /// 2. `retry_sync` / `retry_async` clamp again at the loop boundary
     ///    to protect direct `RetryPolicy { max_attempts: 0, .. }`
     ///    constructions (e.g. test fixtures).
@@ -222,7 +222,7 @@ pub const DEFAULT_MAX_ELAPSED: Duration = Duration::from_secs(15 * 60);
 /// independent per-stage retry loops — several of which sleep via an injected
 /// callback that has no path to carry a handle. Parallel upload workers add
 /// concurrently through the atomic. Read once at summary time via
-/// [`total_retry_backoff`]; the run surfaces it as a `retry_backoff_secs`
+/// [`total_retry_backoff`]; the run reports it as a `retry_backoff_secs`
 /// field and an operator status line.
 static RETRY_BACKOFF_MILLIS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 

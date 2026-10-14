@@ -242,7 +242,7 @@ pub const PER_ARTIFACT_VARS: &[&str] = &["ArtifactName", "ArtifactExt", "Artifac
 
 /// Clear both `PER_TARGET_VARS` and `PER_ARTIFACT_VARS` on exit from a
 /// per-artifact loop. Mirrors `clear_per_target_vars` but covers the larger
-/// surface that sbom/sign/checksum loops touch — preventing the "stale
+/// set of vars that sbom/sign/checksum loops touch — preventing the "stale
 /// ArtifactName from sbom run leaking into announce" class of bug.
 pub fn clear_per_artifact_vars(tv: &mut TemplateVars) {
     clear_per_target_vars(tv);

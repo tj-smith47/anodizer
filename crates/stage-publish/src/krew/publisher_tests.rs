@@ -298,7 +298,6 @@ fn krew_collect_run_targets_honors_pull_request_base_override() {
     assert_eq!(target.upstream_repo, "custom-index");
 }
 
-// -----------------------------------------------------------------------
 // Log-message helpers — the operator-facing log strings the publisher
 // emits at each boundary.
 
@@ -678,9 +677,7 @@ fn requirements_declare_git_and_krew_token_for_active_config() {
     );
 }
 
-// -----------------------------------------------------------------------------
 // Rollback close-PR flow driven end-to-end over a loopback GitHub-API responder
-// -----------------------------------------------------------------------------
 //
 // `KrewPublisher::rollback` calls the NON-`_with_env` github_pr wrappers, which
 // read the API base from the PROCESS env, so these tests set

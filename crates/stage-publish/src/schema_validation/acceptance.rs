@@ -318,7 +318,7 @@ fn one_malformed_option_fails_loud_naming_publisher_and_field() {
 /// `homebrew`. A deselected publisher never dispatches, so the guard must not
 /// validate its artifacts — the pass returns `Ok(())` despite the malformed
 /// winget option (and the selected homebrew still validates clean), instead of
-/// blocking a scoped publish on out-of-surface config.
+/// blocking a scoped publish on out-of-scope config.
 #[test]
 fn deselected_publisher_is_not_validated() {
     let mut ctx = TestContextBuilder::new()

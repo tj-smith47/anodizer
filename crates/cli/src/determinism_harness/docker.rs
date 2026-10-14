@@ -16,7 +16,7 @@ impl Harness {
     /// with the config's `build_args`. Each emitted OCI tarball is copied to
     /// `<worktree>/dist/docker/<idx>/image.oci.tar` (per-config subdir so
     /// multiple images don't collide) where the existing [`discover_artifacts`]
-    /// walker picks it up under the normal `dist/` surface.
+    /// walker picks it up under the normal `dist/` tree.
     ///
     /// The configured dockerfile is the SAME one the production `docker` stage
     /// builds — never a hardcoded repo-root `Dockerfile`. A project with a thin
@@ -91,7 +91,7 @@ impl Harness {
         // covers a binary they will never actually publish.
         // These warnings go through the harness logger so `-q` governs
         // them like every other harness line; the docker-buildx child's
-        // own output below is captured by `run_checked` and surfaced only
+        // own output below is captured by `run_checked` and shown only
         // at `-v` (or on failure), so it honours the same verbosity flag.
         if self.docker_backend_hint.as_deref() == Some("podman") {
             let msg = "docker stage requested but project config has `use: podman` \
@@ -214,7 +214,7 @@ impl Harness {
         std::fs::create_dir_all(&dest_dir)
             .with_context(|| format!("creating dest dir {}", dest_dir.display()))?;
         // Rename to a stable filename so the artifact-discovery walker
-        // surfaces a single canonical row regardless of where buildx
+        // reports a single canonical row regardless of where buildx
         // emitted the tarball under the worktree.
         let target = dest_dir.join("image.oci.tar");
         std::fs::copy(&output.oci_tar_path, &target).with_context(|| {

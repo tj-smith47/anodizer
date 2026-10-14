@@ -1,9 +1,7 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Deserializer, Serialize};
 
-// ---------------------------------------------------------------------------
 // VersionFileEntry — accepts a bare path OR a path scoped by a `match` anchor
-// ---------------------------------------------------------------------------
 
 /// One `version_files` enrollment.
 ///

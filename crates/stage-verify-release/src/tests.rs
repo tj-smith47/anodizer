@@ -215,9 +215,9 @@ fn skip_flag_is_noop() {
 
 #[test]
 fn github_release_deselected_skips_asset_check_without_stamping() {
-    // github-release out of the `--publishers` surface (e.g. `--publishers npm`)
+    // github-release out of the `--publishers` selection (e.g. `--publishers npm`)
     // means no published release was touched, so the asset check is out of the
-    // selected surface. The stage itself still runs (npm is a landing-check
+    // selected publishers. The stage itself still runs (npm is a landing-check
     // consumer), but with no publish report recorded nothing is probed — and a
     // run that verified NOTHING must not stamp a passing verdict.
     let mut ctx = TestContextBuilder::new()
@@ -241,7 +241,7 @@ fn github_release_deselected_skips_asset_check_without_stamping() {
 
 #[test]
 fn all_consumers_deselected_self_skips() {
-    // Every verifiable publisher out of the selected surface => the stage
+    // Every verifiable publisher out of the selection => the stage
     // short-circuits entirely — the same consumer-aware self-skip `signs:`
     // performs.
     let mut ctx = TestContextBuilder::new()
@@ -268,7 +268,7 @@ fn os_package_axes_gated_to_os_package_publishers() {
     // The OS-package verify axes — install-smoke AND libc-ceiling — both verify
     // produced `.deb`/`.rpm`/`.apk` artifacts, so their scope is the set of
     // publishers that DELIVER those packages. npm ships no OS package, so a
-    // `--publishers npm` surface leaves both axes OUT of scope — otherwise the
+    // `--publishers npm` selection leaves both axes OUT of scope — otherwise the
     // hosted npm job re-runs the cross-arch matrix and exec-format-errors on an
     // arm64 package on an x86_64 runner without qemu/binfmt.
     for p in ["npm", "cargo", "winget", "homebrew"] {
@@ -343,7 +343,7 @@ fn custom_exec_publisher_surface_keeps_os_package_axes_in_scope() {
     );
 
     // Explicitly filtering the entry to non-package artifact types drops it
-    // from the OS-package surface.
+    // from the OS-package set.
     ctx.config.publishers = Some(vec![anodizer_core::config::PublisherConfig {
         name: Some("mypub".to_string()),
         cmd: "true".to_string(),
@@ -422,7 +422,7 @@ fn custom_exec_publisher_only_surface_runs_libc_axis_end_to_end() {
 #[test]
 fn npm_surface_skips_smoke_without_stamping() {
     // End-to-end: install_smoke configured and an arm64 .deb present, but the
-    // selected surface is npm-only. The stage must NOT attempt the smoke matrix
+    // selected publishers are npm-only. The stage must NOT attempt the smoke matrix
     // (which would fail on a runner without qemu/binfmt) and, with no other
     // check in scope, must not stamp a verdict.
     let mut ctx = TestContextBuilder::new()
@@ -454,7 +454,7 @@ fn npm_surface_skips_smoke_without_stamping() {
 #[test]
 fn npm_surface_skips_libc_ceiling_without_stamping() {
     // End-to-end companion to the smoke test: a glibc ceiling is configured and
-    // an OS package is present, but the selected surface is npm-only. The
+    // an OS package is present, but the selected publishers are npm-only. The
     // libc-ceiling axis inspects `.deb`/`.rpm`/`.apk` symbols, so with no
     // OS-package publisher selected it must be skipped, and — as the only
     // configured check — must not stamp a verdict.
@@ -489,7 +489,7 @@ fn libc_ceiling_over_zero_packages_stamps_no_verdict() {
     // The vacuous-green guard: an OS-package publisher IS selected (blob), so
     // the libc axis is in scope, and a ceiling is configured — but the run
     // produced zero `.deb`s, so the axis inspects nothing. github-release is
-    // NOT selected (blob-only surface), so the asset check is also out of
+    // NOT selected (blob-only selection), so the asset check is also out of
     // scope. With no axis having actually examined an artifact, the stage must
     // record NO verdict rather than fabricate a passing "verified" off a check
     // that ran over an empty package set.
@@ -676,13 +676,11 @@ fn multi_crate_iteration_covers_all_published_crates() {
     assert!(VerifyReleaseStage.run(&mut ctx).is_ok());
 }
 
-// ===========================================================================
 // Asset-existence — the network half of the gate, driven against an
 // in-process scripted GitHub responder. The published_crate fixture targets
 // release.github { owner: me, name: repo }; with the default GitHub token type
 // `find_release_by_tag` issues GET /repos/me/repo/releases/tags/<tag>. Pointing
 // `github_urls.api` at the loopback routes every octocrab call there.
-// ===========================================================================
 
 /// A `200 OK` JSON HTTP response with a correct `Content-Length`. Leaked to
 /// satisfy the responder's `&'static str` contract (test-only).
@@ -1065,13 +1063,11 @@ fn multi_crate_asset_check_bails_naming_the_offending_crate() {
     );
 }
 
-// ===========================================================================
 // libc-ceiling — the local-file half (check_one_package_libc /
 // extract_package_main_elf
 // / linux_packages). Synthetic .deb files are built on disk in a tempdir and
 // the stage drives the real ELF extraction + glibc compare. assert_assets is
 // turned OFF so these tests exercise only the libc path with no network.
-// ===========================================================================
 
 /// Build a tar archive in memory from `(path, bytes)` members.
 fn make_tar(members: &[(&str, &[u8])]) -> Vec<u8> {
@@ -1460,7 +1456,7 @@ fn libc_check_off_does_not_inspect_debs() {
 #[test]
 fn linux_packages_resolves_absolute_path_and_basename() {
     // linux_packages canonicalizes the registered path (so the smoke-test's
-    // bind-mount gets an absolute host path) and surfaces the basename. A
+    // bind-mount gets an absolute host path) and returns the basename. A
     // relative registered path must come back absolute.
     let tmp = tempfile::TempDir::new().expect("tempdir");
     let deb = make_deb(&gz(&make_tar(&[("usr/bin/app", &minimal_elf32_le())])));
@@ -1490,7 +1486,7 @@ fn linux_packages_resolves_absolute_path_and_basename() {
         "packages are isolated per crate"
     );
 
-    // A target-built package surfaces its triple so the smoke-test can pin
+    // A target-built package reports its triple so the smoke-test can pin
     // the container platform to the package's architecture.
     ctx.artifacts.add(Artifact {
         kind: ArtifactKind::LinuxPackage,
@@ -1593,9 +1589,7 @@ fn extract_package_main_elf_on_undecodable_apk_is_none_not_error() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // Config-derived signature/SBOM expectations (the v0.8.0 gap)
-// ---------------------------------------------------------------------------
 
 /// The repo's own `signs:` shape — gpg over checksum artifacts, gated on the
 /// release-mode condition that silently mis-evaluated in v0.8.0.
@@ -1870,9 +1864,7 @@ fn sbom_expectations_fail_when_configured_sboms_never_uploaded() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // v0.8.0 mirror — the live failure, reproduced byte-for-byte
-// ---------------------------------------------------------------------------
 
 /// The COMPLETE asset list of the real published v0.8.0 release (fetched via
 /// `gh release view v0.8.0 --json assets` on 2026-06-11). Zero signature
@@ -2189,9 +2181,7 @@ fn gate_demands_sig_of_subjectless_sbom_under_release_ids() {
     );
 }
 
-// ===========================================================================
 // Asset content (size/digest) — stage-level, via loopback responder
-// ===========================================================================
 
 /// Register an artifact backed by a REAL on-disk file so the content check
 /// has local bytes to compare.
@@ -2808,9 +2798,7 @@ fn content_check_does_not_exempt_non_signature_asset_with_signature_like_suffix(
     );
 }
 
-// ===========================================================================
 // Publisher landing checks — stage-level wiring (real npm HTTP probe)
-// ===========================================================================
 
 /// Publish report with a single succeeded npm publish whose registry points
 /// at the loopback responder.
@@ -2946,9 +2934,7 @@ fn npm_landing_missing_version_bails_naming_the_package() {
     assert!(msg.contains(PUBLISHED_NOTE), "{msg}");
 }
 
-// ===========================================================================
 // run_asset_gate — the pre-submitter gate installed into `ctx.verify_gate`
-// ===========================================================================
 
 #[test]
 fn run_asset_gate_passes_when_every_produced_asset_is_published() {
@@ -3037,7 +3023,7 @@ fn run_asset_gate_submitter_only_exempts_combined_checksum_byte_mismatch() {
     // deselected) recomputes the combined checksums.txt WITHOUT the docker
     // publish-time digest lines the uploading leg folded in at upload time,
     // so its local bytes legitimately differ from the published asset's.
-    // That surface difference must NOT block the registry submitters.
+    // That selection difference must NOT block the registry submitters.
     // Published size is 1 B (release_json_with_assets); the local file is
     // larger — a guaranteed size mismatch under a cross-leg byte comparison.
     let (addr, _log) = spawn_release_route(&["app.tar.gz", "app_checksums.txt"]);
@@ -3123,7 +3109,7 @@ fn run_asset_gate_submitter_only_still_blocks_missing_combined_checksum() {
 fn run_asset_gate_full_leg_still_blocks_combined_checksum_mismatch() {
     // In the leg that itself uploads the assets (github-release selected),
     // the combined checksum bytes MUST match — a mismatch there is real
-    // corruption (or a broken refresh), never a surface difference.
+    // corruption (or a broken refresh), never a selection difference.
     let (addr, _log) = spawn_release_route(&["app.tar.gz", "app_checksums.txt"]);
     let dir = tempfile::tempdir().expect("tempdir");
     let mut ctx = asset_ctx(addr, vec![published_crate("app", None)]);
@@ -3438,7 +3424,7 @@ mod signature_crypto_verification {
     fn cross_leg_combined_checksum_and_its_signature_are_exempted() {
         // Cross-leg (assets uploaded by an earlier leg): the combined
         // checksum manifest's bytes and its signature's cryptographic
-        // re-check are both surface-dependent — the published manifest folds
+        // re-check are both selection-dependent — the published manifest folds
         // in the uploading leg's docker publish digests, and its published
         // signature signs THOSE bytes, not this leg's recomputed manifest.
         // A failing verifier stub proves the crypto check would have
@@ -3494,7 +3480,7 @@ mod signature_crypto_verification {
         ];
 
         // Same-leg control: the byte mismatch (local 17 B vs published
-        // 5768 B) AND the failing verifier must both surface as issues.
+        // 5768 B) AND the failing verifier must both be reported as issues.
         let crate_cfg = published_crate("app", None);
         let release_cfg = crate_cfg.release.clone().expect("release block");
         let log = ctx.logger("verify-release");
@@ -3739,7 +3725,7 @@ mod signature_crypto_verification {
     fn dynamic_tail_signature_failure_reaches_the_contents_gate() {
         // A signature name issued from a dynamic-tail template has no static
         // suffix, so classification rides on its ArtifactKind — and an
-        // invalid such signature must still surface as an issue.
+        // invalid such signature must still be reported as an issue.
         let tmp = tempfile::tempdir().expect("tempdir");
         let stub = write_script(
             tmp.path(),

@@ -3,9 +3,7 @@ use std::collections::BTreeMap;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-// ---------------------------------------------------------------------------
 // BinstallConfig
-// ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
@@ -54,9 +52,7 @@ pub struct BinstallConfig {
     pub overrides: Option<BTreeMap<String, BinstallOverride>>,
 }
 
-// ---------------------------------------------------------------------------
 // BinstallOverride
-// ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default, deny_unknown_fields)]

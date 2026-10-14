@@ -18,7 +18,7 @@
 //! that runs inside the harness loop. Preserve-dist is end-of-loop work
 //! with a different lifecycle (one-shot, runs only on the
 //! passing-run-with-flag-set path). Keeping the two concerns split keeps
-//! `artifacts.rs` focused and makes the preserve-dist surface easier to
+//! `artifacts.rs` focused and makes the preserve-dist code easier to
 //! reason about as an integration boundary with the publish-only path.
 
 use anodizer_core::DeterminismReport;
@@ -174,7 +174,7 @@ pub(super) fn preserve_dist_tree(worktree_path: &Path, dest: &Path) -> Result<()
     guard_preserve_dest(dest)?;
     // Clear dest first — defends against a prior aborted preservation
     // attempt that left partial bytes behind. Tolerate NotFound
-    // (first-run, dest doesn't exist yet) but surface every other
+    // (first-run, dest doesn't exist yet) but report every other
     // error so a permissions/IO failure isn't silently masked into a
     // "preserved tree mingles bytes from two runs" footgun.
     match std::fs::remove_dir_all(dest) {
@@ -268,9 +268,9 @@ pub(crate) const PRESERVED_BIN_SUBDIR: &str = "_preserved-bin";
 /// Idempotent / tolerant on inputs (missing artifacts.json, missing
 /// `target` field, or absent source file degrade to a no-op rather
 /// than aborting the preserve) — the publish-only path validates
-/// rehydrated artifacts and surfaces a more actionable error if a
+/// rehydrated artifacts and reports a more actionable error if a
 /// gap was tolerated here. The collision guard is the one hard error
-/// because there is no actionable downstream surface for it.
+/// because there is no actionable downstream check for it.
 ///
 /// Atomic-rename caveat: the staged `.json.tmp` -> `artifacts.json`
 /// rename assumes the harness owns the dist tree exclusively during
@@ -683,7 +683,7 @@ fn collect_preserved_entries(
             (hash.clone(), row.size_bytes)
         } else {
             // Fall back to a fresh hash — file is present in the
-            // preserved tree but wasn't surfaced by the harness's
+            // preserved tree but wasn't found by the harness's
             // discover walk (or had drifted/missing hash). Better to
             // ship a complete manifest than skip the entry.
             hash_file_streaming(&path)?

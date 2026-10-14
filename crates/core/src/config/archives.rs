@@ -7,9 +7,7 @@ use super::{
     ArchiveHooksConfig, SignConfig, StringOrBool, StringOrU32, deserialize_string_or_bool_opt,
 };
 
-// ---------------------------------------------------------------------------
 // ArchivesConfig — untagged enum: false => Disabled, array => Configs
-// ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, JsonSchema)]
 pub enum ArchivesConfig {
@@ -137,7 +135,7 @@ where
 // serde-typed enum) because `SignConfig` is shared with the top-level `signs:`
 // field, which legitimately accepts a wider set (`all`, `archive`, `binary`,
 // `checksum`, `package`, `sbom`, `none`). Promoting `artifacts` to an enum
-// would either narrow that surface or require a parallel `BinarySignConfig`
+// would either narrow that field or require a parallel `BinarySignConfig`
 // type duplicating every `SignConfig` field — the runtime check below keeps
 // `SignConfig` a single shared shape while still rejecting misconfigured
 // `binary_signs` entries at config-load time.
@@ -171,9 +169,7 @@ where
     Ok(configs)
 }
 
-// ---------------------------------------------------------------------------
 // WrapInDirectory – accepts bool (true = default dir name) or string
-// ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
 #[serde(untagged)]
@@ -226,9 +222,7 @@ impl WrapInDirectory {
     }
 }
 
-// ---------------------------------------------------------------------------
 // ArchiveConfig
-// ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Default, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -522,9 +516,7 @@ pub const VALID_ARCHIVE_FORMATS: &[&str] = &[
     "none",
 ];
 
-// ---------------------------------------------------------------------------
 // ChecksumConfig
-// ---------------------------------------------------------------------------
 
 /// Specifies an extra file to include in checksums or release uploads. Can be a
 /// simple glob string or a detailed object with glob and name_template fields.
@@ -702,9 +694,7 @@ impl ChecksumConfig {
     }
 }
 
-// ---------------------------------------------------------------------------
 // ContentSource — inline string, from_file, or from_url
-// ---------------------------------------------------------------------------
 
 /// A content source that can be an inline string, read from a file, or fetched
 /// from a URL. Used for release header/footer values.
@@ -864,7 +854,7 @@ mod tests {
         );
     }
 
-    // --- WrapInDirectory ---------------------------------------------------
+    // WrapInDirectory
 
     #[test]
     fn wrap_in_directory_reads_an_unquoted_one_or_zero_as_a_bool() {
@@ -935,7 +925,7 @@ mod tests {
         assert!(r.is_err());
     }
 
-    // --- parse_octal_mode --------------------------------------------------
+    // parse_octal_mode
 
     #[test]
     fn parse_octal_mode_accepts_common_forms() {
@@ -956,7 +946,7 @@ mod tests {
         assert_eq!(parse_octal_mode("garbage"), None);
     }
 
-    // --- ChecksumConfig::resolve_combined_name_template (static precedence) --
+    // ChecksumConfig::resolve_combined_name_template (static precedence)
 
     #[test]
     fn resolve_combined_name_template_prefers_crate_then_global_then_default() {
@@ -986,7 +976,7 @@ mod tests {
         );
     }
 
-    // --- ChecksumSplitFormat ----------------------------------------------
+    // ChecksumSplitFormat
 
     #[test]
     fn checksum_split_format_defaults_to_bare() {
@@ -1006,7 +996,7 @@ mod tests {
         assert!(serde_yaml_ng::from_str::<ChecksumSplitFormat>("Coreutils").is_err());
     }
 
-    // --- ExtraFileSpec::allow_empty ---------------------------------------
+    // ExtraFileSpec::allow_empty
 
     #[test]
     fn extra_file_spec_allow_empty_only_true_for_detailed_opt_in() {
@@ -1023,7 +1013,7 @@ mod tests {
         assert!(!default_off.allow_empty());
     }
 
-    // --- ArchiveFileSpec PartialEq<&str> ----------------------------------
+    // ArchiveFileSpec PartialEq<&str>
 
     #[test]
     fn archive_file_spec_str_eq_matches_glob_only() {
@@ -1039,7 +1029,7 @@ mod tests {
         assert!(detailed != "README.md");
     }
 
-    // --- ArchiveConfig deprecation folds ----------------------------------
+    // ArchiveConfig deprecation folds
 
     #[test]
     fn archive_config_folds_singular_format_into_formats() {
@@ -1074,7 +1064,7 @@ mod tests {
         assert_eq!(o.formats.as_deref().unwrap(), ["zip"]);
     }
 
-    // --- ContentSource PartialEq ------------------------------------------
+    // ContentSource PartialEq
 
     #[test]
     fn content_source_partial_eq_by_variant_and_payload() {
@@ -1131,7 +1121,7 @@ mod tests {
         }
     }
 
-    // --- TemplatedExtraFile -----------------------------------------------
+    // TemplatedExtraFile
 
     #[test]
     fn templated_extra_file_parses_and_defaults() {

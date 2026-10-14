@@ -61,7 +61,7 @@ pub(crate) fn resolve_retry_params_warning_through(
     let default_max_delay = Some(Duration::from_secs(300));
 
     if let Some(cfg) = per_pipe {
-        // Per-pipe wins — but warn (once) that this surface is deprecated.
+        // Per-pipe wins — but warn (once) that this field is deprecated.
         warn_docker_retry_deprecated_once(warned);
         let attempts = cfg.attempts.unwrap_or(10);
         let base_delay = match &cfg.delay {

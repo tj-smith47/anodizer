@@ -10,7 +10,7 @@ use anyhow::Result;
 /// Reject obvious non-credential values for a provider's API token: a
 /// missing-credential mistake (empty / placeholder) usually shows up as
 /// a too-short string, and the upstream API responds with an opaque 401
-/// that's hard to debug. Catching it here surfaces the misconfiguration
+/// that's hard to debug. Catching it here reports the misconfiguration
 /// at validation time with a clear message.
 ///
 /// `provider` is a short label (e.g. "linkedin"); `env_var` names the env

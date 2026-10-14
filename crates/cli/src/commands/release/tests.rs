@@ -1,14 +1,12 @@
 use super::*;
 use anodizer_core::config::{CrateConfig, NightlyConfig, WorkspaceConfig};
 
-// -----------------------------------------------------------------------
 // install_verify_gate — proves `anodizer release` actually WIRES
 // `run_asset_gate` into `ctx.verify_gate`, not just that
 // `run_asset_gate` itself behaves correctly (already covered by
 // stage-verify-release's own unit tests). Deleting the
 // `install_verify_gate` call at the production call site, or swapping
 // it for a decoy, must fail this test.
-// -----------------------------------------------------------------------
 
 #[test]
 fn install_verify_gate_delegates_to_the_real_asset_gate() {
@@ -127,12 +125,10 @@ fn custom_publishers_honor_operator_selection() {
     assert!(sel[0].name.is_none());
 }
 
-// -----------------------------------------------------------------------
 // run_before_hooks — must fire in normal, --split, and --merge modes
 // (before-hooks produce INPUTS for build (split) and archive/nfpm (merge)),
 // and must skip in --publish-only / --announce-only (those operate on
 // already-produced artifacts).
-// -----------------------------------------------------------------------
 
 /// Run `run_before_hooks` with a `before:` hook that `touch`es a unique
 /// marker file, and report whether the marker was created (i.e. the hook
@@ -253,11 +249,9 @@ fn make_crate(name: &str, deps: Option<Vec<&str>>) -> CrateConfig {
     }
 }
 
-// -----------------------------------------------------------------------
 // Crate selection from tags at HEAD reads every crate's tag FAMILY, so a
 // template-less crate is selectable by the `<name>-v` tag it releases under
 // and a derived lockstep family selects the whole workspace.
-// -----------------------------------------------------------------------
 
 fn family_crate(name: &str, tag_template: Option<&str>) -> CrateConfig {
     CrateConfig {
@@ -330,9 +324,7 @@ fn resolve_tag_command_and_release_selection_agree() {
     );
 }
 
-// -----------------------------------------------------------------------
 // resolve_host_targets (--host-targets) — all three config modes
-// -----------------------------------------------------------------------
 
 use anodizer_core::config::{BuildConfig, Defaults};
 
@@ -839,7 +831,7 @@ fn test_workspace_overlay_semantics() {
     );
 }
 
-// ---- depends_on propagation tests ----
+// depends_on propagation tests
 
 #[test]
 fn test_propagate_dependents_direct() {
@@ -894,9 +886,7 @@ fn test_propagate_dependents_preserves_order() {
     assert!(result.contains(&"c".to_string()));
 }
 
-// -----------------------------------------------------------------------
 // CLI flag override tests
-// -----------------------------------------------------------------------
 
 #[test]
 fn test_draft_flag_sets_release_config_draft() {
@@ -939,7 +929,7 @@ fn test_draft_flag_overrides_existing_config() {
     );
 }
 
-// --- `--prepare` flag ---
+// `--prepare` flag
 
 #[test]
 fn test_apply_prepare_mode_to_skip_from_empty() {
@@ -1021,7 +1011,7 @@ fn test_apply_prepare_mode_to_skip_is_idempotent() {
     assert!(skip.contains(&"snapcraft-publish".to_string()));
 }
 
-// ---- preflight auto-run gating ---------------------------------------
+// preflight auto-run gating
 
 #[test]
 fn should_run_preflight_default_runs() {
@@ -1078,7 +1068,7 @@ fn strict_or_config_strict_promotes_preflight_to_strict() {
     assert!(combine(true, true));
 }
 
-// ---- gate_required_failures -----------------------------------------
+// gate_required_failures
 
 /// Build a `Context` with a `publish_report` containing a single
 /// publisher result with the given outcome and `required` flag.
@@ -1194,7 +1184,7 @@ fn release_required_failures_counts_rollback_failed() {
     use anodizer_core::publish_report::PublisherOutcome;
 
     // A rolled-back-failed required publisher leaves the operator
-    // with a half-published surface — must also produce non-zero exit.
+    // with a half-published release — must also produce non-zero exit.
     let ctx = ctx_with_report(
         "homebrew",
         true,
@@ -1285,7 +1275,7 @@ fn release_exits_nonzero_when_required_snapcraft_publish_failed() {
     assert!(msg.contains("snapcraft"), "error names publisher: {msg}");
 }
 
-// ---- apply_nightly_template_vars ------------------------------------
+// apply_nightly_template_vars
 //
 // Nightly: `tag_name` accepts template syntax (e.g.
 // `nightly-{{ .Version }}`) and is rendered AFTER `Version` /
@@ -1379,7 +1369,7 @@ fn nightly_renders_tag_as_the_minted_tag_single_family() {
 
 /// A single-family workspace takes `nightly.tag_name` VERBATIM: there is no
 /// sibling track to disambiguate from, so prefixing it would invent a tag no
-/// other surface looks for.
+/// other command looks for.
 #[test]
 fn nightly_tag_name_renders_tag_as_the_rolling_tag_single_family() {
     let (mut config, mut ctx) = setup_nightly_ctx(Some("edge"), "1.2.3");
@@ -1501,7 +1491,7 @@ fn nightly_version_template_supports_nightly_build_and_base() {
     );
 }
 
-// ---- map_head_tags_to_crates unit tests --------------------------------
+// map_head_tags_to_crates unit tests
 
 fn make_log() -> StageLogger {
     StageLogger::new(
@@ -1698,7 +1688,7 @@ fn make_crate_with_template(name: &str, path: &str, template: &str) -> CrateConf
     }
 }
 
-// ---- project_root resolution -----------------------------------------
+// project_root resolution
 
 /// `resolve_project_root` must return the parent of a normal config
 /// path so repo-relative file lookups resolve against the repo root
@@ -1741,7 +1731,7 @@ fn resolve_project_root_falls_back_to_cwd_for_bare_filename() {
 /// Bare-filename `--config=anodizer.yaml` is almost always a
 /// misconfiguration: every repo-relative consumer (snapcraft icon
 /// lookup, extra-file globs, ...) will resolve against the process
-/// CWD rather than the repo root. The resolver must surface a `warn`
+/// CWD rather than the repo root. The resolver must emit a `warn`
 /// so the misconfiguration is visible in CI logs without
 /// hard-failing the release (which would break the legitimate
 /// CWD == project-root case).
@@ -1765,7 +1755,7 @@ fn resolve_project_root_warns_when_falling_back_for_bare_filename() {
     );
 }
 
-/// `build_context_options` must surface the `project_root` it was
+/// `build_context_options` must return the `project_root` it was
 /// handed verbatim onto `ContextOptions` so downstream stages that
 /// resolve paths relative to the project root (e.g. the cargo
 /// publisher's `target/` resolution, snapcraft icon paths) see the
@@ -1790,9 +1780,7 @@ fn build_context_options_propagates_project_root() {
     );
 }
 
-// -----------------------------------------------------------------------
 // validate_strict_vs_allowlist
-// -----------------------------------------------------------------------
 
 #[test]
 fn validate_strict_alone_is_ok() {
@@ -1827,9 +1815,7 @@ fn validate_allowlist_without_strict_is_ok() {
     assert!(validate_strict_vs_allowlist(&opts).is_ok());
 }
 
-// -----------------------------------------------------------------------
 // parse_allow_nondeterministic
-// -----------------------------------------------------------------------
 
 #[test]
 fn parse_allow_nondeterministic_splits_name_and_reason() {
@@ -1868,9 +1854,7 @@ fn parse_allow_nondeterministic_empty_input_yields_empty_vec() {
     assert!(parse_allow_nondeterministic(&[]).unwrap().is_empty());
 }
 
-// -----------------------------------------------------------------------
 // compute_skip_stages
-// -----------------------------------------------------------------------
 
 #[test]
 fn compute_skip_stages_merges_workspace_skip_without_duplicates() {
@@ -1923,9 +1907,7 @@ fn compute_skip_stages_no_signals_is_passthrough() {
     assert_eq!(got, vec!["msi".to_string()]);
 }
 
-// -----------------------------------------------------------------------
 // crate-universe selection boundary
-// -----------------------------------------------------------------------
 
 /// `--crate X` / `--all` resolve against `Config::crate_universe` — a
 /// workspace-only crate must be selectable exactly like a top-level one.
@@ -1965,9 +1947,7 @@ fn selection_universe_dedupes_by_name_keeping_top_level() {
     assert_eq!(names, vec!["dup", "unique"]);
 }
 
-// -----------------------------------------------------------------------
 // resolve_tag_to_crates (lockstep tie-tier + per-crate prefix resolution)
-// -----------------------------------------------------------------------
 
 fn tagged_crate(name: &str, template: &str) -> CrateConfig {
     CrateConfig {
@@ -2309,9 +2289,7 @@ fn dist_holding_bookkeeping_and_an_artifact_is_refused() {
     assert!(!err.contains("config.yaml"), "{err}");
 }
 
-// -----------------------------------------------------------------------
 // A repository git refuses to read is not "no release tags at HEAD"
-// -----------------------------------------------------------------------
 
 fn refused_repository() -> anyhow::Error {
     anyhow::Error::new(anodizer_core::git::RepositoryUnreadable {

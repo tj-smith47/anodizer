@@ -831,6 +831,40 @@ fn homebrew_core_reads_the_shared_token_order() {
     );
 }
 
+/// The missing-token messages name the sources in the order the bump reads
+/// them, the run's GitHub token between the publisher variables and
+/// `GITHUB_TOKEN` (the publish error, the preflight warning and the rollback
+/// warning all print [`super::resolve::token_order_hint`]), and a run that
+/// has that token requires no variable.
+#[test]
+fn the_token_requirement_and_its_messages_follow_the_read_order() {
+    let hint = super::resolve::token_order_hint();
+    let at = |needle: &str| {
+        hint.find(needle)
+            .unwrap_or_else(|| panic!("{needle} is missing from: {hint}"))
+    };
+    assert!(
+        at("repository.token") < at("$HOMEBREW_CORE_GITHUB_TOKEN")
+            && at("$HOMEBREW_CORE_GITHUB_TOKEN") < at("$COMMITTER_TOKEN")
+            && at("$COMMITTER_TOKEN") < at("the run's GitHub token")
+            && at("the run's GitHub token") < at("$ANODIZER_GITHUB_TOKEN")
+            && at("$ANODIZER_GITHUB_TOKEN") < at("$GITHUB_TOKEN")
+            && at("$GITHUB_TOKEN") < at("$GH_TOKEN"),
+        "the hint names the run token between the publisher variables and GITHUB_TOKEN: {hint}"
+    );
+
+    let mut run = TestContextBuilder::new()
+        .sealed_env()
+        .token(Some("run-tok".into()))
+        .build();
+    run.config.homebrew_cores = Some(vec![HomebrewCoreConfig::default()]);
+    assert_eq!(
+        HomebrewCorePublisher::new().requirements(&run),
+        Vec::new(),
+        "the run token satisfies the bump, so no variable is required"
+    );
+}
+
 fn leak_resp(status: &str, body: &str) -> &'static str {
     Box::leak(
         format!(

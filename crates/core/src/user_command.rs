@@ -35,7 +35,7 @@ pub const ENV_WHITELIST: &[&str] = &[
 /// is responsible for adding any further env vars / cwd / I/O config
 /// before invoking `output()`.
 ///
-/// Returns `Err` when `argv` is empty — surfacing a clear error at the
+/// Returns `Err` when `argv` is empty — reporting a clear error at the
 /// allow-listed boundary is preferable to deferring failure to the
 /// kernel via an empty `program` path.
 pub fn whitelisted<S: AsRef<OsStr>>(argv: &[S]) -> Result<Command> {

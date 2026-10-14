@@ -326,7 +326,7 @@ fn winget_pr_present_on_result() {
     }
 }
 
-// ---- Winget: html_url missing → ItemWithoutUrl ------------------------
+// Winget: html_url missing → ItemWithoutUrl
 
 #[test]
 fn winget_pr_item_without_url_is_unknown_signal() {
@@ -354,7 +354,7 @@ fn winget_pr_item_without_url_is_unknown_signal() {
     );
 }
 
-// ---- Winget: malformed JSON → Err (mapped to Unknown by caller) ------
+// Winget: malformed JSON → Err (mapped to Unknown by caller)
 
 #[test]
 fn winget_pr_malformed_json_is_error() {
@@ -384,7 +384,7 @@ fn winget_pr_malformed_json_is_error() {
     );
 }
 
-// ---- AUR: malformed JSON → Err (mapped to Unknown by caller) ---------
+// AUR: malformed JSON → Err (mapped to Unknown by caller)
 
 #[test]
 fn aur_rpc_malformed_json_is_error() {
@@ -410,12 +410,12 @@ fn aur_rpc_malformed_json_is_error() {
     );
 }
 
-// ---- Winget: 422 query-validation → NotFound (not Unknown) -----------
+// Winget: 422 query-validation → NotFound (not Unknown)
 
 #[test]
 fn winget_pr_422_maps_to_not_found() {
     // GitHub returns 422 for a malformed search query; that is a "no PR"
-    // signal, not a transient network blip, so the checker must surface
+    // signal, not a transient network blip, so the checker must report
     // Clean rather than bubbling an Unknown.
     let (addr, _calls) = spawn_oneshot_http_responder(vec![
         "HTTP/1.1 422 Unprocessable Entity\r\nContent-Length: 0\r\n\r\n",
@@ -437,11 +437,11 @@ fn winget_pr_422_maps_to_not_found() {
     );
 }
 
-// ---- Winget / AUR: persistent 5xx exhausts retries → Err -------------
+// Winget / AUR: persistent 5xx exhausts retries → Err
 
 #[test]
 fn winget_pr_server_error_bubbles_as_err() {
-    // A 5xx that persists across the retry budget must surface as Err (mapped
+    // A 5xx that persists across the retry budget must return Err (mapped
     // to Unknown by the caller), exercising the error-message formatter and
     // the HttpError status downcast on the failure path.
     let err500 = "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 3\r\n\r\nboo";
@@ -482,7 +482,7 @@ fn aur_rpc_server_error_bubbles_as_err() {
     );
 }
 
-// ---- RealCheckerFactory constructs each publisher's real checker -----
+// RealCheckerFactory constructs each publisher's real checker
 
 #[test]
 fn real_checker_factory_builds_named_checkers() {
@@ -505,7 +505,7 @@ fn real_checker_factory_builds_named_checkers() {
     assert_eq!(f.aur(fast_retry(), None).publisher_name(), "aur");
 }
 
-// ---- AUR: 404 → Ok(false) (Clean) ------------------------------------
+// AUR: 404 → Ok(false) (Clean)
 
 #[test]
 fn aur_rpc_absent_on_404() {
@@ -526,7 +526,7 @@ fn aur_rpc_absent_on_404() {
     );
 }
 
-// ---- crates.io: network error (connect-refused) → Unknown via Err ----
+// crates.io: network error (connect-refused) → Unknown via Err
 
 #[test]
 fn crates_io_checker_unknown_on_network_error() {
@@ -543,7 +543,7 @@ fn crates_io_checker_unknown_on_network_error() {
     );
     let err = result.expect_err("must be Err on connect-refused");
 
-    // The trait-level wrapper would surface this as Unknown { reason } —
+    // The trait-level wrapper would report this as Unknown { reason } —
     // exercise the path explicitly to confirm.
     let checker_state = match query_crates_io(
         &url,
@@ -569,7 +569,7 @@ fn crates_io_checker_unknown_on_network_error() {
     assert!(!msg.is_empty(), "error message must be non-empty");
 }
 
-// ---- Winget: Authorization header is sent when token is set --------
+// Winget: Authorization header is sent when token is set
 
 use anodizer_core::test_helpers::responder::spawn_request_capturing_responder;
 
@@ -610,7 +610,7 @@ fn winget_pr_sends_authorization_header_when_token_set() {
     );
 }
 
-// ---- GitHub search query encoding ------------------------------------
+// GitHub search query encoding
 
 #[test]
 fn winget_search_query_encoding_round_trips_operators() {
@@ -626,7 +626,7 @@ fn winget_search_query_encoding_round_trips_operators() {
     );
 }
 
-// ---- Chocolatey checker fixtures (PackageStatus / IsApproved) -------
+// Chocolatey checker fixtures (PackageStatus / IsApproved)
 
 fn choco_odata_entry(version: &str, status: Option<&str>, is_approved: Option<bool>) -> String {
     let mut props = String::new();
@@ -735,7 +735,7 @@ fn chocolatey_checker_present_without_hash_is_published() {
     );
 }
 
-// ---- run_preflight orchestration with injected mock factory -------
+// run_preflight orchestration with injected mock factory
 
 /// The one-way-door probe searches the community repository by
 /// PackageIdentifier, so a templated identifier must be rendered before it
@@ -1047,7 +1047,7 @@ fn deselected_publisher_contributes_no_state_probe_entry() {
     let log = StageLogger::new("preflight", Verbosity::Normal);
 
     // winget/choco/aur states are deliberately PRPending/InModeration —
-    // if the guard regressed they would surface as blockers.
+    // if the guard regressed they would show up as blockers.
     let factory = CannedFactory {
         cargo_state: PublisherState::Clean,
         choco_state: PublisherState::InModeration {
@@ -1081,7 +1081,7 @@ fn deselected_publisher_contributes_no_state_probe_entry() {
     );
 }
 
-// ---- rollback-scope + Publisher::preflight() extension ----
+// rollback-scope + Publisher::preflight() extension
 //
 // These tests resolve rollback-scope token availability
 // (CARGO_REGISTRY_TOKEN, GITHUB_TOKEN, ANODIZER_GITHUB_TOKEN) through
@@ -1371,9 +1371,7 @@ fn preflight_honors_anodizer_github_token_fallback() {
     );
 }
 
-// -----------------------------------------------------------------------
 // crates.io publish-simulation preflight (task #25)
-// -----------------------------------------------------------------------
 mod publish_simulation {
     use super::super::*;
     use anodizer_core::config::{CargoPublishConfig, CrateConfig, PublishConfig};
@@ -1464,7 +1462,7 @@ mod publish_simulation {
             .build()
     }
 
-    // ---- (1) partial-publish probe (resumable) ----------------------
+    // (1) partial-publish probe (resumable)
 
     #[test]
     fn partial_publish_mixed_state_resumes_when_dry_run_ok() {
@@ -1610,7 +1608,7 @@ mod publish_simulation {
         assert!(b.contains("connection reset"), "carries the reason: {b}");
     }
 
-    // ---- (2) dry-run classification ---------------------------------
+    // (2) dry-run classification
 
     #[test]
     fn dry_run_compile_error_aborts() {
@@ -1694,7 +1692,7 @@ mod publish_simulation {
         );
     }
 
-    // ---- gating ------------------------------------------------------
+    // gating
 
     #[test]
     fn snapshot_skips_simulation_entirely() {
@@ -1749,7 +1747,7 @@ mod publish_simulation {
     #[test]
     fn cargo_deselected_surface_skips_simulation_entirely() {
         // `--publishers npm` (or `--skip cargo`) leaves the irreversible
-        // cargo door out of this run's surface, so the simulation has
+        // cargo door out of this run's selection, so the simulation has
         // nothing to guard. PanicFactory + panic_runner prove the wrapper
         // takes the gate before querying the index or spawning cargo —
         // otherwise a cargo-less release would abort on a cargo-only probe.
@@ -1807,7 +1805,7 @@ mod publish_simulation {
         );
     }
 
-    // ---- classify_dry_run_stderr unit coverage ----------------------
+    // classify_dry_run_stderr unit coverage
 
     #[test]
     fn classify_stderr_compile_error() {
@@ -2035,7 +2033,7 @@ mod publish_simulation {
         use anodizer_core::config::StringOrBool;
         // An unterminated `skip:` template breaks `cargo_publish_plan` — the
         // same failure the real publish would hit — so the simulation must
-        // surface it as a blocker, never silently skip the gate.
+        // report it as a blocker, never silently skip the gate.
         let mut blob = cargo_crate("anodizer-stage-blob", &["anodizer-core"]);
         if let Some(ref mut p) = blob.publish
             && let Some(ref mut c) = p.cargo
@@ -2064,7 +2062,6 @@ mod publish_simulation {
     }
 }
 
-// -----------------------------------------------------------------------
 // FakeToolDir-driven `cargo publish --dry-run` spawn coverage.
 //
 // Drives the REAL spawn+classify against a fake `cargo` binary addressed by
@@ -2078,7 +2075,6 @@ mod publish_simulation {
 // the exec until the racing child clears the FD. The spawn-FAILURE test
 // keeps the raw path (it wants the immediate ENOENT). Asserts argv shape +
 // outcome classification.
-// -----------------------------------------------------------------------
 #[cfg(unix)]
 mod publish_simulation_spawn {
     use super::super::*;
@@ -2093,7 +2089,7 @@ mod publish_simulation_spawn {
     /// Drive the real spawn+classify path against a freshly-installed stub,
     /// retrying the exec on `ETXTBSY` (the stub is written-then-exec'd, so a
     /// sibling test thread's `fork` window can hold its fd briefly). Without
-    /// this the raw production `.output()` would surface the transient
+    /// this the raw production `.output()` would report the transient
     /// `ETXTBSY` as `Unavailable` and flake the assertion.
     fn dry_run_via_stub(fake: &FakeToolDir, crates: &[&str]) -> DryRunOutcome {
         let crates: Vec<String> = crates.iter().map(|c| c.to_string()).collect();

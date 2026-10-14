@@ -1,6 +1,6 @@
 //! Conventional-Commits → release-level classification.
 //!
-//! The single classifier behind both release-inference surfaces: the `tag`
+//! The single classifier behind both release-inference commands: the `tag`
 //! command's auto-bump (which layers `#token` / `#none` / `default_bump`
 //! precedence on top) and the `bump` command's per-crate inference. Both
 //! must answer "what does this commit imply for the next version?"

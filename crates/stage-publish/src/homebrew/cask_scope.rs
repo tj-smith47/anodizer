@@ -19,9 +19,7 @@ use super::cask::{
     render_generate_completions, render_uninstall_block, render_zap_block, split_alternative_names,
 };
 
-// ---------------------------------------------------------------------------
 // generate_cask_content – shared helper for cask file generation
-// ---------------------------------------------------------------------------
 
 /// Intermediate result from cask content generation: the rendered cask file
 /// string, the cask name used as the filename stem, and any versioned

@@ -176,10 +176,8 @@ fn safety_check_prefix_admits_anodizer_revert_only() {
     );
 }
 
-// -----------------------------------------------------------------
 // Fixture-repo integration tests — exercise the safety-check path
 // and dry-run no-mutation guarantee against a real tempdir git repo.
-// -----------------------------------------------------------------
 
 use std::path::Path;
 use std::process::Command;
@@ -453,9 +451,7 @@ fn skips_tags_not_matching_anodizer_shape() {
     assert_eq!(surviving, vec!["internal-release".to_string()]);
 }
 
-// -----------------------------------------------------------------
 // --branch flag + detached-HEAD branch resolution.
-// -----------------------------------------------------------------
 
 #[test]
 fn resolve_push_branch_honors_explicit_flag() {
@@ -506,7 +502,7 @@ fn resolve_push_branch_hard_fails_on_detached_head_without_branch() {
     run_git(dir, &["checkout", "--detach", &older_sha]);
 
     // An empty env source means the `GITHUB_REF_NAME` fallback can't
-    // supply a value, then verify the hard-fail surfaces the remediation.
+    // supply a value, then verify the hard-fail reports the remediation.
     let env = anodizer_core::MapEnvSource::new();
 
     // No remote configured → SHA-derivation returns empty, falls
@@ -529,7 +525,7 @@ fn resolve_push_branch_hard_fails_when_github_ref_name_looks_like_tag() {
     // Same shape as above (detached HEAD with no pointing branch),
     // but GITHUB_REF_NAME is set to a tag-shaped value. The
     // is_branchlike guard in get_current_branch_in must reject it,
-    // and resolve_push_branch must surface the operator-friendly
+    // and resolve_push_branch must return the operator-friendly
     // hard-fail (not silently push to a branch named after the tag).
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path();
@@ -605,12 +601,10 @@ fn resolve_push_branch_explicit_branch_wins_over_detached_head() {
     assert_eq!(b, "master");
 }
 
-// -----------------------------------------------------------------
 // Published-release guard. Drives `check_no_published_releases`
 // with a stub `gh` script in a tempdir (no PATH mutation) against a
 // fixture repo whose origin is GitHub-shaped (local config only —
 // no network is touched; the stub answers the API call).
-// -----------------------------------------------------------------
 
 /// Write an executable stub standing in for the `gh` CLI.
 #[cfg(unix)]
@@ -980,7 +974,7 @@ fn guard_proceeds_for_resolvable_non_github_origin() {
 #[cfg(unix)]
 fn guard_fails_closed_on_gh_auth_error() {
     // gh present but erroring (auth/network) — same fail-closed
-    // ruling as a missing gh, with the probe error surfaced.
+    // ruling as a missing gh, with the probe error reported.
     let tmp = tempfile::tempdir().unwrap();
     init_github_origin_repo(tmp.path());
     let gh = write_gh_stub(
@@ -1054,10 +1048,8 @@ fn run_force_bypasses_published_release_guard() {
     );
 }
 
-// -----------------------------------------------------------------
 // GitHub release cleanup: a rolled-back tag's release belongs to the
 // aborted attempt and is deleted alongside the tag (matched by tag).
-// -----------------------------------------------------------------
 
 /// gh stub that records every invocation's args to `record` and
 /// answers GETs with a release object (id 7) while accepting DELETEs.
@@ -1186,12 +1178,10 @@ fn release_cleanup_retains_tag_when_release_delete_fails() {
     );
 }
 
-// -----------------------------------------------------------------
 // Summary-based published-state guard: the run summary on disk is
 // the primary evidence; the gh probe is consulted only for tags
 // with no summary. Proven with gh stubs whose answer CONTRADICTS
 // the summary, so the assertion pins which source decided.
-// -----------------------------------------------------------------
 
 /// Write a run summary for `tag` under the repo's dist tree.
 /// `rel` is the run-dir path relative to dist (e.g. "run-v1.0.0"
@@ -1544,12 +1534,10 @@ fn guard_ignores_malformed_summary_and_falls_back_to_probe() {
     .expect("malformed summary + 404 probe must permit rollback");
 }
 
-// -----------------------------------------------------------------
 // Global crates.io index probe (layer 2): the run summary answers a
 // per-run question, but whether a version is burned on crates.io is
 // GLOBAL state — a PRIOR run may have published it, and that run's
 // summary lives on another runner's disk.
-// -----------------------------------------------------------------
 
 #[test]
 fn crates_io_versions_for_tag_maps_tag_families_to_crates() {
@@ -1925,13 +1913,11 @@ fn crates_io_probes_run_concurrently() {
         .expect("absent versions must permit rollback");
 }
 
-// -----------------------------------------------------------------
 // Immutable-registry (npm / pypi) burn probe: the cross-runner layer
 // that catches a version a PRIOR run burned on npm/pypi with no local
 // summary — the second half of the same fail-closed treatment crates.io
 // gets, since both are one-way doors (immutable npm version, permanent
 // PyPI filename).
-// -----------------------------------------------------------------
 
 #[test]
 #[cfg(unix)]
@@ -2678,13 +2664,11 @@ fn run_force_bypasses_crates_io_probe() {
     );
 }
 
-// -----------------------------------------------------------------
 // Publisher unwind: a deliberate withdrawal re-invokes each recorded
 // publisher's rollback before the tags (and their GitHub releases)
 // are destroyed. Wired end-to-end through `run_with_gh` so deleting
 // the call site fails a test rather than silently shipping a
 // tag-only rollback.
-// -----------------------------------------------------------------
 
 /// Seed a run dir with a `report.json` naming one Succeeded Manager
 /// publisher. The name matches nothing in the current registry, so the

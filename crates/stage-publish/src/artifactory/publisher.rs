@@ -1,9 +1,7 @@
 use super::*;
 use crate::publisher_helpers::count_noun;
 
-// ---------------------------------------------------------------------------
 // ArtifactoryPublisher (Publisher trait wrapper)
-// ---------------------------------------------------------------------------
 
 // Wraps [`publish_to_artifactory`] in the [`anodizer_core::Publisher`] trait
 // so the dispatch path (see [`crate::registry::configured_publishers`])
@@ -228,7 +226,7 @@ impl anodizer_core::Publisher for ArtifactoryPublisher {
     /// target's `scheme://host[:port]` origin (path/`{{ .Version }}` stripped so
     /// the probe needs no resolved tag) through the same mTLS client + basic-auth
     /// credential cascade the upload uses. A rejected credential (401/403) or an
-    /// unreachable host surfaces as a Warning (this publisher is OPTIONAL — a
+    /// unreachable host shows up as a Warning (this publisher is OPTIONAL — a
     /// failed upload must not abort the release). A 404/405/redirect at the
     /// origin root still proves the host is reachable and is treated as a pass.
     /// Severity follows [`required()`](anodizer_core::Publisher::required).

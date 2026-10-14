@@ -113,7 +113,7 @@ fn looks_like_anodizer_config(value: &serde_yaml_ng::Value) -> bool {
 }
 
 /// Per-README validation result. Errors accumulate across the whole run
-/// so a single CI invocation surfaces every broken block at once instead
+/// so a single CI invocation reports every broken block at once instead
 /// of failing on the first.
 struct ReadmeResult {
     validated: usize,

@@ -11,9 +11,7 @@ use super::{
     VersionSyncConfig, deserialize_archives_config, deserialize_string_or_bool_opt,
 };
 
-// ---------------------------------------------------------------------------
 // BuildIgnore — exclude specific os/arch combos from builds
-// ---------------------------------------------------------------------------
 
 /// Exclude a specific os/arch combination from the build matrix.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -25,9 +23,7 @@ pub struct BuildIgnore {
     pub arch: String,
 }
 
-// ---------------------------------------------------------------------------
 // BuildOverride — per-target env, flags, features
-// ---------------------------------------------------------------------------
 
 /// Override env, flags, or features for targets matching glob patterns.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
@@ -44,9 +40,7 @@ pub struct BuildOverride {
     pub features: Option<Vec<String>>,
 }
 
-// ---------------------------------------------------------------------------
 // CrossStrategy
-// ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
 #[serde(rename_all = "lowercase")]
@@ -57,9 +51,7 @@ pub enum CrossStrategy {
     Cargo,
 }
 
-// ---------------------------------------------------------------------------
 // BuilderKind — `cargo` (compile from source) vs `prebuilt` (import binary)
-// ---------------------------------------------------------------------------
 
 /// Selects which builder a `builds[]` entry uses. `Cargo` (the default) runs
 /// `cargo build` and discovers the resulting binary under
@@ -78,9 +70,7 @@ pub enum BuilderKind {
     Prebuilt,
 }
 
-// ---------------------------------------------------------------------------
 // PrebuiltConfig — path template for the `prebuilt` builder
-// ---------------------------------------------------------------------------
 
 /// Per-build options for `builder: prebuilt`. Required when `builder: prebuilt`
 /// is set on the same `builds[]` entry.
@@ -121,9 +111,7 @@ pub struct PrebuiltConfig {
     pub path: String,
 }
 
-// ---------------------------------------------------------------------------
 // CrateConfig
-// ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
@@ -345,9 +333,7 @@ impl CrateConfig {
     }
 }
 
-// ---------------------------------------------------------------------------
 // UniversalBinaryConfig
-// ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
@@ -373,9 +359,7 @@ pub struct UniversalBinaryConfig {
     pub mod_timestamp: Option<String>,
 }
 
-// ---------------------------------------------------------------------------
 // BuildConfig
-// ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default, deny_unknown_fields)]

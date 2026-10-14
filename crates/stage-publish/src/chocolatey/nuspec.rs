@@ -2,9 +2,7 @@
 
 use anyhow::{Context as _, Result};
 
-// ---------------------------------------------------------------------------
 // XML escaping helper
-// ---------------------------------------------------------------------------
 
 /// Escape XML special characters in a string.
 fn escape_xml(s: &str) -> String {
@@ -22,9 +20,7 @@ fn escape_xml(s: &str) -> String {
     out
 }
 
-// ---------------------------------------------------------------------------
 // NuspecParams
-// ---------------------------------------------------------------------------
 
 /// Parameters for generating a Chocolatey `.nuspec` XML manifest.
 pub struct NuspecParams<'a> {
@@ -59,9 +55,7 @@ pub struct NuspecParams<'a> {
     pub dependencies: &'a [anodizer_core::config::ChocolateyDependency],
 }
 
-// ---------------------------------------------------------------------------
 // nuspec template
-// ---------------------------------------------------------------------------
 
 const NUSPEC_TEMPLATE: &str = r#"<?xml version="1.0" encoding="utf-8"?>
 <package xmlns="http://schemas.microsoft.com/packaging/2015/06/nuspec.xsd">
@@ -94,9 +88,7 @@ const NUSPEC_TEMPLATE: &str = r#"<?xml version="1.0" encoding="utf-8"?>
 </package>
 "#;
 
-// ---------------------------------------------------------------------------
 // generate_nuspec
-// ---------------------------------------------------------------------------
 
 pub fn generate_nuspec(params: &NuspecParams<'_>) -> Result<String> {
     let tags_str = if params.tags.is_empty() {

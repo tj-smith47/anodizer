@@ -6,11 +6,16 @@ template = "docs.html"
 +++
 
 > **Deprecation:** `publish.homebrew` (Homebrew **Formula**) is deprecated.
-> The replacement is **[Homebrew Casks](./homebrew-casks.md)** —
+> GoReleaser deprecated its formula publisher in
+> [v2.16](https://goreleaser.com/blog/goreleaser-v2.16/), and anodizer
+> deprecates `publish.homebrew` the same way so a migrated config behaves the
+> same. The replacement is **[Homebrew Casks](./homebrew-casks.md)** —
 > the canonical Homebrew distribution channel for pre-compiled binaries.
-> `homebrew_casks` is the right tool for the job: it is how Homebrew expects
-> pre-compiled binaries to be distributed, and it gets all the new features
-> (completion generation, post-install hooks, and so on).
+>
+> The GoReleaser v2.16 notes say: _"Migrate to `homebrew_casks`, which is the
+> right tool for the job: it's how Homebrew expects pre-compiled binaries to be
+> distributed, and it gets all the new features (completion generation,
+> post-install hooks, and so on)."_
 >
 > Anodizer still parses `publish.homebrew` for back-compat; a `DEPRECATION:` warning
 > is emitted at config-load time. New projects should write `homebrew_casks:`

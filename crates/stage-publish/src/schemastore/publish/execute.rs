@@ -489,7 +489,7 @@ pub(super) fn sync_to_upstream(
     // Hard-reset onto the freshly fetched upstream tip. A reset (not rebase) is
     // correct here because no local commits exist yet — the working tree is a
     // bare clone of the fork's default branch; pointing it at upstream is the
-    // intent, and a rebase would be a no-op with extra failure surface.
+    // intent, and a rebase would be a no-op with extra ways to fail.
     crate::util::run_git_in(
         repo_path,
         &[

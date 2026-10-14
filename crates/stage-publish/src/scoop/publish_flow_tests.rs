@@ -289,9 +289,7 @@ fn render_scoop_autoupdate_sidecar_artifactext_in_suffix_uniform_zip_ok() {
     assert_eq!(json["autoupdate"]["hash"]["url"], "$url.zip.sha256");
 }
 
-// -----------------------------------------------------------------
 // is_scoop_windows_artifact / ScoopArtifactFilters / crate_has_scoop
-// -----------------------------------------------------------------
 
 fn artifact_with(target: Option<&str>, path: &str, meta: &[(&str, &str)]) -> Artifact {
     let mut m = HashMap::new();
@@ -431,9 +429,7 @@ fn crate_has_scoop_artifacts_reflects_presence() {
     );
 }
 
-// -----------------------------------------------------------------
 // render_scoop_manifest_for_crate — render/skip/error boundaries.
-// -----------------------------------------------------------------
 
 /// `skip_upload: true` short-circuits the renderer to `None` (the
 /// publisher renders nothing for this crate) BEFORE the no-artifact
@@ -1000,9 +996,7 @@ fn render_scoop_name_override_used_for_bin_fallback() {
     );
 }
 
-// -----------------------------------------------------------------
 // publish_to_scoop — non-e2e skip / dry-run guards.
-// -----------------------------------------------------------------
 
 /// `skip_upload: true` on the publish path returns `Ok(false)` (no push)
 /// BEFORE the repository-resolution check — repository is None here, yet
@@ -1078,10 +1072,8 @@ fn publish_scoop_dry_run_makes_no_push() {
     assert!(!pushed, "dry-run must not push");
 }
 
-// -----------------------------------------------------------------
 // publish_to_scoop — full clone→write→commit→push→PR against a local
 // bare bucket repo (gated: spawns git, mutates PATH via the `gh` stub).
-// -----------------------------------------------------------------
 
 #[cfg(unix)]
 mod e2e {
@@ -1608,7 +1600,6 @@ mod e2e {
     }
 }
 
-// -----------------------------------------------------------------------
 // Template-rendering of user-supplied string fields.
 //
 // A value like `persist: "{{ .Tag }}"` must resolve to the concrete tag,
@@ -1616,7 +1607,6 @@ mod e2e {
 // field, renders the manifest through `render_scoop_manifest_for_crate`
 // (the same path the live publish + offline guard use), and asserts the
 // emitted JSON carries the resolved value and no residual `{{` delimiter.
-// -----------------------------------------------------------------------
 
 /// A widget crate whose scoop block is mutated by `f` (to set a field under
 /// test), with a single x86_64 windows archive so the manifest renders.

@@ -755,7 +755,7 @@ mod tests {
     /// On a FULL build (no `partial_target`) a winget-configured crate that
     /// produced NO Windows installer is a genuine misconfiguration — the same
     /// `collect_winget_installers` "no Windows archive or binary artifact" bail
-    /// the live publish hits must surface at `check`/`--snapshot` rather than
+    /// the live publish hits must show up at `check`/`--snapshot` rather than
     /// being silently skipped (the failure-hiding class this closes).
     #[test]
     fn full_build_without_windows_artifact_errors() {

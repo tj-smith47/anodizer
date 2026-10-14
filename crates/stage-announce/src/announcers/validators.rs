@@ -1,13 +1,11 @@
 use anyhow::Result;
 
-// ---------------------------------------------------------------------------
 // Rendered-value validators — shared by `send` and `render_only`
 //
 // Each validator runs the SAME check `send` performs on a post-render value,
 // with NO network call, so the pre-publish guard (`render_only`) rejects a
 // config whose template renders to an invalid value BEFORE any one-way
 // publisher fires. Both call sites delegate here so they cannot drift.
-// ---------------------------------------------------------------------------
 
 /// Validate (and parse) a rendered discord `color`: a base-10 integer in the
 /// 24-bit RGB space `0..=0xFFFFFF`. An empty/whitespace render is "unset"

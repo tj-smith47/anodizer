@@ -47,9 +47,7 @@ pub(super) fn preprocess_list_subexpr(template: &str) -> String {
     })
 }
 
-// ---------------------------------------------------------------------------
 // Pass 2b: Go comparison functions, logical operators, and len → Tera syntax
-// ---------------------------------------------------------------------------
 
 /// Known Go comparison functions and their Tera infix operator equivalents.
 const COMPARISON_OPS: &[(&str, &str)] = &[

@@ -6,9 +6,7 @@ use super::{
     is_false_spelling, is_true_spelling,
 };
 
-// ---------------------------------------------------------------------------
 // NotarizeConfig (macOS code signing and notarization)
-// ---------------------------------------------------------------------------
 
 /// Top-level notarization configuration supporting both cross-platform
 /// (`rcodesign`) and native macOS (`codesign` + `xcrun notarytool`) modes.
@@ -503,7 +501,7 @@ mod tests {
         serde_yaml_ng::from_str(yaml).expect("notarize config should parse")
     }
 
-    // --- direct `skip:` semantics -----------------------------------------
+    // direct `skip:` semantics
 
     #[test]
     fn should_skip_direct_bool_short_circuits() {
@@ -547,7 +545,7 @@ mod tests {
         assert!(cfg.should_skip(|_| anyhow::bail!("render boom")).is_err());
     }
 
-    // --- `enabled:` alias inversion ---------------------------------------
+    // `enabled:` alias inversion
 
     #[test]
     fn enabled_bool_inverts_to_skip_and_evaluates() {
@@ -603,7 +601,7 @@ mod tests {
         }
     }
 
-    // --- skip/enabled conflict resolution ---------------------------------
+    // skip/enabled conflict resolution
 
     #[test]
     fn both_skip_and_enabled_agreeing_is_accepted() {
@@ -624,7 +622,7 @@ mod tests {
         );
     }
 
-    // --- native config mirrors the same behavior --------------------------
+    // native config mirrors the same behavior
 
     #[test]
     fn native_should_skip_mirrors_cross_platform() {

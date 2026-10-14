@@ -3,9 +3,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 
 use super::{StringOrBool, deserialize_string_or_bool_opt};
 
-// ---------------------------------------------------------------------------
 // SbomConfig
-// ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default, deny_unknown_fields)]

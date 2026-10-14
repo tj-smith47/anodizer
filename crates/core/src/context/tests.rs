@@ -268,7 +268,7 @@ fn test_context_template_vars() {
 #[test]
 fn validate_skip_values_hint_dedups_overlapping_vocabulary() {
     // The release skip vocabulary is `VALID_RELEASE_SKIPS ++ publisher
-    // names`, which legitimately overlap. A bad token must surface a hint
+    // names`, which legitimately overlap. A bad token must report a hint
     // listing each valid option exactly ONCE, in first-seen order — not the
     // doubled list a raw `valid.join(", ")` produces.
     let valid = ["homebrew", "cargo", "npm", "homebrew", "cargo", "uploads"];
@@ -632,7 +632,7 @@ fn test_previous_tag_empty_when_none() {
 /// determinism harness depends on. Two from-clean runs of the same
 /// commit otherwise emit `dist/metadata.json` files that differ in
 /// the embedded `date` field, drifting `metadata.json` AND its
-/// `.sha256` sidecar across runs. CI run 25975073213 surfaced this
+/// `.sha256` sidecar across runs. CI run 25975073213 exposed this
 /// drift on every platform shard before the fix went in.
 #[test]
 fn populate_time_vars_uses_source_date_epoch_when_set() {
@@ -1129,7 +1129,7 @@ fn test_checksums_template_var() {
     assert_eq!(result, checksum_text);
 }
 
-// --- Pro template variable tests ---
+// Pro template variable tests
 
 #[test]
 fn test_prefixed_tag_with_tag_prefix() {
@@ -1692,9 +1692,7 @@ fn test_is_merging_without_git_info() {
     );
 }
 
-// -----------------------------------------------------------------------
 // Monorepo template variable tests
-// -----------------------------------------------------------------------
 
 /// Parity proof: in monorepo mode `populate_git_vars` derives `Version`
 /// from the shared `SemVer::version_string()` helper — the SAME source the
@@ -1926,9 +1924,7 @@ fn test_monorepo_no_previous_tag() {
     assert_eq!(v.get("PreviousTag"), Some(&"".to_string()));
 }
 
-// -----------------------------------------------------------------------
 // Integration test: full monorepo flow
-// -----------------------------------------------------------------------
 
 #[test]
 fn test_monorepo_full_flow_all_vars() {

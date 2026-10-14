@@ -1,6 +1,6 @@
 //! The one tag a crate's release is created, captured and verified under.
 //!
-//! Every surface that composes a release URL, an installer tag, a publish
+//! Every code path that composes a release URL, an installer tag, a publish
 //! target or the release itself resolves the tag HERE. A second derivation
 //! anywhere else re-opens the class of bug where the release is created on one
 //! tag and named, captured or downloaded from another.
@@ -92,9 +92,9 @@ pub fn resolve_release_tag(
 
 /// What to tell the operator when a release tag resolves to nothing.
 ///
-/// Shared verbatim by every surface that needs a tag — the release stage, the
+/// Shared verbatim by every code path that needs a tag — the release stage, the
 /// `curl | sh` installer and cargo-binstall's `pkg_url` — so the same config
-/// bug reads the same way wherever it surfaces first.
+/// bug reads the same way wherever it shows up first.
 pub const EMPTY_RELEASE_TAG_HELP: &str = concat!(
     "A release cannot be created, downloaded or installed without a tag: the ",
     "GitHub / GitLab / Gitea Releases REST API rejects an empty `tag_name` with ",
@@ -160,7 +160,7 @@ fn declared_tag_for_crate(ctx: &Context, crate_cfg: &CrateConfig) -> Option<Stri
 /// and ship a release under a tag the operator did not ask for.
 ///
 /// This is the version-PARAMETERISED half of [`resolve_release_tag`], for the
-/// surfaces that emit a template rather than a tag — the `curl | sh` installer
+/// code paths that emit a template rather than a tag — the `curl | sh` installer
 /// and cargo-binstall's `pkg_url` both resolve a version at install time and
 /// reconstruct the tag from it. They deliberately stop short of the
 /// `nightly.tag_name` rung: both point at whatever the project's newest STABLE
@@ -423,7 +423,7 @@ mod tests {
         let config = Config {
             crates: vec![cfg.clone()],
             // `smartsemver` lists the tags up front, so a directory that is no
-            // repository surfaces as an error rather than "no previous tag".
+            // repository is reported as an error rather than "no previous tag".
             git: Some(crate::config::GitConfig {
                 tag_sort: Some("smartsemver".to_string()),
                 ..Default::default()

@@ -1,6 +1,4 @@
-// ---------------------------------------------------------------------------
 // Helper functions
-// ---------------------------------------------------------------------------
 
 /// Returns the default formats for CloudSmith uploads: apk, deb, rpm.
 pub fn cloudsmith_default_formats() -> Vec<&'static str> {

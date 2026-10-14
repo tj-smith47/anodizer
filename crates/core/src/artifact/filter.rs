@@ -288,7 +288,7 @@ pub fn ids_filter_eliminated_all(
 /// upload. A `None`/empty list keeps everything.
 ///
 /// An unparseable glob is treated as "does not match" (it is skipped, never
-/// crashing a release). Surface malformed globs at config-validation time
+/// crashing a release). Report malformed globs at config-validation time
 /// (see `validate_exclude_globs`) so a typo is rejected before it can silently
 /// drop assets.
 pub fn passes_exclude_filter(artifact: &Artifact, exclude: Option<&[String]>) -> bool {

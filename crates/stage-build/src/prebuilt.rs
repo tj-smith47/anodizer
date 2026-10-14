@@ -17,7 +17,7 @@ use crate::run::PlanInputs;
 /// Diagnostic reason a crate gets no default `--bin <crate>` build: a pure
 /// library (no binary targets at all) versus a library that carries only
 /// helper binaries whose names don't match the crate (so cargo would reject
-/// `--bin <crate>`). Surfaced in the skip line so a consumer can tell the two
+/// `--bin <crate>`). Shown in the skip line so a consumer can tell the two
 /// apart at a glance.
 pub(crate) fn no_default_binary_reason(crate_path: &str, crate_name: &str) -> String {
     if crate_has_binary_target(crate_path) {

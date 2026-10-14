@@ -7,7 +7,7 @@ impl Harness {
         per_run_hashes: Vec<BTreeMap<String, ArtifactInfo>>,
     ) -> DeterminismReport {
         // Union of artifact names across runs — an artifact missing from
-        // one run is itself a form of drift, surfaced as the run's hash
+        // one run is itself a form of drift, reported as the run's hash
         // becoming `<missing>`.
         let mut all_names: BTreeSet<String> = BTreeSet::new();
         for run in &per_run_hashes {
@@ -54,7 +54,7 @@ impl Harness {
             // Byte-equality is the determinism verdict; classification only
             // excuses a DRIFTING aggregate (below). An unclassified file fails
             // only when its bytes drift — a stable one cannot mask member
-            // drift: every member is independently hashed and surfaces its own
+            // drift: every member is independently hashed and reports its own
             // drift row regardless of any aggregate that contains it.
             let classification =
                 self.classify(name, &all_names, &manifest_members, &combined_markers);
@@ -204,7 +204,7 @@ impl Harness {
                     hashes: hashes.clone(),
                 });
                 // Drift row + drift_count are gated on allow-list status:
-                // allow-listed artifacts surface their per-run hashes via
+                // allow-listed artifacts report their per-run hashes via
                 // the drift row (so the audit trail is complete) but DO
                 // NOT bump `drift_count`.
                 if allow_reason.is_none() {

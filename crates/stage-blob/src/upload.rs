@@ -20,9 +20,7 @@ use crate::content_type::{SNIFF_BYTES, detect_content_type};
 use crate::kms::{KmsProvider, encrypt_with_kms};
 use crate::provider::Provider;
 
-// ---------------------------------------------------------------------------
 // Put options — headers (cache-control, content-disposition)
-// ---------------------------------------------------------------------------
 
 /// Validate a single Cache-Control directive against the response-directive
 /// set defined in RFC 7234 §5.2.2 plus the `immutable` token added by RFC
@@ -70,7 +68,7 @@ pub(crate) fn build_put_options(
 
     // Cache-Control: join array with ", ".
     // Each directive is validated against the RFC-7234 §5.2 response-directive
-    // set so a typo (e.g. `max_age` instead of `max-age`) surfaces here rather
+    // set so a typo (e.g. `max_age` instead of `max-age`) is reported here rather
     // than as a silent CDN miss in production.
     if let Some(ref cc) = config.cache_control
         && !cc.is_empty()
@@ -121,9 +119,7 @@ pub(crate) fn build_put_options(
     })
 }
 
-// ---------------------------------------------------------------------------
 // Extra files resolution — with template-rendered names
-// ---------------------------------------------------------------------------
 
 pub(crate) fn resolve_extra_files(
     extra_files: &[ExtraFileSpec],
@@ -156,9 +152,7 @@ pub(crate) fn resolve_extra_files(
     Ok(out)
 }
 
-// ---------------------------------------------------------------------------
 // Artifact filtering
-// ---------------------------------------------------------------------------
 
 /// Collect artifacts to upload based on config filters.
 ///
@@ -217,9 +211,7 @@ pub(crate) fn collect_artifacts<'a>(
     kept
 }
 
-// ---------------------------------------------------------------------------
 // Upload execution
-// ---------------------------------------------------------------------------
 
 /// Result of a per-config blob upload batch.
 ///

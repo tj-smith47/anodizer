@@ -165,7 +165,7 @@ fn validate_runtime_allowlist(ctx: &Context) -> Result<()> {
     // encourages operators to type `*.crate` / `*.deb` (file-extension
     // patterns), but `artifact.name` is whatever the build stage
     // recorded and is not always the on-disk filename. Matching both
-    // surfaces means a `*.crate` glob hits whichever of
+    // fields means a `*.crate` glob hits whichever of
     // `artifact.name` ("anodizer-v0.2.1") or
     // `basename(artifact.path)` ("anodizer-v0.2.1.crate") satisfies
     // the pattern.
@@ -242,7 +242,7 @@ impl Stage for EmissionValidateStage {
 /// Operator-facing summary line for a publisher recorded as
 /// [`SkipReason::Deselected`]. Delegates to the shared
 /// [`Context::deselected_reason`] so the dispatch chokepoint, the publish
-/// summary, and the out-of-dispatch publish stages all surface identical
+/// summary, and the out-of-dispatch publish stages all show identical
 /// wording.
 fn deselected_skip_line(ctx: &Context, name: &str) -> String {
     ctx.deselected_reason(name)
@@ -270,7 +270,7 @@ impl PublishStage {
     /// `#[cfg(test)] mod tests` block AND the cross-crate integration
     /// test `crates/stage-publish/tests/run_report_persistence.rs` can
     /// substitute a synthetic publisher slice. It is **not** part of
-    /// the public API surface: `#[doc(hidden)]` marks that downstream
+    /// the public API: `#[doc(hidden)]` marks that downstream
     /// crates must not couple to this signature; production consumers
     /// should invoke `<PublishStage as Stage>::run` instead. The
     /// integration test depends on this injection point by design (writer/reader
@@ -311,7 +311,7 @@ impl PublishStage {
             "publish complete — {} succeeded, {} failed, {} skipped, submitter_gated={}, verify_gate_blocked={}",
             succeeded, failed, skipped, report.submitter_gated, report.verify_gate_blocked,
         ));
-        // Per-publisher failure detail — surface error strings so
+        // Per-publisher failure detail — report error strings so
         // operators see which publisher failed without re-reading the
         // dispatcher's interleaved log output.
         for r in &report.results {
@@ -346,7 +346,7 @@ impl PublishStage {
     ) -> Result<()> {
         Self::run_with_publishers(ctx, log, publishers)?;
 
-        // ---- Persist end-of-pipeline state to dist/run-<id>/report.json ----
+        // Persist end-of-pipeline state to dist/run-<id>/report.json
         //
         // Writer half of the `anodizer tag rollback` contract (`rollback::run`
         // is the reader). Runs BEFORE `fire_on_error_hooks`, so an operator
@@ -358,10 +358,10 @@ impl PublishStage {
         // pipeline).
         write_report_to_run_dir(ctx, log);
 
-        // ---- Fire on_error hooks ----
+        // Fire on_error hooks
         fire_on_error_hooks(ctx, log);
 
-        // ---- Post-publish polling fan-out (Chocolatey moderation + WinGet PR) ----
+        // Post-publish polling fan-out (Chocolatey moderation + WinGet PR)
         //
         // Runs AFTER every publisher has completed so polling isn't gated
         // on a failed unrelated publisher (e.g. krew). The fan-out is
@@ -374,7 +374,7 @@ impl PublishStage {
             run_post_publish_pollers(ctx, &selected, log);
         }
 
-        // ---- In-stage required-failure gate ----
+        // In-stage required-failure gate
         //
         // Last, AFTER every dispatch / rollback / persistence / polling
         // obligation above has observed final state: the stage itself
@@ -409,9 +409,9 @@ impl Stage for PublishStage {
     fn run(&self, ctx: &mut Context) -> Result<()> {
         let log = ctx.logger("publish");
         // The crate-universe walker is silent (it runs once per predicate /
-        // collapse / dispatch call), so its config-shape diagnostics surface
+        // collapse / dispatch call), so its config-shape diagnostics report
         // here, once per run — before the snapshot skip, because a snapshot
-        // preview of a colliding config should surface the mistake too.
+        // preview of a colliding config should report the mistake too.
         for w in ctx.config.crate_universe_collision_warnings() {
             log.warn(&w);
         }
@@ -445,7 +445,7 @@ impl Stage for PublishStage {
             publishers.iter().map(|p| p.name().to_string()).collect();
         anodizer_core::version::guard_release_version(ctx, &log, "publish", &publisher_names)?;
 
-        // Surface the release-optional + dependent-manifest-publisher coupling
+        // Report the release-optional + dependent-manifest-publisher coupling
         // before any publisher fires (a manifest pointing at a 404 release URL
         // ships silently otherwise).
         registry::warn_release_optional_with_dependent_publisher(ctx, &log);
@@ -453,9 +453,7 @@ impl Stage for PublishStage {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 #[allow(clippy::field_reassign_with_default)]
@@ -540,10 +538,8 @@ mod tests {
         assert!(PublishStage.run(&mut ctx).is_ok());
     }
 
-    // -----------------------------------------------------------------------
     // PublishStage::run swap — trait-based dispatch sets ctx.publish_report,
     // returns Ok(()) on per-publisher failure, applies the Submitter gate.
-    // -----------------------------------------------------------------------
 
     #[test]
     fn publish_stage_returns_ok_and_sets_context_publish_report() {
@@ -570,9 +566,7 @@ mod tests {
         assert!(!report.submitter_gated);
     }
 
-    // -----------------------------------------------------------------------
     // validate_runtime_allowlist — operator-typo guard before publishers fire
-    // -----------------------------------------------------------------------
 
     fn add_artifact(ctx: &mut Context, name: &str) {
         use anodizer_core::artifact::{Artifact, ArtifactKind};
@@ -656,7 +650,7 @@ mod tests {
         // Build stage recorded `artifact.name = "anodizer-v0.2.1"` (no
         // extension), while the actual file on disk is
         // `dist/anodizer-v0.2.1.crate`. A `*.crate` glob must match via
-        // the path-basename surface even though the name alone won't.
+        // the path basename even though the name alone won't.
         let mut ctx = Context::test_fixture();
         add_artifact_with_path(&mut ctx, "anodizer-v0.2.1", "dist/anodizer-v0.2.1.crate");
         ctx.options.runtime_nondeterministic_allowlist =
@@ -682,7 +676,7 @@ mod tests {
     fn allow_nondeterministic_typo_still_errors() {
         // Negative case: a real typo against the same artifact above
         // must still fall through to the unmatched error path — the
-        // basename surface widens what *can* match but does not
+        // basename match widens what *can* match but does not
         // suppress typo detection.
         let mut ctx = Context::test_fixture();
         add_artifact_with_path(&mut ctx, "core", "dist/core-aarch64.tar.gz");
@@ -697,10 +691,8 @@ mod tests {
         );
     }
 
-    // -----------------------------------------------------------------------
     // Dispatch + on_error-hook integration - end-to-end PublishStage::run
     // path through `run_with_publishers` + `fire_on_error_hooks`.
-    // -----------------------------------------------------------------------
 
     /// Helper to drive the same end-to-end shape `Stage::run` exercises
     /// (dispatch -> on_error hooks) but with a synthetic publisher slice.
@@ -1135,7 +1127,7 @@ mod tests {
     /// the walker itself is silent, so without this call site a name
     /// collision with diverging paths (almost certainly a config mistake)
     /// would be invisible to the operator whose workspace crate is dropped.
-    /// Snapshot mode is used because the warnings must surface BEFORE the
+    /// Snapshot mode is used because the warnings must show up BEFORE the
     /// snapshot skip.
     #[test]
     fn publish_stage_run_emits_collision_warnings() {
@@ -1674,9 +1666,7 @@ mod tests {
         assert!(PublishStage.run(&mut ctx).is_ok());
     }
 
-    // -----------------------------------------------------------------------
     // ── Config-to-behavior wiring tests ──
-    // -----------------------------------------------------------------------
 
     #[test]
     fn test_no_publish_config_is_noop() {
@@ -1701,17 +1691,11 @@ mod tests {
     /// This is a known limitation: homebrew/scoop are skipped for prereleases
     /// by default. If this behavior is added in the future, this test should be
     /// updated to verify that skipping occurs.
-    // -----------------------------------------------------------------------
     // Chocolatey integration tests
-    // -----------------------------------------------------------------------
 
-    // -----------------------------------------------------------------------
     // WinGet integration tests
-    // -----------------------------------------------------------------------
 
-    // -----------------------------------------------------------------------
     // AUR integration tests
-    // -----------------------------------------------------------------------
 
     #[test]
     fn test_run_dry_run_aur() {
@@ -1735,13 +1719,9 @@ mod tests {
         assert!(PublishStage.run(&mut ctx).is_ok());
     }
 
-    // -----------------------------------------------------------------------
     // Krew integration tests
-    // -----------------------------------------------------------------------
 
-    // -----------------------------------------------------------------------
     // Top-level AUR sources integration tests
-    // -----------------------------------------------------------------------
 
     #[test]
     fn test_run_dry_run_top_level_aur_sources() {
@@ -1794,24 +1774,18 @@ mod tests {
         assert!(PublishStage.run(&mut ctx).is_ok());
     }
 
-    // -----------------------------------------------------------------------
     // Nix integration tests
-    // -----------------------------------------------------------------------
 
-    // -----------------------------------------------------------------------
     // record_publisher_result tests removed when PublishStage swapped to
     // trait-based dispatch (see `crates/stage-publish/src/dispatch.rs`).
     // The collect-or-bail policy now lives in `DispatchOptions::fail_fast`
     // and is covered by tests in `crates/stage-publish/src/dispatch.rs`.
-    // -----------------------------------------------------------------------
 
-    // -----------------------------------------------------------------------
     // derive_run_id + write_report_to_run_dir — writer half of the
     // `anodizer tag rollback` contract (`rollback::run` is the reader).
     // Tests below pin: (a) the run_id fallback chain (tag -> short_commit ->
     // "local") with the validator gate, and (b) the writer's no-op/IO
     // behavior including snapshot/dry-run skip and empty-results skip.
-    // -----------------------------------------------------------------------
 
     mod run_report_persistence {
         use super::*;

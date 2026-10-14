@@ -19,9 +19,7 @@ use anodizer_core::log::StageLogger;
 use super::push_with_squashed;
 use crate::group::{CommitInfo, extract_co_authors, parse_commit_message};
 
-// ---------------------------------------------------------------------------
 // Helper: fetch commits from GitHub API (use: github)
-// ---------------------------------------------------------------------------
 
 /// Fetch commits via the GitHub API using the `gh` CLI.
 /// Returns `(commits, logins_string)` where `logins_string` is a
@@ -299,7 +297,7 @@ mod tests {
         )
     }
 
-    // ---- Compare API path (prev_tag is Some) ----
+    // Compare API path (prev_tag is Some)
 
     #[test]
     #[serial_test::serial(cwd)]
@@ -482,7 +480,7 @@ mod tests {
         );
     }
 
-    // ---- /commits endpoint (prev_tag is None — paginated array) ----
+    // /commits endpoint (prev_tag is None — paginated array)
 
     #[test]
     #[serial_test::serial(cwd)]
@@ -549,7 +547,7 @@ mod tests {
         );
     }
 
-    // ---- Co-author extraction ----
+    // Co-author extraction
 
     #[test]
     #[serial_test::serial(cwd)]
@@ -586,7 +584,7 @@ mod tests {
         assert_eq!(logins, "Pair Programmer,ada");
     }
 
-    // ---- Failure path: gh exits non-zero ----
+    // Failure path: gh exits non-zero
 
     #[test]
     #[serial_test::serial(cwd)]

@@ -146,7 +146,7 @@ pub(crate) fn render_crate_changelog(
     }
     // A precise `changelog.paths` glob narrowing applies only to `use: git`
     // (the SCM compare APIs already warn that path filtering is coarse /
-    // unsupported above). Surface the limitation rather than silently widen.
+    // unsupported above). Report the limitation rather than silently widen.
     if scope.narrow.is_some() && (use_github || use_gitlab || use_gitea) {
         log.warn(
             "`changelog.paths` narrows the per-crate scope, but the \
@@ -217,7 +217,7 @@ pub(crate) fn render_crate_changelog(
     };
 
     // A git/SCM-compare changelog that groups to nothing ships silent, empty
-    // release notes — the same failure `use=github-native` warns about. Surface
+    // release notes — the same failure `use=github-native` warns about. Report
     // WHY (the range had commits, but `changelog.filters`/`paths`/`groups`
     // dropped every one) so the operator can loosen the config or confirm a
     // genuinely change-free release, instead of discovering a blank release.

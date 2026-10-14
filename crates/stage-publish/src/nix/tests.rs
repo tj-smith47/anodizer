@@ -709,7 +709,7 @@ fn test_validate_nix_license_invalid() {
 // v2.17.0-da7ce304-nightly@da7ce30) so a refresh diffs against a known base.
 // Refresh by re-copying that file over `goreleaser_licenses.go.vendored` and
 // updating the pinned revision in its header; the diff at refresh time
-// surfaces exactly which identifiers GoReleaser added or removed, and
+// reports exactly which identifiers GoReleaser added or removed, and
 // `test_nix_licenses_match_goreleaser` fails until VALID_NIX_LICENSES is
 // brought back in sync. This is what catches a GoReleaser bump automatically.
 const GORELEASER_LICENSES_GO: &str = include_str!("goreleaser_licenses.go.vendored");
@@ -839,10 +839,8 @@ fn test_publish_to_nix_dry_run() {
     assert!(publish_to_nix(&mut ctx, "mytool", &log).is_ok());
 }
 
-// ---------------------------------------------------------------------------
 // `publish_to_nix` early-exit branches — every guard returns Ok(false)
 // (no push happened) so the caller's rollback bookkeeping stays clean.
-// ---------------------------------------------------------------------------
 
 /// Helper: build a minimal Context with a `nix:` publish config.
 fn nix_ctx(
@@ -1081,12 +1079,10 @@ fn nix_sha256_empty_metadata_bails_with_actionable_error() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // Orchestrator dry-run paths — exercise check_skip_guards template branches,
-// resolve_repo_coords template rendering, and the early-exit log surface.
+// resolve_repo_coords template rendering, and the early-exit log output.
 // These run with `dry_run: true` so no git work happens; the orchestrator
 // dispatches helpers up to `is_dry_run()` and returns Ok(false).
-// ---------------------------------------------------------------------------
 
 /// `skip` is a template string that evaluates to `"true"` — must short-circuit
 /// just like `Bool(true)`. Pins the template-render branch of `check_skip_guards`.
@@ -1246,7 +1242,7 @@ fn test_publish_to_nix_description_falls_back_to_project_metadata() {
     assert!(format!("{err}").contains("no Linux/Darwin archive"));
 }
 
-/// Bad homepage template (Tera syntax error) surfaces as a render error
+/// Bad homepage template (Tera syntax error) shows up as a render error
 /// with the crate name in the chain. Pins the
 /// `.with_context(|| "render homepage template for '<crate>'")` plumbing.
 #[test]
@@ -1293,14 +1289,12 @@ fn test_publish_to_nix_formatter_not_invoked_before_archive_resolution() {
     assert!(format!("{err}").contains("no Linux/Darwin archive"));
 }
 
-// ---------------------------------------------------------------------------
 // Derived-license resolution — the auto-derive (derive-don't-require) path
 // feeds a Cargo SPDX id (e.g. `MIT`, `Apache-2.0`) into the nix emission,
 // which must end up as a `lib.licenses.<attr>` nix attribute, NOT the raw
 // SPDX id. Exercised through `render_nix_for_validation`, the in-memory twin
 // of the publish render path, so the assertion is on the actual emitted
 // derivation string.
-// ---------------------------------------------------------------------------
 
 /// Write a minimal `Cargo.toml` with the given `[package].license` to
 /// `<dir>/<name>/Cargo.toml`, creating the crate dir.
@@ -1638,9 +1632,7 @@ fn lockstep_workspace_each_crate_derives_its_own_nix_license() {
     );
 }
 
-// =====================================================================
 // meta.maintainers / meta.changelog / meta.longDescription render path.
-// =====================================================================
 
 /// Render `crate_name`'s nix derivation in-memory from a single-crate config,
 /// applying `customize` to its `NixConfig` and `crate_customize` to its
@@ -1968,9 +1960,7 @@ fn assert_nix_parses_or_skip(expr: &str) {
     );
 }
 
-// =====================================================================
 // install completions / man pages render path.
-// =====================================================================
 
 fn archive_with_completions_and_man() -> anodizer_core::config::ArchiveConfig {
     use anodizer_core::config::{ArchiveConfig, CompletionsConfig, ManpagesConfig};
@@ -2028,9 +2018,7 @@ fn install_phase_omits_completions_when_archive_has_none() {
     );
 }
 
-// =====================================================================
 // per-crate workspace: no cross-crate leakage of the new meta fields.
-// =====================================================================
 
 /// Two crates in one workspace, each with its OWN maintainers, description,
 /// license, and completions config. Each derivation must carry only its own

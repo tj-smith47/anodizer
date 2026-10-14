@@ -678,7 +678,7 @@ mod tests {
         v.iter().map(|s| s.to_string()).collect()
     }
 
-    // ---- flag parsing ----
+    // flag parsing
 
     #[test]
     fn flag_value_supports_both_spellings() {
@@ -769,7 +769,7 @@ mod tests {
         }
     }
 
-    // ---- keyless identity derivation ----
+    // keyless identity derivation
 
     #[test]
     fn keyless_identity_derived_from_github_actions_env() {
@@ -906,7 +906,7 @@ mod tests {
         assert_eq!(issuer, "https://accounts.example.com");
     }
 
-    // ---- config mode resolution ----
+    // config mode resolution
 
     #[test]
     fn mode_disabled_when_config_opts_out() {
@@ -1038,7 +1038,7 @@ mod tests {
         assert!(matches!(mode, ConfigVerifyMode::Skip(_)), "got {mode:?}");
     }
 
-    // ---- argv construction ----
+    // argv construction
 
     #[test]
     fn keyed_verify_blob_argv() {
@@ -1237,7 +1237,7 @@ mod tests {
         assert!(build_docker_verify_args(&ConfigVerifyMode::Gpg, "ref", None).is_none());
     }
 
-    // ---- pubkey derivation invocation shape ----
+    // pubkey derivation invocation shape
 
     /// The derivation must spawn `<cmd> public-key --key=<ref> --outfile
     /// <path>` with the job env applied. Proven with a fake `cosign` script
@@ -1278,7 +1278,7 @@ mod tests {
         );
     }
 
-    /// A non-zero exit from the derivation must surface the tool's stderr.
+    /// A non-zero exit from the derivation must report the tool's stderr.
     #[cfg(unix)]
     #[test]
     fn derive_public_key_failure_carries_stderr() {
@@ -1332,7 +1332,7 @@ mod tests {
         );
     }
 
-    // ---- failure classification ----
+    // failure classification
 
     fn classify_cosign(stderr: &str) -> VerifyRunVerdict {
         classify_verifier_failure(false, Some(1), "", stderr, stderr.to_string())

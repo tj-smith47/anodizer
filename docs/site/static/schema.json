@@ -2440,7 +2440,7 @@
           ]
         },
         "password_env": {
-          "description": "Name of the env var holding the cert password. Defaults to `WINDOWS_CERT_PASSWORD`. The value is read at execution time, passed to the signer, and redacted from all logs.",
+          "description": "Name of the env var holding the cert password. Defaults to `WINDOWS_CERT_PASSWORD`. The value is read at execution time, trimmed of leading and trailing whitespace, passed to the signer, and redacted from all logs. A blank value counts as no password, and a password whose own first or last character is whitespace cannot be passed.",
           "default": null,
           "type": [
             "string",

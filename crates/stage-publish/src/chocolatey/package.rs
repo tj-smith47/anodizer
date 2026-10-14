@@ -472,7 +472,7 @@ pub(super) fn push_nupkg(
             }
 
             if status.as_u16() == 403 {
-                // Surface what the registry actually said plus the concrete things to
+                // Report what the registry actually said plus the concrete things to
                 // check, in order. The causes are listed, not asserted: a generic
                 // IIS/Cloudflare 403 body does not on its own disambiguate a bad key
                 // from a permissions gap from a full moderation queue.
@@ -511,7 +511,7 @@ pub(super) fn push_nupkg(
 
 /// Reduce an HTTP error-response body to the operator-facing essentials. IIS /
 /// Cloudflare 403 pages wrap a single useful sentence in tens of lines of CSS
-/// and markup; this pulls the `<title>` and heading text so the surfaced error
+/// and markup; this pulls the `<title>` and heading text so the reported error
 /// reads as a sentence. Non-HTML bodies are whitespace-collapsed and capped.
 fn summarize_response_body(body: &str) -> String {
     const CAP: usize = 400;
@@ -549,7 +549,7 @@ fn tag_inner_text(lower: &str, original: &str, tag: &str) -> Option<String> {
 }
 
 /// Best-effort tag stripping for the fallback summary — drop everything between
-/// `<` and the next `>`. Not a real HTML parser; just enough to surface text.
+/// `<` and the next `>`. Not a real HTML parser; just enough to extract text.
 fn strip_tags(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut in_tag = false;
@@ -626,7 +626,7 @@ mod tests {
     fn push_nupkg_403_with_html_body_fast_fails() {
         // A 403 is an authorization decision, not a transient edge challenge: it
         // must NOT retry (a push client cannot satisfy a JS challenge), and the
-        // surfaced error must carry the registry's own message rather than an
+        // reported error must carry the registry's own message rather than an
         // optimistic "edge challenge" guess. Regression for the moderation /
         // credential 403 that previously force-retried 10× and burned the release.
         use std::sync::atomic::Ordering;

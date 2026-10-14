@@ -121,7 +121,7 @@ pub fn pypi_version_live(
 /// Fail-closed sibling of [`simple_index_lists_version`]: a definitive 404
 /// (the project has no index page) folds to `Ok(false)`, a 200 parses the body
 /// for exactly `normalized_name@version`, and any other outcome (transport
-/// failure, 5xx) surfaces `Err` so the rollback guard never mistakes an
+/// failure, 5xx) returns `Err` so the rollback guard never mistakes an
 /// unreachable index for "not published". The best-effort variant is still
 /// correct for the pre-publish duplicate *warning*, where an outage safely
 /// folds to "no warning".
@@ -279,7 +279,7 @@ pub(crate) fn distribution_name_version(token: &str) -> Option<(String, String)>
 /// the SAME target triple derive the SAME wheel platform tag and — because a
 /// wheel filename carries the PROJECT name, not the crate name — collide on
 /// one identical `.whl`. The publish-time `seen_tags` bail catches this only
-/// once binary bytes exist; this surfaces the likely collision at preflight
+/// once binary bytes exist; this reports the likely collision at preflight
 /// from config-derivable build targets so a multi-binary workspace is told to
 /// narrow per-entry `ids:` before the run reaches the Manager group.
 ///

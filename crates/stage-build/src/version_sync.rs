@@ -74,7 +74,7 @@ pub fn sync_version(
 /// virtual or workspace-inheriting manifest).
 ///
 /// `root` is the repo the crate directory is resolved against; every error this
-/// raises names the manifest relative to it, because these errors surface
+/// raises names the manifest relative to it, because these errors appear
 /// verbatim in `check version-files` findings a human reads.
 pub fn read_cargo_version(root: &Path, crate_path: &str) -> Result<String> {
     Ok(read_cargo_version_opt(root, crate_path)?.unwrap_or_else(|| "0.0.0".to_string()))
@@ -127,7 +127,7 @@ fn find_cargo_tomls(
             // An unreadable subtree may hold a member whose stale path-dep pin
             // this scan exists to rewrite; pruning it silently is the exact
             // drift the function prevents (a stale pin breaks cargo publish /
-            // lockstep). Surface it like the manifest-read path below.
+            // lockstep). Report it like the manifest-read path below.
             log.warn(&format!(
                 "version sync: skipping unreadable directory {}: {e}",
                 display_under_root(repo_root, dir)

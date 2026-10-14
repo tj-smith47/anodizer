@@ -4,9 +4,7 @@ use serde_json::json;
 
 use crate::http::post_json;
 
-// ---------------------------------------------------------------------------
 // Options
-// ---------------------------------------------------------------------------
 
 /// Optional fields for Discord embed payloads.
 pub struct DiscordOptions<'a> {
@@ -18,9 +16,7 @@ pub struct DiscordOptions<'a> {
 /// Default blue colour.
 const DEFAULT_COLOR: u32 = 3_888_754;
 
-// ---------------------------------------------------------------------------
 // Payload builder
-// ---------------------------------------------------------------------------
 
 pub(crate) fn discord_payload(message: &str, opts: &DiscordOptions<'_>) -> String {
     let color = opts.color.unwrap_or(DEFAULT_COLOR);
@@ -44,9 +40,7 @@ pub(crate) fn discord_payload(message: &str, opts: &DiscordOptions<'_>) -> Strin
     json!({ "embeds": [serde_json::Value::Object(embed)] }).to_string()
 }
 
-// ---------------------------------------------------------------------------
 // Send
-// ---------------------------------------------------------------------------
 
 /// POST a Discord webhook with an embed payload.
 ///
@@ -62,9 +56,7 @@ pub fn send_discord(
     post_json(webhook_url, &payload, "discord", policy, log)
 }
 
-// ---------------------------------------------------------------------------
 // Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {

@@ -12,9 +12,7 @@ use anodizer_core::retry::{RetryLog, SuccessClass, retry_http_blocking_deadline}
 use super::push_with_squashed;
 use crate::group::{CommitInfo, extract_co_authors, parse_commit_message};
 
-// ---------------------------------------------------------------------------
 // Helper: fetch commits from Gitea API (use: gitea)
-// ---------------------------------------------------------------------------
 
 /// Fetch commits via the Gitea Compare API.
 ///

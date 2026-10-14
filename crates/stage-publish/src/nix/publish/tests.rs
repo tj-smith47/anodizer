@@ -23,9 +23,7 @@ fn commit_outcome_is_pushed() {
     assert!(!util::CommitOutcome::NoChanges.is_pushed());
 }
 
-// -----------------------------------------------------------------
 // unique_dep_args — declaration order preserved, dupes collapsed.
-// -----------------------------------------------------------------
 
 #[test]
 fn unique_dep_args_empty_returns_empty() {
@@ -58,9 +56,7 @@ fn unique_dep_args_dedupes_preserving_first_occurrence_order() {
     );
 }
 
-// -----------------------------------------------------------------
 // collect_binary_names — pulled from builds, falls back to name.
-// -----------------------------------------------------------------
 
 #[test]
 fn collect_binary_names_falls_back_to_derivation_name_when_no_builds() {
@@ -108,9 +104,7 @@ fn collect_binary_names_extracts_and_dedupes_preserving_order() {
     );
 }
 
-// -----------------------------------------------------------------
 // build_wrap_program_line — partitioned by `os:` filter.
-// -----------------------------------------------------------------
 
 #[test]
 fn build_wrap_program_line_returns_none_when_deps_empty() {
@@ -171,9 +165,7 @@ fn build_wrap_program_line_unknown_os_string_is_dropped() {
     assert!(build_wrap_program_line(&deps, "mytool").is_none());
 }
 
-// -----------------------------------------------------------------
 // build_install_lines — custom install vs auto-generated.
-// -----------------------------------------------------------------
 
 #[test]
 fn build_install_lines_custom_install_overrides_auto_block() {
@@ -244,9 +236,7 @@ fn build_install_lines_skips_wrap_program_when_deps_filter_to_empty() {
     assert!(!lines.iter().any(|l| l.starts_with("wrapProgram")));
 }
 
-// -----------------------------------------------------------------
 // build_archive_tuples — sha256 guard, url_template, hash conversion.
-// -----------------------------------------------------------------
 
 fn os_artifact(os: &str, arch: &str, url: &str, sha256: &str) -> util::OsArtifact {
     // Synthesize a representative genuine triple so `is_macos`-based nix
@@ -372,7 +362,7 @@ fn build_archive_tuples_excludes_watchos_darwin_keeps_linux() {
 #[test]
 fn build_archive_tuples_only_apple_non_macos_bails_as_no_archive() {
     // A full build whose only Apple archive is tvOS has no nix-installable
-    // system: build_archive_tuples must bail (failure surfaced), not emit a
+    // system: build_archive_tuples must bail (failure reported), not emit a
     // bogus aarch64-darwin package.
     let sha = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
     let arts = vec![os_artifact_with_target(
@@ -570,9 +560,7 @@ fn generate_nix_expression_emits_each_platform_once() {
     );
 }
 
-// -----------------------------------------------------------------
 // resolve_source_roots — single-root collapse vs per-system map.
-// -----------------------------------------------------------------
 
 #[test]
 fn resolve_source_roots_no_artifacts_yields_dot_default() {
@@ -686,9 +674,7 @@ fn build_install_lines_auto_block_appends_extra_install() {
     );
 }
 
-// -----------------------------------------------------------------
 // detect_dynamically_linked — build-stage metadata flag short-circuit.
-// -----------------------------------------------------------------
 
 fn ctx_with_binary_metadata(crate_name: &str, flag: Option<&str>) -> Context {
     use anodizer_core::artifact::{Artifact, ArtifactKind};
@@ -740,9 +726,7 @@ fn detect_dynamically_linked_false_from_metadata_flag() {
     );
 }
 
-// -----------------------------------------------------------------
 // resolve_nix_metadata — license resolution + meta.* render.
-// -----------------------------------------------------------------
 
 fn meta_ctx() -> Context {
     use anodizer_core::test_helpers::TestContextBuilder;
@@ -886,7 +870,7 @@ fn resolve_nix_metadata_config_overrides_project_metadata() {
 fn resolve_nix_metadata_bad_homepage_template_bails() {
     let ctx = meta_ctx();
     let cfg = NixConfig {
-        // Unterminated Tera expression — render must surface an Err that the
+        // Unterminated Tera expression — render must return an Err that the
         // `with_context("render homepage template …")` wrapper carries up.
         homepage: Some("https://x/{{ unclosed".to_string()),
         ..Default::default()
@@ -908,9 +892,7 @@ fn resolve_nix_metadata_bad_main_program_template_bails() {
     assert!(format!("{err:#}").contains("main_program"));
 }
 
-// -----------------------------------------------------------------
 // render_license_expr — RHS rendering for each NixLicense shape.
-// -----------------------------------------------------------------
 
 #[test]
 fn render_license_expr_single_attr() {
@@ -943,9 +925,7 @@ fn render_license_expr_empty_is_empty() {
     assert_eq!(render_license_expr(""), "");
 }
 
-// -----------------------------------------------------------------
 // resolve_nix_changelog — explicit override + release-repo derivation.
-// -----------------------------------------------------------------
 
 fn crate_cfg_with_github_release(owner: &str, repo: &str) -> CrateConfig {
     use anodizer_core::config::{ReleaseConfig, ScmRepoConfig};
@@ -1021,10 +1001,8 @@ fn changelog_falls_back_to_v_version_when_no_tag_var() {
     assert_eq!(got, "https://github.com/me/tool/releases/tag/v2.0.0");
 }
 
-// -----------------------------------------------------------------
 // build_completion_install_lines / build_manpage_install_lines —
 // gated on archive config; emit installShellCompletion / installManPage.
-// -----------------------------------------------------------------
 
 fn crate_cfg_with_archive(archive: anodizer_core::config::ArchiveConfig) -> CrateConfig {
     use anodizer_core::config::ArchivesConfig;
@@ -1109,9 +1087,7 @@ fn manpage_line_emitted_when_archive_bundles_manpages() {
     assert_eq!(lines, vec!["installManPage man/man1/*"]);
 }
 
-// -----------------------------------------------------------------
 // resolve_repo_coords — owner/name resolution + render.
-// -----------------------------------------------------------------
 
 #[test]
 fn resolve_repo_coords_renders_owner_and_name_templates() {
@@ -1146,12 +1122,10 @@ fn resolve_repo_coords_missing_repository_is_an_entry_skip() {
     );
 }
 
-// -----------------------------------------------------------------
 // render_nix_for_validation + crate_has_nix_archive — the in-memory
 // render twins (no clone, no subprocess). An Archive-kind artifact
 // never registers as a Binary, so detect_dynamically_linked finds no
 // binary artifacts and never touches disk — keeping these ungated.
-// -----------------------------------------------------------------
 
 fn archive_artifact(target: &str, url: &str, sha256: &str) -> anodizer_core::artifact::Artifact {
     use anodizer_core::artifact::{Artifact, ArtifactKind};
@@ -1314,7 +1288,7 @@ fn crate_has_nix_archive_false_when_only_non_nix_systems() {
 #[test]
 fn crate_has_nix_archive_errors_on_present_but_sha_less_artifact() {
     // A matched artifact missing its sha256 is present-but-broken: the
-    // collect step bails so the publisher surfaces it rather than skipping.
+    // collect step bails so the publisher reports it rather than skipping.
     let arts = vec![archive_artifact(
         "x86_64-unknown-linux-gnu",
         "https://e/x.tar.gz",
@@ -1362,7 +1336,7 @@ fn render_nix_for_validation_bad_if_template_bails() {
 
 #[test]
 fn render_nix_for_validation_bad_skip_template_bails() {
-    // A malformed `skip` template surfaces through the first guard's
+    // A malformed `skip` template comes through the first guard's
     // `with_context("render skip template …")` wrapper.
     let arts = vec![archive_artifact(
         "x86_64-unknown-linux-gnu",
@@ -1381,14 +1355,12 @@ fn render_nix_for_validation_bad_skip_template_bails() {
     assert!(format!("{err:#}").contains("skip template"));
 }
 
-// =================================================================
 // Subprocess-driven paths: formatter (alejandra/nixfmt) + the full
 // clone -> write -> flake -> commit -> push pipeline. Every test here
 // spawns `git` (and a fake formatter) and mutates `PATH`/env, so the
 // whole module is `#[cfg(unix)]`-gated (precedent: npm/tests.rs,
 // homebrew/publish_formula.rs). Coverage is measured on ubuntu, so the
 // gate costs nothing while keeping Windows builds warning-free.
-// =================================================================
 #[cfg(unix)]
 mod subprocess {
     use super::*;
@@ -1417,7 +1389,7 @@ mod subprocess {
     /// Bare overlay repo seeded with one commit on `branch`, usable as a
     /// local `git clone` URL. The publisher clones it, writes the
     /// derivation + flake, commits, and pushes back — the bare repo is the
-    /// assertion surface (inspect the published `default.nix` / `flake.nix`).
+    /// what the test checks (inspect the published `default.nix` / `flake.nix`).
     fn make_bare_repo(branch: &str) -> (String, tempfile::TempDir) {
         let bare = tempfile::tempdir().expect("bare tempdir");
         let seed = tempfile::tempdir().expect("seed tempdir");
@@ -1526,13 +1498,11 @@ mod subprocess {
         ]
     }
 
-    // -------------------------------------------------------------
     // run_formatter — mandatory-format matrix. Formatting is opt-in
     // (None = no-op, matches GR) but once a formatter is configured it
     // is MANDATORY in EVERY mode (no --strict gate): a missing binary,
     // a non-zero exit, or an unknown name each bail so an unformatted
     // derivation is never pushed. INTENTIONALLY stricter than GR.
-    // -------------------------------------------------------------
 
     #[test]
     fn run_formatter_none_is_noop() {
@@ -1643,9 +1613,7 @@ mod subprocess {
         assert!(msg.contains("alejandra or nixfmt"), "{msg}");
     }
 
-    // -------------------------------------------------------------
     // publish_to_nix — full clone/write/flake/commit/push pipeline.
-    // -------------------------------------------------------------
 
     #[test]
     fn publish_to_nix_direct_push_lands_derivation_and_flake() {
@@ -1845,7 +1813,7 @@ mod subprocess {
         // With `pull_request.enabled = true`, finalize_publish drives
         // maybe_submit_pr, which yields Some(outcome) and is recorded on
         // the context. The direct push still arrives; the PR attempt (no gh
-        // resolvable against a fake fork) surfaces a recorded outcome —
+        // resolvable against a fake fork) reports a recorded outcome —
         // proving the `if let Some(pr_outcome)` branch ran (a non-PR
         // publish records nothing).
         use anodizer_core::config::PullRequestConfig;
@@ -1997,7 +1965,7 @@ mod subprocess {
     /// The same residual `nix.description` template stays lenient in
     /// dry-run: `publish_to_nix` early-returns before the derivation
     /// render (and therefore before the guard), so the call must still
-    /// report `Ok(false)` rather than surface the residual as an error.
+    /// report `Ok(false)` rather than report the residual as an error.
     #[test]
     fn publish_residual_description_template_dry_run_stays_lenient() {
         let (bare_url, bare) = make_bare_repo("main");

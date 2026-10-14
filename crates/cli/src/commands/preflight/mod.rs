@@ -19,7 +19,7 @@
 //!
 //! Requirements are declared next to the code that consumes them — each
 //! stage crate exports `env_requirements(ctx)` and each publisher
-//! implements `Publisher::requirements` — so the preflight surface cannot
+//! implements `Publisher::requirements` — so the preflight checks cannot
 //! drift from what the stages actually read.
 
 use std::path::PathBuf;
@@ -356,7 +356,7 @@ pub fn collect_requirements(ctx: &Context, scope: PreflightScope) -> Vec<Sourced
     // `bash -n`, `nix-instantiate --parse`) and preferred transports (`gh`)
     // whose absence degrades a publish gracefully instead of failing it.
     // Same gate + deselection predicate as the hard `publish` table row, so
-    // a deselected publisher can never surface even a warn for tools it will
+    // a deselected publisher can never emit even a warn for tools it will
     // not use.
     if publish_runs {
         for publisher in anodizer_stage_publish::registry::all_publishers() {
@@ -531,7 +531,7 @@ fn verify_cosign_keys_load_with(
 /// classifies as gpg (`anodizer_core::signing::is_gpg_command`). Deduped so
 /// several sign configs sharing one cmd probe it once. Requirements are
 /// collected AFTER stage/publisher gating, so a skipped or deselected sign
-/// surface never contributes a probe.
+/// config never contributes a probe.
 fn gpg_sign_cmds(requirements: &[SourcedRequirement]) -> Vec<String> {
     let mut cmds: Vec<String> = Vec::new();
     for sr in requirements {
@@ -618,7 +618,7 @@ fn verify_gpg_faked_system_time_with(
 /// Emit each advisory (non-blocking) preflight warning as a `log.warn` line.
 /// These are tools the run would PREFER but does not require — the declaring
 /// stage degrades gracefully without them (e.g. the build's cross-compile
-/// toolchain) — so they surface as a recommendation, never a gate failure.
+/// toolchain) — so they show up as a recommendation, never a gate failure.
 fn log_preflight_warnings(report: &EnvPreflightReport, log: &StageLogger) {
     for w in &report.warnings {
         log.warn(&format!(

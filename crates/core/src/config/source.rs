@@ -3,9 +3,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 
 use super::StringOrU32;
 
-// ---------------------------------------------------------------------------
 // SourceConfig
-// ---------------------------------------------------------------------------
 
 /// An individual file entry for the source archive, with `src`, `dst`,
 /// `strip_parent` and `info` (file metadata overrides) keys.

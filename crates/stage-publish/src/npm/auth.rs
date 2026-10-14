@@ -17,7 +17,7 @@ use super::manifest::{DEFAULT_TAG, token_env_var};
 /// on a definitive `E404` (the package/version genuinely does not exist).
 ///
 /// Fail-closed on an inconclusive probe: a spawn failure or any non-404 error
-/// shape (registry 5xx, auth failure, network glitch) surfaces an `Err`
+/// shape (registry 5xx, auth failure, network glitch) returns an `Err`
 /// rather than `Ok(false)`. An `npm publish` is irreversible after npm's 72h
 /// unpublish window, so a probe that *cannot prove* the version is absent must
 /// not approve the publish — assuming "not published" on an outage would
@@ -77,7 +77,7 @@ pub(crate) fn version_already_published(
 }
 
 /// Resolve the auth token: `cfg.token` (templated) precedence, then the
-/// `NPM_TOKEN` env var. Empty when both are unset — the caller surfaces a
+/// `NPM_TOKEN` env var. Empty when both are unset — the caller reports a
 /// clear "missing token" error.
 pub(crate) fn resolve_token(ctx: &Context, cfg: &NpmConfig) -> Result<String> {
     // The shared ladder filters empties at every rung: an exported-but-blank
@@ -206,7 +206,7 @@ pub(crate) fn decide_auth(
                     AuthDecision::Token
                 } else if oidc_available {
                     // Trusted Publishing cannot create a package that does not
-                    // yet exist — surface a specific, fixable error.
+                    // yet exist — report a specific, fixable error.
                     AuthDecision::FailNewNeedsToken
                 } else {
                     AuthDecision::ErrorNoAuth

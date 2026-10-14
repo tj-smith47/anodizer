@@ -686,9 +686,7 @@ mod tests {
         assert_eq!(out[1].replacements, 0);
     }
 
-    // -----------------------------------------------------------------------
     // `match` anchors
-    // -----------------------------------------------------------------------
 
     #[test]
     fn anchor_regex_escapes_version_and_keeps_quantifiers() {

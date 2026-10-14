@@ -1,9 +1,7 @@
 use super::*;
 
-// ---------------------------------------------------------------------------
 // Public render API — produces a single staged changelog edit that can be
 // bundled alongside a version bump in one commit.
-// ---------------------------------------------------------------------------
 
 /// Strategy describing how `ChangelogUpdate.rendered_text` relates to the
 /// existing contents of `ChangelogUpdate.file_path`.
@@ -154,7 +152,7 @@ pub(crate) fn build_section_template_vars(sv: SectionVars<'_>) -> TemplateVars {
 /// consult `--strict`; a malformed template is kept verbatim (matching the
 /// non-strict `render_template_strict` branch) rather than failing the
 /// `bump`/`tag` mid-flight. But the fallback must never be SILENT: a `log.warn`
-/// naming the field kind and the offending template surfaces the defect at
+/// naming the field kind and the offending template reports the defect at
 /// default verbosity so a literal `{{ … }}` is never committed into
 /// `CHANGELOG.md` without a trace.
 pub(crate) fn render_field(

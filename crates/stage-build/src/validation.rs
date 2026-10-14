@@ -1,6 +1,4 @@
-// ---------------------------------------------------------------------------
 // strip_glibc_suffix — strip glibc version suffix like ".2.17" from targets
-// ---------------------------------------------------------------------------
 
 /// Strip a glibc version suffix from a target triple.
 ///

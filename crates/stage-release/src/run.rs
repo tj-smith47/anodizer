@@ -1514,7 +1514,7 @@ mod tests {
         validate_nightly_config(&ctx, &quiet_log());
     }
 
-    // ---- nightly.skip_if_no_changes ------------------------------------
+    // nightly.skip_if_no_changes
 
     fn skip_if_no_changes_ctx() -> anodizer_core::context::Context {
         let mut ctx = TestContextBuilder::new().tag("v0.0.0-test").build();
@@ -1673,7 +1673,7 @@ mod tests {
         );
     }
 
-    // ---- nightly.name_template / nightly.tag_name ----------------------
+    // nightly.name_template / nightly.tag_name
 
     fn nightly_named_ctx(name: Option<&str>, tag: Option<&str>) -> anodizer_core::context::Context {
         let mut ctx = TestContextBuilder::new()

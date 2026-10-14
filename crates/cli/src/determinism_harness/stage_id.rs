@@ -58,7 +58,7 @@ pub enum StageId {
     ///   read `false`.
     ///
     /// Any drift detected after the workarounds is a real regression
-    /// in cargo's packaging reproducibility — surface the diff in the
+    /// in cargo's packaging reproducibility — report the diff in the
     /// report and don't silently pass.
     CargoPackage,
     /// Docker BuildKit reproducibility probe.
@@ -102,7 +102,7 @@ pub enum StageId {
     ///
     /// Drives the `stage-msi` crate via the child release subprocess
     /// (`wix` / `candle` / `light` invocations live inside the stage's
-    /// allow-listed spawn surface). Skipped at the harness gate when
+    /// allow-listed spawn code). Skipped at the harness gate when
     /// `wix` is not on `PATH`, so the harness stays usable on Linux /
     /// macOS hosts that lack the WiX toolset.
     Msi,
@@ -116,14 +116,14 @@ pub enum StageId {
     ///
     /// Drives the `stage-dmg` crate. Primary tool is `hdiutil` on
     /// macOS and `mkisofs` on Linux (matching how the stage's spawn
-    /// surface picks its DMG-builder). Skipped when the primary tool
+    /// code picks its DMG-builder). Skipped when the primary tool
     /// is missing on the host.
     Dmg,
     /// `.pkg` installer reproducibility probe (macOS).
     ///
     /// Drives the `stage-pkg` crate via the child release subprocess
     /// (`pkgbuild` / `productbuild` invocations live inside the
-    /// stage's allow-listed spawn surface). Skipped when `pkgbuild`
+    /// stage's allow-listed spawn code). Skipped when `pkgbuild`
     /// is not on `PATH`.
     Pkg,
     /// Source RPM (`.src.rpm`) reproducibility probe.

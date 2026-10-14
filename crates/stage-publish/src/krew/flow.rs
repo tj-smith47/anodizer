@@ -2,9 +2,7 @@ use anodizer_core::log::StageLogger;
 use anyhow::{Context as _, Result};
 use serde::Serialize;
 
-// ---------------------------------------------------------------------------
 // krew-release-bot mode selection
-// ---------------------------------------------------------------------------
 //
 // A plugin's first appearance in `kubernetes-sigs/krew-index` requires a
 // human-reviewed PR; subsequent version bumps are mechanical. The krew
@@ -135,7 +133,7 @@ fn is_plugin_in_krew_index(plugin_name: &str, token: Option<&str>) -> Option<boo
     if status == reqwest::StatusCode::NOT_FOUND {
         return Some(false);
     }
-    // 403 (rate limited / token denied), 5xx (GitHub flaking) surface as
+    // 403 (rate limited / token denied), 5xx (GitHub flaking) show up as
     // `None` (indeterminate). The probe runs only in `auto` mode, where an
     // indeterminate result is a hard error rather than a guess — an existing
     // plugin wrongly routed to a fork PR is rejected by krew maintainers.
@@ -143,9 +141,7 @@ fn is_plugin_in_krew_index(plugin_name: &str, token: Option<&str>) -> Option<boo
     None
 }
 
-// ---------------------------------------------------------------------------
 // krew-release-bot webhook submission
-// ---------------------------------------------------------------------------
 
 /// Default hosted krew-release-bot webhook endpoint. The bot forks
 /// krew-index and opens the version-bump PR server-side under its own

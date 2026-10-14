@@ -249,7 +249,7 @@ pub(crate) fn prepare_v2_config(
     }
 
     // Dry-run post-hooks fire ONCE per docker_v2 config with an empty
-    // `Digest` so template typos still surface. Real-run post-hooks fire
+    // `Digest` so template typos are still reported. Real-run post-hooks fire
     // from `execute_jobs_and_register`'s caller — also once per config,
     // keyed by `idx` against the first matching job's digest.
     if dry_run && !post_hooks.is_empty() {
@@ -365,7 +365,7 @@ fn queue_v2_build_for_platforms(
     // Backend selector: `use: podman` opts into `podman build`, otherwise
     // V2 invokes `docker buildx build`. Validation here gives a friendlier
     // error (config path + field name) than the generic resolver bail-out
-    // that would otherwise surface at command construction.
+    // that would otherwise appear at command construction.
     let backend = v2_cfg.use_backend.as_deref();
     match backend {
         Some("buildx") | Some("podman") | None => {}
@@ -582,7 +582,7 @@ pub(crate) fn validate_docker_v2_id_uniqueness(
 /// buildx). `check_buildx_version` confirms the plugin is reachable (mirrors
 /// the driver check), and `check_buildx_driver` validates
 /// the active driver supports multi-platform builds. Both are warn-only:
-/// downstream `buildx build` surfaces a hard error if it cannot actually run.
+/// downstream `buildx build` reports a hard error if it cannot actually run.
 pub(crate) fn run_buildx_probes(stage: &super::DockerStage, log: &anodizer_core::log::StageLogger) {
     match &stage.probe {
         Some(custom) => run_buildx_version_check(log, || custom()),

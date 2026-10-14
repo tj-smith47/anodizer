@@ -124,7 +124,7 @@ pub fn is_dynamically_linked_bytes(bytes: &[u8]) -> bool {
 ///
 /// Returns `Err` when a file that *does* exist cannot be read — an open failure
 /// other than not-found, or a short/failed read of a confirmed ELF. A binary a
-/// caller cannot inspect is a defect that must surface, never silently
+/// caller cannot inspect is a defect that must be reported, never silently
 /// "statically linked": swallowing it would, for example, drop
 /// `autoPatchelfHook` from a Nix derivation and ship a broken install.
 pub fn is_dynamically_linked(path: &Path) -> std::io::Result<bool> {

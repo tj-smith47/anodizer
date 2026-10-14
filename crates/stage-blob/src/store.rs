@@ -10,9 +10,7 @@ use object_store::RetryConfig as ObjectStoreRetryConfig;
 use crate::kms::{KmsProvider, parse_kms_provider};
 use crate::provider::Provider;
 
-// ---------------------------------------------------------------------------
 // Store construction — one function per provider
-// ---------------------------------------------------------------------------
 
 /// Hard cap on `object_store::RetryConfig::retry_timeout`. The upstream
 /// docs warn that signed S3/GCS/Azure credentials typically expire on the
@@ -278,7 +276,7 @@ pub(crate) fn build_gcs_store(
     } else {
         None
     };
-    // GCS is always TLS (no disable_ssl surface), so plaintext HTTP stays off.
+    // GCS is always TLS (no disable_ssl option), so plaintext HTTP stays off.
     builder = builder.with_client_options(timed_client_options(false, acl_headers));
 
     Ok(Box::new(

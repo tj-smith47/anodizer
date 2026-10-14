@@ -1,5 +1,5 @@
 //! `StageLogger` — the per-stage emitter, its redaction policy, and the
-//! subprocess output check that surfaces a failed child's streams.
+//! subprocess output check that reports a failed child's streams.
 
 use std::sync::atomic::Ordering;
 
@@ -297,7 +297,7 @@ impl StageLogger {
     /// Failure body line — a red `✗` marker, then `msg`, at the body indent
     /// beneath the current section. Shown at Normal and above. Use for a
     /// failed unit of work that is reported inline (the run continues or the
-    /// error is surfaced separately via [`Self::error`]).
+    /// error is reported separately via [`Self::error`]).
     pub fn failure(&self, msg: &str) {
         if self.verbosity >= Verbosity::Normal {
             flush_pending();
@@ -312,7 +312,7 @@ impl StageLogger {
         }
     }
 
-    /// Whether liveness heartbeats should surface: only at exactly Normal
+    /// Whether liveness heartbeats should show: only at exactly Normal
     /// verbosity. Quiet shows errors only, and at Verbose/Debug the live
     /// subprocess tee already conveys progress, so a heartbeat there would
     /// double the signal. The single authority for the suppression policy:
@@ -488,7 +488,7 @@ impl StageLogger {
     /// to [`Self::debug`] (invisible at default and `--verbose`, visible at
     /// `--debug`) unless `show` is set — `--show-skipped`, the diagnostic
     /// escape hatch for "why didn't publisher X run for crate Y?" — in which
-    /// case they surface at [`Self::status`] like any other key action.
+    /// case they show at [`Self::status`] like any other key action.
     pub fn skip_line(&self, show: bool, msg: &str) {
         if show {
             self.status(msg);
@@ -593,7 +593,7 @@ impl StageLogger {
     /// json/changelog/metadata payloads), and a hook's child stdout teed onto
     /// stdout would corrupt it. Progress UX belongs on stderr with every other
     /// human/log line. Recorded into any attached `LogCapture` at
-    /// `LogLevel::Verbose` so tests can assert the stream surfaced.
+    /// `LogLevel::Verbose` so tests can assert the stream was shown.
     ///
     /// `line` must be a single line with its trailing newline already
     /// stripped (the caller's line reader does this); the newline is added
@@ -742,7 +742,7 @@ impl StageLogger {
             // error so operators reading the final anyhow chain see
             // something more actionable than just an exit code. The
             // separately-emitted `log.error` lines above remain the
-            // primary surface; this is defense in depth for callers
+            // primary report; this is defense in depth for callers
             // that propagate the error past the StageLogger context.
             let stderr_raw = String::from_utf8_lossy(&output.stderr);
             let stderr_tail = if stderr_raw.is_empty() {
@@ -815,7 +815,7 @@ impl StageLogger {
             // the "stderr" label); success uses one "output" label for
             // stdout only.
             if output.status.success() {
-                // success path: stderr is never surfaced through check_output
+                // success path: stderr is never shown through check_output
                 None
             } else {
                 Some(format!("{label} {prefix}:\n{stderr}"))

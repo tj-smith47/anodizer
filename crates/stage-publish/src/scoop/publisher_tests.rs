@@ -228,7 +228,6 @@ fn scoop_rollback_dedups_shared_bucket() {
     assert_eq!(unique[0].target, "alpha");
 }
 
-// -----------------------------------------------------------------------
 // Log-message helpers — the operator-facing log strings the publisher
 // emits at each boundary.
 

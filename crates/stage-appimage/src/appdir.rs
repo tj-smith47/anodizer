@@ -4,9 +4,7 @@ use anyhow::{Context as _, Result};
 
 use super::job::AppImageJob;
 
-// ---------------------------------------------------------------------------
 // AppDir assembly (pure FS — independently testable)
-// ---------------------------------------------------------------------------
 
 /// A file/dir to copy into the AppDir (`src` on disk → `dst` relative to the
 /// AppDir root).

@@ -128,9 +128,7 @@ fn test_generate_formula_multi_arch_grouped() {
     assert_eq!(formula.matches("on_linux do").count(), 1);
 }
 
-// -----------------------------------------------------------------------
 // Deep integration tests: verify full formula structure
-// -----------------------------------------------------------------------
 
 #[test]
 fn test_integration_formula_complete_structure() {
@@ -348,9 +346,7 @@ fn test_integration_formula_multiline_install() {
     assert!(formula.contains("    assert_match \"complex-app\","));
 }
 
-// -----------------------------------------------------------------------
 // Additional behavior tests — config fields actually do things
-// -----------------------------------------------------------------------
 
 #[test]
 fn test_formula_multi_arch_darwin_intel_and_arm() {
@@ -509,9 +505,7 @@ fn test_formula_class_name_dot_separator() {
     );
 }
 
-// -----------------------------------------------------------------------
 // New fields: homepage, dependencies, conflicts, caveats
-// -----------------------------------------------------------------------
 
 #[test]
 fn test_formula_custom_homepage() {
@@ -1075,9 +1069,7 @@ fn test_formula_all_new_fields_together() {
     assert!(formula.contains("Important note."));
 }
 
-// -----------------------------------------------------------------------
 // Formula name override
-// -----------------------------------------------------------------------
 
 #[test]
 fn test_formula_name_override() {
@@ -1103,9 +1095,7 @@ fn test_formula_name_override() {
     );
 }
 
-// -----------------------------------------------------------------------
 // Custom commit message template
-// -----------------------------------------------------------------------
 
 #[test]
 fn test_render_commit_msg_default() {
@@ -1131,9 +1121,7 @@ fn test_render_commit_msg_custom_template() {
     assert_eq!(msg, "release: mytool v2.0.0");
 }
 
-// -----------------------------------------------------------------------
 // Cask tests: sha256/url ordering, generate_completions
-// -----------------------------------------------------------------------
 
 use super::cask::{
     CaskArchEntry, CaskParams, CaskPlatformBlock, generate_cask, render_generate_completions,
@@ -1334,9 +1322,7 @@ fn test_cask_generate_completions_renders_with_the_artifacts() {
     assert!(cask.contains(&expected), "{cask}");
 }
 
-// ---------------------------------------------------------------------------
 // cask `uninstall` / `zap` stanzas: one key per directive.
-// ---------------------------------------------------------------------------
 
 use anodizer_core::config::HomebrewCaskUninstall;
 
@@ -1422,10 +1408,8 @@ fn test_cask_template_renders_multi_key_zap() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // cask `additional_url_params` (using, cookies, referer, headers,
 // user_agent, data) renders on the `url` line.
-// ---------------------------------------------------------------------------
 
 use anodizer_core::config::HomebrewCaskURL;
 use std::collections::HashMap;
@@ -1521,9 +1505,7 @@ fn test_cask_template_emits_url_extras() {
     );
 }
 
-// -----------------------------------------------------------------------
 // C7 — cask `binary "<n>", target: "<t>"` rename form
-// -----------------------------------------------------------------------
 
 /// Bare-string YAML form (`binaries: [my-cli]`) deserialises to the bare
 /// `HomebrewCaskBinary::Name` variant and the template emits
@@ -1667,9 +1649,7 @@ binaries:
     );
 }
 
-// ---------------------------------------------------------------------------
 // Multi-archive disambiguation tests
-// ---------------------------------------------------------------------------
 
 use anodizer_core::log::{StageLogger, Verbosity};
 
@@ -2051,7 +2031,6 @@ fn test_disambiguate_homebrew_archives_logs_dropped_via_sink() {
     );
 }
 
-// ===========================================================================
 // publish_to_homebrew / publish_cask / publish_top_level_homebrew_casks
 // early-exit tests.
 //
@@ -2061,7 +2040,6 @@ fn test_disambiguate_homebrew_archives_logs_dropped_via_sink() {
 // A regression that returned `Ok(true)` would cause the rollback orchestrator
 // to attempt `git revert HEAD` in a temp clone that has nothing this run
 // actually changed.
-// ===========================================================================
 
 use anodizer_core::config::{
     Config, CrateConfig, HomebrewCaskConfig, HomebrewConfig, PublishConfig, RepositoryConfig,
@@ -2620,10 +2598,8 @@ fn publish_top_level_homebrew_casks_no_macos_with_ids_skips_not_errors() {
     assert_eq!(got.applicable, 0, "no applicable cask when no darwin build");
 }
 
-// ===========================================================================
 // generate_cask_from_context — exercise the multi-platform / fallback paths
 // in cask.rs that aren't reachable through the bare `generate_cask` API.
-// ===========================================================================
 
 use anodizer_core::artifact::{Artifact, ArtifactKind};
 
@@ -4403,12 +4379,10 @@ fn homebrew_top_level_cask_url_empty_metadata_bails_with_actionable_error() {
     );
 }
 
-// ===========================================================================
 // publish_top_level_homebrew_casks + publish_cask — inner-loop branch
 // coverage beyond the early-exit guards: artifact-resolution failures,
 // project_name fallback, no-URL-block bail, and the skip_upload fallback
 // ladder from cask-level to homebrew-level.
-// ===========================================================================
 
 /// publish_top_level_homebrew_casks: a valid entry (repo set, no skip,
 /// no dry-run) with NO macOS artifact in the bundle must bail with the
@@ -4469,7 +4443,7 @@ fn publish_top_level_homebrew_casks_defaults_name_to_project_name() {
     };
     let mut ctx = Context::new(config, ContextOptions::default());
     // No darwin artifact -> skips through the artifact lookup as
-    // not-applicable; the project_name fallback surfaces in the
+    // not-applicable; the project_name fallback shows up in the
     // status-line log. Captured via the structured result; tests for
     // the log-line wording live in the per-iteration tests above.
     let got = super::publish_top_level_homebrew_casks(&mut ctx, &quiet_log())
@@ -4600,12 +4574,10 @@ fn publish_top_level_homebrew_casks_skip_then_missing_repository_records_both() 
     assert_eq!(repo_skips[0].label, "broken-cask");
 }
 
-// ===========================================================================
 // publish_top_level_homebrew_casks — the live clone → write → commit → push
 // path (beyond the early-exit / render-bail guards the tests above cover),
 // driven against a LOCAL bare git remote (no network). PR submission is left
 // disabled so `maybe_submit_pr` returns before any `gh`/API transport.
-// ===========================================================================
 
 /// Seed a bare "cask tap fork" repo with one commit on `branch`; the publish
 /// path clones it (a plain `git clone <localpath>`), writes the cask `.rb`,
@@ -4991,7 +4963,7 @@ fn split_alternative_names_partitions_by_at_sign() {
 /// `render_alternative_names`: pass-through when no template
 /// substitutions are present, and the template engine renders
 /// `{{ ProjectName }}` against the configured `Context`. A failure in
-/// the engine surfaces as `Err` so a typo in the template doesn't
+/// the engine returns `Err` so a typo in the template doesn't
 /// silently produce a malformed Ruby cask file.
 #[test]
 fn render_alternative_names_runs_each_entry_through_template_engine() {
@@ -5021,7 +4993,7 @@ fn render_alternative_names_runs_each_entry_through_template_engine() {
 
 /// publish_cask: cask-level `name` override is independent of the crate
 /// name — when set, downstream cask filename uses the override, but
-/// generator-level bails surface `crate_name` so operators can still match
+/// generator-level bails report `crate_name` so operators can still match
 /// the failure back to the crate that owns the publisher config.
 #[test]
 fn publish_cask_name_override_does_not_mask_crate_in_errors() {
@@ -5047,10 +5019,8 @@ fn publish_cask_name_override_does_not_mask_crate_in_errors() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // ruby_escape: user-config string values that contain `"` or `\` must be
 // escaped so the rendered formula/cask stays syntactically valid Ruby.
-// ---------------------------------------------------------------------------
 
 /// Run `ruby -c` on rendered Ruby source, asserting exit 0. Gated on `ruby`
 /// being on `PATH`; prints a visible skip marker and returns when absent so a
@@ -5430,9 +5400,7 @@ fn install_fragment_escapes_each_side_keeps_structure() {
     assert_ruby_syntax_err("install-fragment-unescaped", &broken);
 }
 
-// -----------------------------------------------------------------------
 // Formula renderer: previously-uncovered archive-layout and opts branches.
-// -----------------------------------------------------------------------
 
 /// A multi-archive macOS set with only an amd64 entry lists that archive
 /// under both `on_arm` and `on_intel` (Homebrew allows a `url` inside
@@ -5946,14 +5914,12 @@ fn test_formula_empty_license_omits_stanza() {
     assert!(!no_license.contains("license \""));
 }
 
-// ===========================================================================
 // Template-rendering of user-supplied config string fields: a value carrying
 // `{{ .Tag }}` must reach the rendered manifest resolved, never literal. These
 // drive the CALLER-level entry points (the ones that hold a real Context +
 // StageLogger), matching how `resolve_homebrew_metadata` renders description /
 // homepage / license. Each asserts the resolved token IS present and the raw
 // `{{` delimiter is NOT.
-// ===========================================================================
 
 /// Build a `Context` with a single `mytool` crate whose `publish.homebrew` is
 /// `hb_cfg`, a darwin+linux archive pair so the formula/cask have artifacts to
@@ -6891,9 +6857,7 @@ fn publish_top_level_casks_with_an_unrenderable_pull_request_token_skip_before_a
     drop(good_bare);
 }
 
-// -----------------------------------------------------------------------
 // Rendered cask layouts checked by `brew style`
-// -----------------------------------------------------------------------
 
 /// The casks the layout tests and the `brew style` check render: a
 /// macOS + Linux cask carrying every optional stanza, a macOS-only cask with
@@ -7455,9 +7419,7 @@ fn rendered_casks_pass_brew_style_opt_in() {
     }
 }
 
-// -----------------------------------------------------------------------
 // Rendered formula layouts checked by `brew style`
-// -----------------------------------------------------------------------
 
 /// The formulae the `brew style` check renders, one per layout the renderer
 /// has: a lone archive for each of Apple Silicon, an Intel Mac and Linux,

@@ -47,7 +47,7 @@ pub fn validate_slug(slug: &str) -> Result<()> {
 
 /// Loose check on the Personal-Token header value. OpenCollective tokens are
 /// long opaque strings; reject anything obviously malformed (whitespace,
-/// non-printable bytes, very short) so the misconfiguration surfaces before
+/// non-printable bytes, very short) so the misconfiguration is reported before
 /// the API returns an opaque 401.
 pub fn validate_token_shape(token: &str) -> Result<()> {
     crate::util::validate_token_min_length("opencollective", "OPENCOLLECTIVE_TOKEN", token, 16)?;
@@ -91,7 +91,7 @@ pub(crate) fn build_publish_body(update_id: &str) -> serde_json::Value {
 /// must inspect the `errors` array independently of the status code.
 ///
 /// Returns `Ok(())` when the response carries no errors. Returns
-/// `Err(message)` joining all error messages with `; ` so the surfaced
+/// `Err(message)` joining all error messages with `; ` so the returned
 /// failure quotes every reason the server gave.
 pub(crate) fn decode_graphql_errors(body: &serde_json::Value) -> Result<(), String> {
     let Some(errs) = body.get("errors").and_then(|v| v.as_array()) else {
@@ -115,7 +115,7 @@ pub(crate) fn decode_graphql_errors(body: &serde_json::Value) -> Result<(), Stri
 /// raising the appropriate parity error when it is missing or empty.
 ///
 /// Mirrors the upstream PR #6512 sequence:
-///   1. If the body carries a non-empty `errors` array, surface it.
+///   1. If the body carries a non-empty `errors` array, return it.
 ///   2. If `data.createUpdate.id` is absent, fail with "missing update ID".
 ///   3. If `data.createUpdate.id` is the empty string, fail with the upstream
 ///      message "opencollective returned empty update id".
@@ -221,7 +221,7 @@ fn do_mutation(
 /// 2. `publishUpdate` mutation: publishes the update to all collective members
 ///
 /// Error categorisation mirrors upstream commit 206120a: 401, 5xx, and
-/// other 4xx rejections all surface distinct messages, GraphQL `errors` arrays
+/// other 4xx rejections all report distinct messages, GraphQL `errors` arrays
 /// are decoded and reported, and malformed JSON responses are caught with a
 /// dedicated error rather than panicking.
 ///
@@ -331,7 +331,6 @@ mod tests {
         assert!(err.contains("whitespace"), "{err}");
     }
 
-    // -----------------------------------------------------------------------
     // GraphQL error decoding regression tests
     //
     // Mirrors upstream PR #6512 test cases:
@@ -340,7 +339,6 @@ mod tests {
     //   - TestCreateUpdateEmptyID
     //   - TestPublishUpdateGraphqlError
     //   - TestNonOKStatus (classify_opencollective_status covers this)
-    // -----------------------------------------------------------------------
 
     #[test]
     fn graphql_response_no_errors_is_ok() {
@@ -447,7 +445,7 @@ mod tests {
         assert!(msg.contains("boom"), "body must be included: {msg}");
     }
 
-    // ---- live send over a mock HTTP server -----------------------------
+    // live send over a mock HTTP server
     //
     // Drive `send_opencollective` (the real two-step createUpdate →
     // publishUpdate GraphQL POST path) against a scripted responder via the

@@ -98,7 +98,7 @@ impl Announcer for DiscourseAnnouncer {
         };
         // Config-shape guard (no env, no secret): a configured-but-zero
         // `category_id` is an unambiguous typo, not skip-when-empty. `send`
-        // hard-bails on it; surfacing the same check here fails it at the
+        // hard-bails on it; running the same check here fails it at the
         // prepublish guard, before any irreversible publisher fires, instead of
         // silently warning post-publish. A `None` category_id is the
         // skip-when-empty case (warn-and-skip in `send`) and is left untouched.

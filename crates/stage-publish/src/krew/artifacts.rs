@@ -189,9 +189,7 @@ pub(super) fn basename(path: &str) -> &str {
     path.rsplit('/').next().unwrap_or(path)
 }
 
-// ---------------------------------------------------------------------------
 // publish_to_krew
-// ---------------------------------------------------------------------------
 
 /// Per-crate outcome returned by [`publish_to_krew`].
 ///

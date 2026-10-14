@@ -52,7 +52,7 @@ pub struct Context {
     /// built in this run, or a cross-platform aggregate with no eligible
     /// artifact). Kept SEPARATE from [`Self::skip_memento`] on purpose: that
     /// memento is drained into the default-visible end-of-pipeline summary,
-    /// while these skips surface only as verbose lines plus an aggregate
+    /// while these skips show only as verbose lines plus an aggregate
     /// count in the stage's one RESULT line — a sharded run would otherwise
     /// print one summary line per unbuilt-target expectation.
     pub emission_skips: crate::pipe_skip::SkipMemento,
@@ -141,7 +141,7 @@ pub struct Context {
     /// which pre-loads artifacts and never invokes the build stage).
     ///
     /// Read by the binary-artifact guard to distinguish "configured a
-    /// binary-requiring surface but legitimately had no in-scope target in
+    /// binary-requiring output but legitimately had no in-scope target in
     /// this shard" (skip) from "was built yet produced no binary" (a real
     /// mis-scope to fail on). Populated via [`Context::set_built_crate_names`]
     /// and read via [`Context::built_crate_names`].

@@ -37,7 +37,7 @@ pub enum CosignKeyLoad {
     /// Carries the probe error so the caller can name it
     /// instead of masquerading the failure as a clean absence. Like
     /// [`CosignKeyLoad::CosignUnavailable`] the caller WARNs (sign time
-    /// re-validates), but the surfaced reason tells the operator the precheck
+    /// re-validates), but the reported reason tells the operator the precheck
     /// was skipped because the probe broke, not because cosign is missing.
     CosignProbeFailed(String),
     /// `cosign` is installed but the key failed to load — a genuinely bad
@@ -96,7 +96,7 @@ pub fn verify_cosign_key_loads_with_env(
             return CosignKeyLoad::CosignUnavailable;
         }
         // Probe failure (e.g. permission denied) means presence is UNKNOWN,
-        // not "absent": surface the I/O error so the caller's WARN names it
+        // not "absent": return the I/O error so the caller's WARN names it
         // rather than masquerading a broken probe as a clean skip of this
         // security-relevant precheck.
         anodizer_core::tool_detect::ToolProbe::ProbeFailed(e) => {
@@ -195,7 +195,7 @@ mod tests {
     }
 
     /// Probe cosign for a gated test: `true` when present. A probe ERROR is
-    /// surfaced through `reason` (never silently collapsed into a bare
+    /// reported through `reason` (never silently collapsed into a bare
     /// "absent"), so a skipped test records why cosign was unusable.
     fn cosign_present() -> (bool, String) {
         use anodizer_core::tool_detect::ToolProbe;

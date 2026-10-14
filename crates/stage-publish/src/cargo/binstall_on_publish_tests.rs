@@ -1,6 +1,5 @@
 //! binstall-metadata-on-publish tests.
 
-// ---------------------------------------------------------------------------
 // binstall-metadata-on-publish tests
 //
 // The cargo publisher emits [package.metadata.binstall] into each published
@@ -10,7 +9,6 @@
 // `ensure_binstall_metadata_with` with a fixed-tag closure (no git fixture
 // needed) across single-crate and workspace per-crate modes, proving the
 // emitted overrides carry each crate's OWN name_template / tag / version.
-// ---------------------------------------------------------------------------
 
 use super::*;
 use anodizer_core::config::{
@@ -298,13 +296,11 @@ fn resolve_default_targets_honors_config_then_falls_back() {
     );
 }
 
-// -----------------------------------------------------------------------
 // Guard-ordering tests: the poison guard must package the SAME tree state
 // `cargo publish` uploads, including anodizer's own pre-publish binstall
 // mutation. These drive the full `publish_to_cargo_with_guard` loop with an
 // injected local-cksum that READS the on-disk Cargo.toml, so the recorded
 // hash reflects whether the binstall table was written before the guard ran.
-// -----------------------------------------------------------------------
 
 /// True when the crate at `path` carries `[package.metadata.binstall]` in
 /// its on-disk Cargo.toml. The stand-in for "the .crate bytes differ with

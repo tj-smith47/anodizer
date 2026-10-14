@@ -80,7 +80,7 @@ pub(super) fn detect_dist_layout(dist: &Path, log: &StageLogger) -> Result<DistL
             Ok(t) => t.is_dir(),
             Err(e) => {
                 // A `file_type()` failure (transient IO, dangling symlink)
-                // routes the entry to "not a per-crate subdir", but surface
+                // routes the entry to "not a per-crate subdir", but report
                 // the reason so an operator debugging an unexpected Flat-vs-
                 // PerCrate choice isn't left guessing why an entry was skipped.
                 log.verbose(&format!(
@@ -125,7 +125,7 @@ pub(super) fn crate_subdir_has_manifest(dist: &Path, crate_name: &str, log: &Sta
         Ok(manifests) => !manifests.is_empty(),
         Err(e) => {
             // A real read error (permissions, transient IO) routes the
-            // crate to the flat path. Surface the reason so an operator
+            // crate to the flat path. Report the reason so an operator
             // debugging an unexpected layout choice isn't left guessing
             // why a present subdir was skipped.
             log.verbose(&format!(
@@ -223,7 +223,7 @@ pub(super) fn run_per_crate(
     //   empty. Without scoping every publisher in cfgd-core's
     //   iteration would iterate every workspace crate, find no
     //   applicable config, and either skip-all (which the homebrew
-    //   publisher classifies as a `failed` outcome to surface
+    //   publisher classifies as a `failed` outcome to report
     //   "nothing pushed") or attempt to publish for crates that
     //   aren't in the current iteration's preserved dist.
     // * `skip_stages`: regular release routes through

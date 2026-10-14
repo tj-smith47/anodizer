@@ -33,10 +33,10 @@ impl HookKind {
 /// applied) scoped to the crate's already-anchored template vars.
 ///
 /// Honors `--skip=before` / `--skip=after` — the same tokens the root lanes
-/// honor, so one flag suppresses a lane across both surfaces. A crate with no
+/// honor, so one flag suppresses a lane across both levels. A crate with no
 /// matching hook block is a no-op. The top-level `before:` / `after:` hooks
 /// fire separately (once per release in the outer dispatcher) — this only
-/// adds the per-crate surface.
+/// adds the per-crate hooks.
 pub(super) fn run_per_crate_lifecycle_hooks(
     ctx: &Context,
     crate_name: &str,
@@ -580,7 +580,7 @@ pub(super) fn run_one_crate_dist(
     // manifest references must actually exist on disk. Missing files
     // means the preserved dist is incomplete — running through to
     // SignStage would fail with a less actionable error from
-    // cosign/gpg, so it surfaces here with a manifest-shaped
+    // cosign/gpg, so it is reported here with a manifest-shaped
     // diagnostic instead. Unreferenced files are NOT flagged (the
     // dist tree carries metadata.json, harness logs, etc. that aren't
     // in the artifacts manifest).
@@ -675,7 +675,7 @@ pub(super) fn run_one_crate_dist(
     }
 
     // Same gate as `release` / `--merge`: required-publisher failures
-    // must surface as a non-zero exit even though per-publisher
+    // must show up as a non-zero exit even though per-publisher
     // failures are non-fatal inside the pipeline body.
     if result.is_ok() {
         super::super::gate_required_failures(ctx)?;
@@ -786,7 +786,7 @@ pub(super) fn strip_ephemeral_signatures(ctx: &mut Context, log: &StageLogger) {
 
 /// Walk `ctx.artifacts` grouped by `path` and fail if any path appears
 /// more than once. Called post-rehydration so a sharded matrix that
-/// accidentally overlapped on a target surfaces as a hard error rather
+/// accidentally overlapped on a target is reported as a hard error rather
 /// than a double-publish downstream.
 ///
 /// Thin wrapper over `commands::helpers::detect_duplicate_paths` that

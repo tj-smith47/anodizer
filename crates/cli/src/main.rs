@@ -231,7 +231,7 @@ where
 /// Initialize tracing for `tracing::warn!`/`info!`/`debug!` calls inside the
 /// pure-library code paths (e.g. `defaults_merge`). Honours `RUST_LOG` for
 /// per-module filtering; falls back to `warn` so config-validation warnings
-/// surface in CI even without a configured filter. Writes to stderr without
+/// show up in CI even without a configured filter. Writes to stderr without
 /// timestamps, in `StageLogger` visual style, so library warnings match the
 /// pipeline's own logger output (one output authority).
 fn init_tracing() {
@@ -942,9 +942,7 @@ fn run() {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
@@ -1448,7 +1446,7 @@ mod tests {
         );
     }
 
-    // ---- Build --workspace tests ----
+    // Build --workspace tests
 
     #[test]
     fn test_cli_parses_build_workspace_flag() {
@@ -1493,7 +1491,7 @@ mod tests {
         );
     }
 
-    // ---- Check subcommand tests ----
+    // Check subcommand tests
 
     #[test]
     fn check_config_accepts_workspace_flag() {
@@ -1673,7 +1671,7 @@ mod tests {
         }
     }
 
-    // ---- Split/merge CLI flag tests ----
+    // Split/merge CLI flag tests
 
     #[test]
     fn test_cli_parses_release_split_flag() {
@@ -1795,7 +1793,7 @@ mod tests {
         );
     }
 
-    // ---- New CLI flag tests ----
+    // New CLI flag tests
 
     #[test]
     fn test_cli_parses_fail_fast() {
@@ -1986,7 +1984,7 @@ mod tests {
         );
     }
 
-    // ---- Release-resilience CLI flag tests ----
+    // Release-resilience CLI flag tests
 
     #[test]
     fn release_parses_no_gate_submitter_flag() {
@@ -2002,7 +2000,7 @@ mod tests {
         }
     }
 
-    /// The automatic-rollback flag surface was removed with the policy it
+    /// The automatic-rollback flags were removed with the policy it
     /// drove. A script still passing one must be rejected at parse time AND
     /// told what replaced it — a bare `is_err()` would also pass if clap
     /// rejected the flag for an unrelated reason (a typo'd `long`, a
@@ -2071,7 +2069,7 @@ mod tests {
     fn promote_from_run_rejects_path_traversal() {
         // `--from-run` is joined into a filesystem path by the run-report
         // reader; clap's value_parser must reject any operator-typed value
-        // that could traverse out of <dist>/run-*/. The error must surface
+        // that could traverse out of <dist>/run-*/. The error must be reported
         // at parse time so no work runs with a poisoned id.
         for bad in [
             "../etc/passwd",
@@ -2188,7 +2186,7 @@ mod tests {
                 flag
             );
         }
-        // The automatic-rollback surface is gone; a stale help entry would
+        // The automatic-rollback flags are gone; a stale help entry would
         // advertise a flag the parser rejects.
         for removed in ["--rollback", "--rollback-only", "--from-run"] {
             assert!(

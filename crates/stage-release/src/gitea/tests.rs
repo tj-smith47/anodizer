@@ -1,6 +1,6 @@
 use super::*;
 
-// -- gitea_instance_url -------------------------------------------------
+// gitea_instance_url
 
 /// Every request builder appends `/api/v1/…`, so a configured value that
 /// already carries it is trimmed back to the instance root — exactly one
@@ -56,7 +56,7 @@ fn gitea_base_url_needs_both_a_scheme_and_a_host() {
     }
 }
 
-// -- gitea_release_url --------------------------------------------------
+// gitea_release_url
 
 #[test]
 fn release_url_basic() {
@@ -97,7 +97,7 @@ fn release_url_special_chars_in_owner_and_repo() {
     assert!(url.contains("my%20repo"), "repo should be percent-encoded");
 }
 
-// -- encode_segment -----------------------------------------------------
+// encode_segment
 
 #[test]
 fn encode_segment_simple() {
@@ -119,7 +119,7 @@ fn encode_segment_preserves_dots_dashes_underscores() {
     assert_eq!(encode_segment("my-project_v2.0"), "my-project_v2.0");
 }
 
-// -- build_gitea_client -------------------------------------------------
+// build_gitea_client
 
 #[test]
 fn build_client_normal() {
@@ -133,7 +133,7 @@ fn build_client_skip_tls() {
     assert!(client.is_ok());
 }
 
-// -- Gitea auth header format -------------------------------------------
+// Gitea auth header format
 
 #[test]
 fn gitea_auth_header_format() {
@@ -142,7 +142,7 @@ fn gitea_auth_header_format() {
     assert!(build_gitea_client("my-gitea-token", false).is_ok());
 
     // A token carrying a control character cannot form a valid header value;
-    // build_gitea_client must surface that as an error (with its context)
+    // build_gitea_client must return that as an error (with its context)
     // rather than panic on the internal HeaderValue::from_str.
     let err = build_gitea_client("bad\ntoken", false).unwrap_err();
     assert!(
@@ -151,7 +151,7 @@ fn gitea_auth_header_format() {
     );
 }
 
-// -- gitea_create_release retry behaviour (P1.4) -------------------------
+// gitea_create_release retry behaviour (P1.4)
 //
 // Pin: a 503 on the find-release-by-tag GET must retry through
 // `retry_http_async` rather than fast-fail, and a 404 there falls through to
@@ -339,7 +339,7 @@ async fn gitea_release_tag_empty_bails_with_actionable_error() {
 #[tokio::test]
 async fn gitea_release_commit_empty_bails_with_actionable_error() {
     // Gitea's create endpoint uses `target_commitish` to create the
-    // tag when it doesn't already exist; empty values surface as a
+    // tag when it doesn't already exist; empty values come back as a
     // 422. Bail upfront so users see that `ctx.git_info.commit` was
     // not populated.
     use std::time::Duration;
@@ -388,7 +388,7 @@ async fn gitea_release_commit_empty_bails_with_actionable_error() {
     );
 }
 
-// -- HTTP release flow against the scripted responder -------------------
+// HTTP release flow against the scripted responder
 //
 // The flat `spawn_oneshot_http_responder` above serves responses in
 // arrival order regardless of URL; it cannot assert WHICH endpoint each
@@ -396,7 +396,7 @@ async fn gitea_release_commit_empty_bails_with_actionable_error() {
 // `spawn_scripted_responder`, point `GiteaCtx.api_url` at
 // `http://{addr}`, and assert on the recorded request log: the exact
 // method/path/body of every create, find, update, upload, list, and
-// delete call the backend issues against Gitea's `/api/v1/...` surface.
+// delete call the backend issues against Gitea's `/api/v1/...` endpoints.
 
 use anodizer_core::test_helpers::scripted_responder::{
     ScriptedRoute, spawn_scripted_responder, spawn_scripted_responder_on,
@@ -432,7 +432,7 @@ fn http_json(status: &str, body: String) -> &'static str {
         )
 }
 
-// -- gitea_create_release: create path (no existing release) ------------
+// gitea_create_release: create path (no existing release)
 
 /// With no existing release on the first listing page, the backend
 /// POSTs to `.../releases` with the full create payload and parses the
@@ -504,7 +504,7 @@ async fn create_release_posts_when_absent() {
     assert_eq!(payload["prerelease"], true);
 }
 
-/// A 422 from the create POST surfaces as an error (not a retry —
+/// A 422 from the create POST is returned as an error (not a retry —
 /// `max_attempts: 1` proves the 4xx is fast-failed) and carries the
 /// gitea create-release context.
 #[tokio::test]
@@ -621,7 +621,7 @@ async fn create_release_retries_5xx_on_post() {
     assert_eq!(posts, 2, "503 POST retried once, then 201");
 }
 
-/// The create-response JSON missing an `id` field surfaces an
+/// The create-response JSON missing an `id` field returns an
 /// explicit parse error rather than silently returning 0.
 #[tokio::test]
 async fn create_release_missing_id_errors() {
@@ -674,7 +674,7 @@ async fn create_release_missing_id_errors() {
     );
 }
 
-// -- gitea_create_release: update path (existing release) ---------------
+// gitea_create_release: update path (existing release)
 
 /// When a release with the tag already exists, the backend PATCHes its
 /// numeric id and returns that id — no POST create is issued. The
@@ -864,7 +864,7 @@ async fn update_release_retries_5xx_on_patch() {
     assert_eq!(patches, 2, "503 PATCH retried once, then 200");
 }
 
-// -- find_release_by_tag: pagination ------------------------------------
+// find_release_by_tag: pagination
 
 /// A full first page (50 entries) that does not contain the tag forces
 /// a second GET; the match on page 2 returns its id + body without a
@@ -1390,7 +1390,7 @@ async fn find_release_stops_the_listing_sweep_when_the_deadline_passes() {
     );
 }
 
-/// A matched release object missing its `id` field surfaces an explicit
+/// A matched release object missing its `id` field returns an explicit
 /// error from the listing parse rather than a silent skip.
 #[tokio::test]
 async fn find_release_missing_id_errors() {
@@ -1428,7 +1428,7 @@ async fn find_release_missing_id_errors() {
     );
 }
 
-// -- gitea_upload_asset -------------------------------------------------
+// gitea_upload_asset
 
 /// Uploading an asset POSTs the file bytes (multipart) to
 /// `.../releases/{id}/assets?name={file}` and the request body carries
@@ -1536,7 +1536,7 @@ async fn upload_asset_retries_5xx() {
     assert_eq!(entries.len(), 2, "502 upload retried once, then 201");
 }
 
-/// A 4xx on the asset POST surfaces an error naming the asset, the
+/// A 4xx on the asset POST returns an error naming the asset, the
 /// release id, and the status.
 #[tokio::test]
 async fn upload_asset_surfaces_4xx() {
@@ -1583,7 +1583,7 @@ async fn upload_asset_surfaces_4xx() {
     );
 }
 
-// -- gitea_delete_asset_by_name -----------------------------------------
+// gitea_delete_asset_by_name
 
 /// Deleting by name lists the release's assets, matches the name, then
 /// DELETEs `.../assets/{asset_id}` and returns `true`.
@@ -1783,7 +1783,7 @@ async fn delete_asset_by_name_surfaces_delete_failure() {
     );
 }
 
-// -- gitea_find_asset_size ----------------------------------------------
+// gitea_find_asset_size
 
 /// The size probe returns the matched asset's `size` field.
 #[tokio::test]
@@ -1933,7 +1933,7 @@ async fn find_asset_size_list_failure_surfaces_error() {
     );
 }
 
-// -- run_gitea_backend orchestration ------------------------------------
+// run_gitea_backend orchestration
 //
 // These drive the production orchestrator (token resolution, URL
 // resolution, create-release, the per-asset idempotency probe +

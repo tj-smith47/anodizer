@@ -111,7 +111,7 @@ pub struct CustomPublisherRun {
 }
 
 /// Callback that re-runs release-content verification against the already
-/// published reversible surface and reports whether it passed. Stored on
+/// published reversible artifacts and reports whether it passed. Stored on
 /// [`Context`] so the publish dispatcher can gate one-way-door publishers on
 /// a fresh verify without `stage-publish` depending on `stage-verify-release`.
 /// `Arc` so it can be cheaply cloned out of `&mut Context` before invocation.

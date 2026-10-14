@@ -43,7 +43,7 @@ pub(crate) async fn gitea_create_release(
     // Gitea's `POST /repos/{owner}/{repo}/releases` requires non-empty
     // `tag_name`; `target_commitish` is required when the tag doesn't
     // already exist on the server (Gitea will create it at the given SHA).
-    // Posting empty values surfaces as a 422 (`tag_name is required` /
+    // Posting empty values comes back as a 422 (`tag_name is required` /
     // `target_commitish is required`) that hides the real cause: the
     // tag template rendered empty or `ctx.git_info` was not populated.
     if tag.is_empty() {

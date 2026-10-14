@@ -80,7 +80,7 @@ pub(crate) fn run_guard(config: &Config, repo_root: &Path, log: &StageLogger) ->
     // De-duplicate (path, anchor, version) triples so a file enrolled by several
     // crates that resolve to the same version is reported once. The version is
     // part of the key so the per-crate mode — where one shared file would be a
-    // genuine conflict at different versions — still surfaces both
+    // genuine conflict at different versions — still reports both
     // expectations, and the anchor is, so one file checked at two anchors
     // reports both.
     let mut seen: BTreeSet<(String, Option<String>, String)> = BTreeSet::new();

@@ -28,7 +28,7 @@
 //! the rollback path falls back to a per-object warn-only manual-cleanup
 //! checklist for those runs (see `blob_manual_cleanup_msg`). The
 //! warn-only fallback is also reached when `decode_blob_targets`
-//! returns an empty list, which keeps the surface forward-compatible
+//! returns an empty list, which keeps the trait forward-compatible
 //! with any future evidence-shape change.
 
 use anodizer_core::context::Context;
@@ -173,7 +173,7 @@ impl anodizer_core::Publisher for BlobPublisher {
         anodizer_core::PublisherGroup::Assets
     }
 
-    /// Forward-compat trait surface only. The effective
+    /// Forward-compat trait method only. The effective
     /// `required` flag for the blob stage's outcome is derived
     /// per-run from `BlobConfig.required` in
     /// `crate::run::record_blob_result` (called by
@@ -218,7 +218,7 @@ impl anodizer_core::Publisher for BlobPublisher {
         // no structured `blob_targets` — emit the per-object manual
         // cleanup checklist. Reached for runs written before the
         // structured-target capture existed, and for any future evidence
-        // shape that doesn't surface the targets list.
+        // shape that doesn't carry the targets list.
         if evidence.artifact_paths.is_empty() && evidence.primary_ref.is_none() {
             log.warn(&anodizer_core::rollback_empty_warning_msg(
                 ctx,
@@ -285,7 +285,7 @@ impl anodizer_core::Publisher for BlobPublisher {
 ///
 /// Returns `Ok(())` even on partial failure — the contract for
 /// [`anodizer_core::Publisher::rollback`] is "best-effort, report what
-/// you did via the log surface, don't bail the rollback dispatch". A
+/// you did via the log, don't bail the rollback dispatch". A
 /// hard `Err` would abort sibling publishers' rollbacks too.
 fn rollback_via_object_store(
     ctx: &mut Context,
@@ -425,7 +425,7 @@ fn rollback_via_object_store(
 ///
 /// Returns `Ok(true)` when the object exists, `Ok(false)` on a definitive
 /// not-found, and `Err(_)` when the store could not be built or the HEAD
-/// failed for any other reason (auth, network) — the caller must surface
+/// failed for any other reason (auth, network) — the caller must report
 /// that as "could not verify", never as "absent".
 ///
 /// [`BlobTargetSnapshot`]: anodizer_core::publish_evidence::BlobTargetSnapshot
@@ -485,7 +485,7 @@ mod publisher_tests {
 
     #[test]
     fn blob_object_exists_unknown_provider_is_an_error_not_absent() {
-        // A presence probe that cannot even build a store must surface Err —
+        // A presence probe that cannot even build a store must return Err —
         // mapping it to "absent" would fabricate a missing-object finding.
         let ctx = TestContextBuilder::new().build();
         let target = anodizer_core::publish_evidence::BlobTargetSnapshot {

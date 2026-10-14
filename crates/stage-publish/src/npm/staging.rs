@@ -158,7 +158,7 @@ fn copy_extra_files(cfg: &NpmConfig, pkg_dir: &Path) -> Result<()> {
             let dst = pkg_dir.join(basename);
             // A file matched the declared extra_files glob but can't be read:
             // publishing without it would silently drop a declared
-            // README/LICENSE, so surface the failure instead of skipping.
+            // README/LICENSE, so report the failure instead of skipping.
             let bytes = fs::read(&entry)
                 .with_context(|| format!("npm: read extra_files entry '{}'", entry.display()))?;
             write_deterministic(&dst, &bytes)?;

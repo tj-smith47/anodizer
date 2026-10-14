@@ -6,9 +6,7 @@ use crate::util;
 
 use super::*;
 
-// ---------------------------------------------------------------------------
 // AurSourcePublisher — Publisher trait wrapper (Submitter group)
-// ---------------------------------------------------------------------------
 //
 // Submitter-group; upstream-AUR force-push publisher. Distinct from
 // [`crate::aur::AurOurPublisher`] in `aur.rs` which is Manager group with
@@ -417,7 +415,7 @@ impl anodizer_core::Publisher for AurSourcePublisher {
 
     /// Probe AUR maintainer-key reachability before any publisher runs. This
     /// publisher has no companion state-query checker and force-pushes (the
-    /// destructive variant), so an unauthorized key is worth surfacing early —
+    /// destructive variant), so an unauthorized key is worth reporting early —
     /// but the SSH handshake is flaky, so a failure warns rather than blocks.
     fn preflight(&self, ctx: &Context) -> anyhow::Result<anodizer_core::PreflightCheck> {
         let per_crate = ctx

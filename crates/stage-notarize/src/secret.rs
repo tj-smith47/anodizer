@@ -6,9 +6,7 @@ use anyhow::{Context as _, Result};
 use anodizer_core::artifact::{Artifact, ArtifactKind};
 use anodizer_core::context::Context;
 
-// ---------------------------------------------------------------------------
 // Helper: refresh artifact checksums after signing
-// ---------------------------------------------------------------------------
 
 /// Re-compute SHA256 for all darwin artifacts whose bytes may have been
 /// rewritten by the signing / stapling steps. Covers:
@@ -62,13 +60,9 @@ pub(super) fn refresh_artifact_checksums(ctx: &mut Context, log: &anodizer_core:
     }
 }
 
-// ---------------------------------------------------------------------------
 // Helper: render an optional template field
-// ---------------------------------------------------------------------------
 
-// ---------------------------------------------------------------------------
 // Helper: filter artifacts by ids list
-// ---------------------------------------------------------------------------
 
 use anodizer_core::artifact::matches_id_filter;
 
@@ -78,9 +72,7 @@ pub(super) fn matches_ids(artifact: &Artifact, ids: &Option<Vec<String>>) -> boo
     matches_id_filter(artifact, ids.as_deref())
 }
 
-// ---------------------------------------------------------------------------
 // Base64 cert / key materialization
-// ---------------------------------------------------------------------------
 
 /// Detect whether `value` is an inline base64-encoded P12 / P8 blob (as
 /// opposed to a filesystem path to one). The
@@ -180,18 +172,14 @@ pub(super) fn materialize_secret(value: &str, label: &str) -> Result<Materialize
     })
 }
 
-// ---------------------------------------------------------------------------
 // Defaults
-// ---------------------------------------------------------------------------
 
 // Default values are owned by the config impls (lazy-defaults policy).
 // See `MacOSSignConfig::DEFAULT_TIMESTAMP_URL`,
 // `MacOSNotarizeApiConfig::DEFAULT_TIMEOUT`, and
 // `MacOSNativeNotarizeConfig::DEFAULT_TIMEOUT`.
 
-// ---------------------------------------------------------------------------
 // Helper: redact sensitive values from command args for safe logging
-// ---------------------------------------------------------------------------
 
 /// Redact sensitive values from command args for safe logging.
 ///
@@ -230,9 +218,7 @@ pub(super) fn redact_args(args: &[String], log: &anodizer_core::log::StageLogger
     result
 }
 
-// ---------------------------------------------------------------------------
 // M6: retry policy for the network-touching subprocess calls in notarize
-// ---------------------------------------------------------------------------
 //
 // The notarize stage shells out to Apple-hosted services (rcodesign
 // notary-submit and xcrun notarytool submit); a transient blip

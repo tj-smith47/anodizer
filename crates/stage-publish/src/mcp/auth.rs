@@ -13,7 +13,7 @@
 //!
 //! The retry policy is threaded through every HTTP call — auth-exchange
 //! 5xx / transport failures retry per the user's top-level `retry:` block,
-//! 4xx fast-fails so a bad token surfaces immediately instead of after
+//! 4xx fast-fails so a bad token shows up immediately instead of after
 //! a 10-attempt sleep cascade. The wall-clock deadline
 //! (`Context::retry_deadline`) rides alongside it so a wedged registry cannot
 //! spend the whole attempt ladder inside the auth exchange.
@@ -34,7 +34,7 @@ use anodizer_core::config::McpAuthMethod;
 pub trait McpAuthProvider {
     /// Perform any pre-token work (currently a no-op for all in-tree
     /// providers — interactive device-flow login is intentionally not
-    /// surfaced because anodizer is non-interactive). Errors abort the
+    /// offered because anodizer is non-interactive). Errors abort the
     /// publish with a `could not login: ...` message.
     fn login(&self) -> Result<()> {
         Ok(())
@@ -42,13 +42,11 @@ pub trait McpAuthProvider {
 
     /// Produce the bearer token used in `Authorization: Bearer <token>`.
     /// Implementations may perform a token-exchange HTTP call here; `log`
-    /// surfaces their per-attempt retry warns.
+    /// reports their per-attempt retry warns.
     fn get_token(&self, log: &anodizer_core::log::StageLogger) -> Result<String>;
 }
 
-// ---------------------------------------------------------------------------
 // Common request/response shapes
-// ---------------------------------------------------------------------------
 
 /// The token-response body returned by the registry's
 /// token-exchange endpoints (`/v0/auth/none`, `/v0/auth/github-at`,
@@ -74,9 +72,7 @@ struct GithubOidcBody<'a> {
     oidc_token: &'a str,
 }
 
-// ---------------------------------------------------------------------------
 // Provider factory
-// ---------------------------------------------------------------------------
 
 /// Build the auth provider for a given method.
 ///
@@ -138,9 +134,7 @@ pub fn provider_for_with_env(
     }
 }
 
-// ---------------------------------------------------------------------------
 // NoneAuthProvider — anonymous (or static-token override)
-// ---------------------------------------------------------------------------
 
 /// Anonymous auth provider. Two behaviours:
 ///
@@ -190,9 +184,7 @@ impl McpAuthProvider for NoneAuthProvider {
     }
 }
 
-// ---------------------------------------------------------------------------
 // GithubAtAuthProvider — PAT exchange
-// ---------------------------------------------------------------------------
 
 /// PAT-exchange auth provider — the non-interactive branch.
 ///
@@ -273,9 +265,7 @@ impl McpAuthProvider for GithubAtAuthProvider {
     }
 }
 
-// ---------------------------------------------------------------------------
 // GithubOidcAuthProvider — Actions id-token exchange
-// ---------------------------------------------------------------------------
 
 /// GitHub Actions OIDC auth provider. Two-step:
 ///
@@ -355,9 +345,7 @@ impl McpAuthProvider for GithubOidcAuthProvider {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Helpers
-// ---------------------------------------------------------------------------
 
 /// Build a blocking HTTP client with the shared anodizer user-agent +
 /// the supplied timeout. Mirrors the dockerhub publisher's client config so
@@ -484,7 +472,7 @@ mod tests {
         Arc::new(MapEnvSource::new())
     }
 
-    // -- NoneAuthProvider ---------------------------------------------------
+    // NoneAuthProvider
 
     #[test]
     fn none_provider_returns_static_token_without_network() {
@@ -565,7 +553,7 @@ mod tests {
         assert_eq!(calls.load(Ordering::SeqCst), 1, "4xx must not retry");
     }
 
-    // -- GithubAtAuthProvider -----------------------------------------------
+    // GithubAtAuthProvider
 
     #[test]
     fn github_at_exchanges_config_token() {
@@ -661,7 +649,7 @@ mod tests {
         assert_eq!(calls.load(Ordering::SeqCst), 1, "4xx must not retry");
     }
 
-    // -- GithubOidcAuthProvider ---------------------------------------------
+    // GithubOidcAuthProvider
 
     #[test]
     fn oidc_requires_request_url_env() {
@@ -850,7 +838,7 @@ mod tests {
         assert_eq!(calls.load(Ordering::SeqCst), 1, "4xx must not retry");
     }
 
-    // -- wall-clock budget: every call site, both directions ----------------------
+    // wall-clock budget: every call site, both directions
 
     /// A ladder long enough that reaching its end would take ~9s, so a test
     /// finishing in milliseconds proves the DEADLINE stopped it, not the

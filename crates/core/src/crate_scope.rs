@@ -215,7 +215,7 @@ pub fn restore_var_overrides(ctx: &mut Context, saved: Vec<(&'static str, Option
 ///
 /// Fails loud when the crate has no resolvable tag or an unparseable one: a
 /// per-crate emission stamped with the wrong version ships a broken,
-/// hard-to-spot artifact, so the error must surface locally rather than be
+/// hard-to-spot artifact, so the error must be reported locally rather than be
 /// papered over with the first crate's vars.
 pub fn with_crate_scope<T>(
     ctx: &mut Context,

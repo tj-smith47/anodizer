@@ -182,7 +182,7 @@ pub fn delete_local_tag_in(cwd: &Path, tag: &str) -> Result<()> {
 /// Idempotent: when the remote tag is already absent, git exits non-zero
 /// with `"remote ref does not exist"` on stderr — that case is treated as
 /// success so a rollback re-run after a partially-completed previous pass
-/// doesn't surface alarming WARN noise. Any other non-zero exit bubbles
+/// doesn't print alarming WARN noise. Any other non-zero exit bubbles
 /// up so callers (notably `tag rollback`) can warn-and-continue per tag
 /// without aborting the whole pass.
 ///

@@ -7898,9 +7898,10 @@ fn signed_apk_repro_despite_varying_script_disk_mtime() {
          if these are equal the test no longer proves the pin does anything"
     );
 
-    // Control B (apk-specific): pin postinstall but leave the apk preupgrade
-    // RAW. The apk still drifts — proving `apk.scripts.preupgrade` must also be
-    // pinned (the gap this guards), as well as the top-level scripts.
+    // Control B (apk-specific): hold the postinstall mtime fixed but leave the
+    // apk preupgrade RAW. The apk still drifts, which shows the mtime of
+    // `apk.scripts.preupgrade` must be held fixed too (the gap this test
+    // guards), as well as the top-level scripts.
     let (sp1, _) = stage(t1);
     anodizer_core::util::set_file_mtime(&src_preup, t1).unwrap();
     let mixed_a = build(

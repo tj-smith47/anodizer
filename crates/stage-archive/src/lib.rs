@@ -1,7 +1,7 @@
 //! Archive stage — bundles per-crate binaries (and extra files) into
 //! tar/zip/gz archives.
 //!
-//! Public surface:
+//! Public API:
 //! - [`ArchiveStage`] — the [`Stage`](anodizer_core::stage::Stage) driver.
 //! - File-spec resolution: [`ResolvedExtraFile`], [`resolve_file_specs`].
 //! - Format primitives: [`copy_binary`], [`create_gz`], [`create_tar`],
@@ -44,9 +44,7 @@ pub(crate) fn archive_log() -> StageLogger {
     StageLogger::new("archive", Verbosity::Normal)
 }
 
-// ---------------------------------------------------------------------------
 // default_name_template
-// ---------------------------------------------------------------------------
 
 pub(crate) fn default_name_template() -> &'static str {
     anodizer_core::archive_name::DEFAULT_NAME_TEMPLATE
@@ -68,8 +66,6 @@ pub(crate) fn default_binary_name_template() -> &'static str {
     anodizer_core::archive_name::DEFAULT_BINARY_NAME_TEMPLATE
 }
 
-// ---------------------------------------------------------------------------
 // ArchiveStage
-// ---------------------------------------------------------------------------
 
 pub struct ArchiveStage;

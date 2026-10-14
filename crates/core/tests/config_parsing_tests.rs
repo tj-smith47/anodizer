@@ -7,11 +7,9 @@ use std::path::PathBuf;
 
 use anodizer_core::config::*;
 
-// ====================================================================
 // Config parsing depth — every field, every variation
-// ====================================================================
 
-// ---- project_name tests ----
+// project_name tests
 
 #[test]
 fn test_parse_project_name_valid() {
@@ -56,7 +54,7 @@ fn test_parse_project_name_number_coerced() {
     assert_eq!(config.project_name, "12345");
 }
 
-// ---- dist tests ----
+// dist tests
 
 #[test]
 fn test_parse_dist_valid() {
@@ -93,7 +91,7 @@ fn test_parse_dist_empty_string() {
     assert_eq!(config.dist, PathBuf::from(""));
 }
 
-// ---- defaults.targets tests ----
+// defaults.targets tests
 
 #[test]
 fn test_parse_defaults_targets_valid() {
@@ -184,7 +182,7 @@ crates: []
     assert_eq!(targets[1], "");
 }
 
-// ---- defaults.cross tests ----
+// defaults.cross tests
 
 #[test]
 fn test_parse_defaults_cross_auto() {
@@ -241,7 +239,7 @@ fn test_parse_defaults_cross_case_sensitive() {
     assert!(result.is_err());
 }
 
-// ---- defaults.builds.flags tests ----
+// defaults.builds.flags tests
 // (Per-build settings live under defaults.builds.* rather than flat on
 // defaults — this mirrors BuildConfig's shape.)
 
@@ -284,7 +282,7 @@ fn test_parse_defaults_flags_empty_list() {
     );
 }
 
-// ---- defaults.archives tests ----
+// defaults.archives tests
 
 #[test]
 fn test_parse_defaults_archives_format() {
@@ -365,7 +363,7 @@ crates:
     }
 }
 
-// ---- defaults.checksum tests ----
+// defaults.checksum tests
 
 #[test]
 fn test_parse_defaults_checksum_algorithm_sha256() {
@@ -446,7 +444,7 @@ fn test_parse_defaults_checksum_omitted() {
     assert!(config.defaults.unwrap().checksum.is_none());
 }
 
-// ---- crates[].depends_on tests ----
+// crates[].depends_on tests
 
 #[test]
 fn test_parse_crate_depends_on_valid() {
@@ -530,7 +528,7 @@ crates:
     assert!(result.is_err());
 }
 
-// ---- crates[].tag_template tests ----
+// crates[].tag_template tests
 
 #[test]
 fn test_parse_crate_tag_template_tera_syntax() {
@@ -611,7 +609,7 @@ crates:
     );
 }
 
-// ---- builds[].copy_from tests ----
+// builds[].copy_from tests
 
 #[test]
 fn test_parse_build_copy_from_valid() {
@@ -663,7 +661,7 @@ crates:
     assert_eq!(build.copy_from, Some(String::new()));
 }
 
-// ---- builds[].env tests ----
+// builds[].env tests
 
 #[test]
 fn test_parse_build_env_per_target() {
@@ -727,7 +725,7 @@ crates:
     assert!(env.is_empty());
 }
 
-// ---- builds[].flags tests ----
+// builds[].flags tests
 
 #[test]
 fn test_parse_build_flags_valid() {
@@ -789,7 +787,7 @@ crates:
     assert_eq!(build.flags, None);
 }
 
-// ---- builds[].features / no_default_features tests ----
+// builds[].features / no_default_features tests
 
 #[test]
 fn test_parse_build_features_valid() {
@@ -846,7 +844,7 @@ crates:
     assert_eq!(build.no_default_features, Some(false));
 }
 
-// ---- builds[] multiple builds tests ----
+// builds[] multiple builds tests
 
 #[test]
 fn test_parse_multiple_builds() {
@@ -890,7 +888,7 @@ crates:
     assert!(config.crates[0].builds.is_none());
 }
 
-// ---- archive.binaries tests ----
+// archive.binaries tests
 
 #[test]
 fn test_parse_archive_binaries_valid() {
@@ -952,7 +950,7 @@ crates:
     }
 }
 
-// ---- archive.formats tests ----
+// archive.formats tests
 
 #[test]
 fn test_parse_archive_formats_tar_gz() {
@@ -1043,7 +1041,7 @@ crates:
     }
 }
 
-// ---- archive.format_overrides tests ----
+// archive.format_overrides tests
 
 #[test]
 fn test_parse_archive_format_overrides_multiple() {
@@ -1123,7 +1121,7 @@ crates:
     }
 }
 
-// ---- archive.files tests ----
+// archive.files tests
 
 #[test]
 fn test_parse_archive_files_glob_patterns() {
@@ -1188,7 +1186,7 @@ crates:
     }
 }
 
-// ---- archive.wrap_in_directory tests ----
+// archive.wrap_in_directory tests
 
 #[test]
 fn test_parse_archive_wrap_in_directory() {
@@ -1231,7 +1229,7 @@ crates:
     }
 }
 
-// ---- archives disabled vs configs vs default tests ----
+// archives disabled vs configs vs default tests
 
 #[test]
 fn test_parse_archives_as_array() {
@@ -1298,7 +1296,7 @@ crates:
     }
 }
 
-// ---- checksum per-crate all algorithms ----
+// checksum per-crate all algorithms
 
 #[test]
 fn test_parse_checksum_algorithm_strings() {
@@ -1399,7 +1397,7 @@ crates:
     assert_eq!(checksum.algorithm, Some("sha512".to_string()));
 }
 
-// ---- nfpm tests ----
+// nfpm tests
 
 #[test]
 fn test_parse_nfpm_basic() {
@@ -1703,7 +1701,7 @@ crates:
     assert!(config.crates[0].nfpms.is_none());
 }
 
-// ---- publish.homebrew tests ----
+// publish.homebrew tests
 
 #[test]
 fn test_parse_publish_homebrew_omitted() {
@@ -1727,7 +1725,7 @@ crates:
     );
 }
 
-// ---- publish.scoop tests ----
+// publish.scoop tests
 
 #[test]
 fn test_parse_publish_scoop_omitted() {
@@ -1743,7 +1741,7 @@ crates:
     assert!(config.crates[0].publish.as_ref().unwrap().scoop.is_none());
 }
 
-// ---- publish.cargo edge cases ----
+// publish.cargo edge cases
 
 #[test]
 fn test_parse_publish_cargo_skip_true() {
@@ -1854,9 +1852,9 @@ crates:
     );
 }
 
-// ---- docker tests ----
+// docker tests
 
-// ---- publishers[] tests ----
+// publishers[] tests
 
 #[test]
 fn test_parse_publishers_valid() {
@@ -1942,7 +1940,7 @@ fn test_parse_publishers_empty_array() {
     assert!(publishers.is_empty());
 }
 
-// ---- before/after hooks tests ----
+// before/after hooks tests
 
 #[test]
 fn test_parse_hooks_before() {
@@ -2062,7 +2060,7 @@ crates: []
     );
 }
 
-// ---- release.name_template tests ----
+// release.name_template tests
 
 #[test]
 fn test_parse_release_name_template_valid() {
@@ -2096,7 +2094,7 @@ crates:
     assert_eq!(release.name_template, None);
 }
 
-// ---- release.prerelease tests ----
+// release.prerelease tests
 
 #[test]
 fn test_parse_release_prerelease_auto() {
@@ -2162,7 +2160,7 @@ crates:
     assert_eq!(release.prerelease, None);
 }
 
-// ---- PrereleaseConfig serialization roundtrip ----
+// PrereleaseConfig serialization roundtrip
 
 #[test]
 fn test_prerelease_serialize_roundtrip() {
@@ -2179,7 +2177,7 @@ fn test_prerelease_serialize_roundtrip() {
     assert_eq!(json, "false");
 }
 
-// ---- release.github tests ----
+// release.github tests
 
 #[test]
 fn test_parse_release_github_config() {
@@ -2221,7 +2219,7 @@ crates:
     assert!(config.crates[0].release.as_ref().unwrap().github.is_none());
 }
 
-// ---- sign.signature tests ----
+// sign.signature tests
 
 #[test]
 fn test_parse_sign_signature_custom_template() {
@@ -2267,7 +2265,7 @@ crates: []
     assert_eq!(config.signs[0].signature, Some(String::new()));
 }
 
-// ---- docker_signs tests ----
+// docker_signs tests
 
 #[test]
 fn test_parse_docker_signs_valid() {
@@ -2302,7 +2300,7 @@ fn test_parse_docker_signs_empty_array() {
     assert!(config.docker_signs.as_ref().unwrap().is_empty());
 }
 
-// ---- snapshot tests ----
+// snapshot tests
 
 #[test]
 fn test_parse_snapshot_valid() {
@@ -2326,7 +2324,7 @@ fn test_parse_snapshot_omitted() {
     assert!(config.snapshot.is_none());
 }
 
-// ---- announce tests ----
+// announce tests
 
 #[test]
 fn test_parse_announce_discord() {
@@ -2419,7 +2417,7 @@ fn test_parse_announce_empty() {
     assert!(announce.webhook.is_none());
 }
 
-// ---- changelog tests (additional edge cases) ----
+// changelog tests (additional edge cases)
 
 #[test]
 fn test_parse_changelog_sort_asc() {
@@ -2552,7 +2550,7 @@ fn test_parse_changelog_omitted() {
     assert!(config.changelog.is_none());
 }
 
-// ---- defaults section entirely omitted/empty ----
+// defaults section entirely omitted/empty
 
 #[test]
 fn test_parse_defaults_omitted() {
@@ -2573,7 +2571,7 @@ fn test_parse_defaults_empty_object() {
     assert!(defaults.checksum.is_none());
 }
 
-// ---- crate-level cross strategy ----
+// crate-level cross strategy
 
 #[test]
 fn test_parse_crate_cross_override() {
@@ -2605,7 +2603,7 @@ crates:
     assert_eq!(config.crates[0].cross, None);
 }
 
-// ---- multiple crates ----
+// multiple crates
 
 #[test]
 fn test_parse_multiple_crates() {
@@ -2634,7 +2632,7 @@ crates:
     assert_eq!(config.crates[1].depends_on.as_ref().unwrap(), &["core"]);
 }
 
-// ---- TOML format tests ----
+// TOML format tests
 
 #[test]
 fn test_parse_toml_full_defaults() {
@@ -2769,7 +2767,7 @@ tag_template = "v{{ .Version }}"
     );
 }
 
-// ---- Type mismatch / invalid type tests ----
+// Type mismatch / invalid type tests
 
 #[test]
 fn test_parse_invalid_type_dist_array() {
@@ -2801,7 +2799,7 @@ crates:
 
 #[test]
 fn test_parse_invalid_type_docker_v2_string() {
-    // `dockers_v2:` is the only docker surface; a string-vs-list type
+    // `dockers_v2:` is the only docker config key; a string-vs-list type
     // mismatch must still be rejected.
     let yaml = r#"
 project_name: test
@@ -2889,7 +2887,7 @@ crates: []
     );
 }
 
-// ---- Interaction tests (disable + other fields, etc.) ----
+// Interaction tests (disable + other fields, etc.)
 
 #[test]
 fn test_parse_changelog_disable_true_with_all_fields() {
@@ -3001,9 +2999,9 @@ crates:
     assert_eq!(build.copy_from, Some("shared-build".to_string()));
 }
 
-// ---- Comprehensive full config test ----
+// Comprehensive full config test
 
-// ---- NfpmContent file_info tests ----
+// NfpmContent file_info tests
 
 #[test]
 fn test_parse_nfpm_content_file_info() {
@@ -3035,7 +3033,7 @@ crates:
     assert_eq!(fi.mode, Some(anodizer_core::config::StringOrU32(0o755)));
 }
 
-// ---- Default struct values tests ----
+// Default struct values tests
 
 #[test]
 fn test_config_default_struct() {
@@ -3185,7 +3183,7 @@ fn test_announce_config_default_struct() {
     assert!(config.webhook.is_none());
 }
 
-// ---- archive.name_template tests ----
+// archive.name_template tests
 
 #[test]
 fn test_parse_archive_name_template_valid() {
@@ -3228,9 +3226,9 @@ crates:
     }
 }
 
-// ---- Publish config — combined homebrew+scoop+cargo ----
+// Publish config — combined homebrew+scoop+cargo
 
-// ---- Announce provider disabled ----
+// Announce provider disabled
 
 #[test]
 fn test_parse_announce_provider_disabled() {
@@ -3249,7 +3247,7 @@ crates: []
     );
 }
 
-// ---- DockerSignConfig all fields ----
+// DockerSignConfig all fields
 
 #[test]
 fn test_parse_docker_sign_all_fields() {
@@ -3271,7 +3269,7 @@ crates: []
     assert_eq!(ds.args.as_ref().unwrap().len(), 3);
 }
 
-// ---- CargoPublishConfig default ----
+// CargoPublishConfig default
 
 #[test]
 fn test_cargo_publish_config_default() {
@@ -3285,7 +3283,7 @@ fn test_cargo_publish_config_default() {
     assert_eq!(cfg.features, None);
 }
 
-// ---- Webhook headers empty map ----
+// Webhook headers empty map
 
 #[test]
 fn test_parse_webhook_no_headers() {
@@ -3302,11 +3300,9 @@ crates: []
     assert!(webhook.headers.is_none());
 }
 
-// ====================================================================
 // Error path completeness — config error tests
-// ====================================================================
 
-// ---- Duplicate crate names ----
+// Duplicate crate names
 
 #[test]
 fn test_parse_duplicate_crate_names_accepted_by_serde() {
@@ -3327,7 +3323,7 @@ crates:
     assert_eq!(config.crates[1].name, "myapp");
 }
 
-// ---- Invalid tag_template ----
+// Invalid tag_template
 
 #[test]
 fn test_invalid_tag_template_syntax_error() {
@@ -3361,7 +3357,7 @@ crates:
     assert_eq!(config.crates[0].tag_template, Some(String::new()));
 }
 
-// ---- depends_on edge cases (no validation at parse time; resolved later) ----
+// depends_on edge cases (no validation at parse time; resolved later)
 
 #[test]
 fn test_depends_on_nonexistent_crate_parses() {
@@ -3415,7 +3411,7 @@ crates:
     assert_eq!(deps, &["myapp"]);
 }
 
-// ---- Invalid YAML / wrong types ----
+// Invalid YAML / wrong types
 
 #[test]
 fn test_invalid_yaml_syntax_produces_parse_error() {
@@ -3434,7 +3430,7 @@ fn test_wrong_type_for_crates_field() {
 #[test]
 fn test_unknown_field_in_crate_config_rejected() {
     // CrateConfig uses #[serde(default, deny_unknown_fields)], so an unknown
-    // crate-level field is a hard parse error — surfacing typos and removed
+    // crate-level field is a hard parse error — reporting typos and removed
     // fields instead of silently dropping them.
     let yaml = r#"
 project_name: test
@@ -3455,7 +3451,7 @@ crates:
     );
 }
 
-// ---- Archive disabled form ----
+// Archive disabled form
 
 #[test]
 fn test_archives_disabled_bool_parses() {
@@ -3476,7 +3472,7 @@ crates:
     ));
 }
 
-// ---- Missing required fields ----
+// Missing required fields
 
 #[test]
 fn test_crate_missing_name_defaults_to_empty() {
@@ -3496,7 +3492,7 @@ crates:
     assert_eq!(config.crates[0].name, "");
 }
 
-// ---- UniversalBinaryConfig default ----
+// UniversalBinaryConfig default
 
 #[test]
 fn test_universal_binary_config_default() {
@@ -3506,7 +3502,7 @@ fn test_universal_binary_config_default() {
     assert!(ub.ids.is_none());
 }
 
-// ---- monorepo config ----
+// monorepo config
 
 #[test]
 fn test_parse_monorepo_both_fields() {
@@ -3569,11 +3565,11 @@ monorepo: {}
     assert!(mono.dir.is_none());
 }
 
-// ---- Comprehensive happy-path config (post-WAVE-5 shape) ----
+// Comprehensive happy-path config (post-WAVE-5 shape)
 
 #[test]
 fn test_parse_comprehensive_config() {
-    // End-to-end happy-path test that exercises every top-level surface:
+    // End-to-end happy-path test that exercises every top-level config field:
     // typed fields (BuildConfig.flags as Vec<String>, ChangelogConfig.
     // {header,footer} as ContentSource), the unified RepositoryConfig form
     // (replacing legacy {tap,bucket,...} variants), structured

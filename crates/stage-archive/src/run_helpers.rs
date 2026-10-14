@@ -224,7 +224,7 @@ pub(crate) fn clear_archive_template_vars(ctx: &mut anodizer_core::context::Cont
 /// body, and destination path are all template-rendered so each archive
 /// can shape its dst based on `.Os`, `.Arch`, `.Format`, etc. Non-UTF8
 /// source files emit a clear error instead of the cryptic
-/// "stream did not contain valid UTF-8" surfaced by `read_to_string`.
+/// "stream did not contain valid UTF-8" returned by `read_to_string`.
 pub(crate) fn render_archive_templated_files(
     ctx: &mut Context,
     entries: &[anodizer_core::config::TemplateFileConfig],

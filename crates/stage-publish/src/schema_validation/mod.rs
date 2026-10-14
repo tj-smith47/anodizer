@@ -84,7 +84,7 @@ impl fmt::Display for SchemaFinding {
 /// `publisher` is the registry id stamped onto each finding. `schema_src` is the
 /// vendored schema JSON text (embedded via `include_str!`). A malformed schema
 /// or schema text is an error, not a finding — the vendored schema is the tool's
-/// own asset, so a parse failure is a bug to surface, never a manifest defect.
+/// own asset, so a parse failure is a bug to report, never a manifest defect.
 pub(crate) fn validate_json(
     publisher: &str,
     instance: &Value,
@@ -149,20 +149,20 @@ pub(crate) struct ExternalValidator<'a> {
     /// is NOT escalating — a lenient local `check`/dry-run, or a reversible
     /// publisher. There the structural floor stands and a dev missing the tool
     /// gets a skip, not a failure. When `tool_required` is set AND the floor
-    /// runs strict, a missing tool surfaces as a finding instead — see
+    /// runs strict, a missing tool shows up as a finding instead — see
     /// [`run_external_validator`].
     pub skip_message: &'a str,
     /// `(root)` finding expectation when the tool fails but emits no parseable
     /// diagnostic. Returning empty here would silently report a failed
-    /// validator as PASS, so a real failure must always surface.
+    /// validator as PASS, so a real failure must always be reported.
     pub empty_fallback: &'a str,
-    /// Whether a MISSING (or unprobeable) `tool` is itself a surfaced finding
+    /// Whether a MISSING (or unprobeable) `tool` is itself a reported finding
     /// when the floor runs strict, rather than a silent skip.
     ///
     /// Set `true` only for moderation one-way-door publishers (chocolatey):
     /// their submission queue is irreversible, so a missing validator on the
     /// real publish/preflight gate would let a malformed artifact clear the
-    /// floor and surface only after the registry already holds it. For those,
+    /// floor and show up only after the registry already holds it. For those,
     /// `strict` (the pre-publish guard, or global `--strict`) turns an absent
     /// tool into a `(root)` [`SchemaFinding`] that fails the floor. Reversible
     /// publishers leave it `false`: a missing tool stays a warn+skip in every
@@ -187,7 +187,7 @@ fn first_absence_of(tool: &str) -> bool {
 /// - `strict && cfg.tool_required` (a moderation one-way-door publisher on the
 ///   real publish/preflight gate): the missing tool is a `(root)`
 ///   [`SchemaFinding`] that fails the floor — a malformed artifact must not
-///   clear this gate and surface only in the registry's irreversible queue.
+///   clear this gate and show up only in the registry's irreversible queue.
 /// - otherwise (lenient local check/dry-run, or a reversible publisher): notes
 ///   `cfg.skip_message` under `-v`, once per tool per process, and returns no
 ///   findings; the structural floor stands. Preflight has already named the
@@ -218,7 +218,7 @@ where
     // A missing validator drops real schema coverage. For a moderation
     // one-way-door publisher (chocolatey) on the strict gate that gap is
     // unacceptable — a malformed artifact would clear this floor unchecked and
-    // surface only in the irreversible queue — so escalate it to a finding.
+    // show up only in the irreversible queue — so escalate it to a finding.
     // Clean absence uses the curated skip_message; a GENUINE probe I/O
     // failure (permissions, exec-format, …) gets the louder "could not
     // probe" warn instead of masquerading as tool absence. In every
@@ -623,7 +623,7 @@ mod tests {
         .expect("a missing tool is never an Err — it escalates to a finding or skips")
     }
 
-    /// F2: a REQUIRED validator missing on the STRICT pre-publish gate surfaces a
+    /// F2: a REQUIRED validator missing on the STRICT pre-publish gate reports a
     /// `(root)` finding (fails the floor) rather than passing — the moderation
     /// one-way-door case where an unchecked artifact must not clear here.
     #[test]

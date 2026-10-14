@@ -230,7 +230,7 @@ fn harness_diffs_artifacts_by_sha256() {
     assert_eq!(drifting.hashes.len(), 2);
 }
 
-// --- Transitive-derivation rule for aggregate artifacts --------------
+// Transitive-derivation rule for aggregate artifacts
 
 /// No false positive: a combined checksums file drifts solely because an
 /// allow-listed member (`*.deb`, signed) changed its line. Every
@@ -506,7 +506,7 @@ fn marker_named_combined_file_obeys_transitive_rule() {
 /// signature drift. Their drift is excused (compile-time `*.cdx.json` +
 /// runtime `*.cosign.bundle` / `*.sig`), so `artifacts.json` — whose
 /// recorded digests for those members moved — is excused too. Flipping the
-/// gated archive then proves a real regression still surfaces.
+/// gated archive then proves a real regression is still reported.
 #[test]
 fn artifacts_manifest_recut_excuses_only_nondeterministic_members() {
     let mut h = empty_harness();

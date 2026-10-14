@@ -36,7 +36,7 @@ pub(crate) struct ChangelogRenderOpts<'a> {
 /// Compute the release-wide unique author-name set across every commit
 /// in the rendered groups (including subgroups) and return it as a
 /// comma-separated string. Mirrors how `AllLogins` is built upstream of
-/// `render_changelog_with_provider`; surfaces as the `AllAuthors`
+/// `render_changelog_with_provider`; exposed as the `AllAuthors`
 /// per-line template var so users can render
 /// `Contributors: {{ AllAuthors }}` once at the bottom of a changelog
 /// footer (the per-line scope is the only template scope anodizer
@@ -143,7 +143,7 @@ pub(crate) fn render_changelog_with_provider(
     // Intentional carve-out: the upstream convention emits the
     // `## Changelog` heading unconditionally and offers no way to suppress it.
     // Anodizer treats an explicit empty `title:` as a request to omit the
-    // heading, which lets users compose changelogs into other surfaces (release
+    // heading, which lets users compose changelogs into other documents (release
     // bodies, RSS feeds, embedded docs) without a redundant heading. Default
     // the carve-out is opt-in.
     let changelog_title = title.unwrap_or(ChangelogConfig::DEFAULT_TITLE);
@@ -390,7 +390,7 @@ pub(crate) fn render_commit_line(
     // list lives under `AllLogins` so `Logins` can carry the per-commit
     // semantic. Co-author entries (parsed from `Co-Authored-By:` trailers)
     // carry both bare name and "Name <email>" form; the raw trailer payload
-    // is surfaced as the Authors join target.
+    // is used as the Authors join target.
     //
     // `Authors` (comma-string, backward-compatible) and `AuthorsList`
     // (structured {Name, Email, Username} records for

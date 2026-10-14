@@ -10,9 +10,7 @@ use anodizer_core::artifact::{Artifact, ArtifactKind};
 use anodizer_core::context::Context;
 use anodizer_core::stage::Stage;
 
-// ---------------------------------------------------------------------------
 // DmgTool detection
-// ---------------------------------------------------------------------------
 
 /// Which CLI tool to use for creating DMG/ISO images.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -41,9 +39,7 @@ pub fn dmg_tool() -> Option<DmgTool> {
     }
 }
 
-// ---------------------------------------------------------------------------
 // dmg_command
-// ---------------------------------------------------------------------------
 
 /// Construct CLI arguments for creating a DMG/ISO from a staging directory.
 ///
@@ -196,9 +192,7 @@ fn hdiutil_image_size_mb(staging_dir: &std::path::Path) -> u64 {
     content.saturating_add(headroom).div_ceil(MIB).max(1)
 }
 
-// ---------------------------------------------------------------------------
 // DmgStage
-// ---------------------------------------------------------------------------
 
 pub struct DmgStage;
 
@@ -387,7 +381,7 @@ impl Stage for DmgStage {
 
                     // `dmg.if`: template-conditional skip (opt-in).
                     // Render error => hard bail (avoids the W1 silent-skip
-                    // footgun: user's typo must surface, not silently ship a
+                    // footgun: user's typo must be reported, not silently ship a
                     // release without the DMG they asked for).
                     let proceed = anodizer_core::config::evaluate_if_condition(
                         dmg_cfg.if_condition.as_deref(),
@@ -843,9 +837,7 @@ impl Stage for DmgStage {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Tests
-// ---------------------------------------------------------------------------
 
 /// Environment requirements for the dmg stage: one of the image tools the
 /// stage's detection ladder accepts (`hdiutil` > `genisoimage` > `mkisofs`)
@@ -2249,7 +2241,7 @@ crates:
         );
     }
 
-    // --- `dmg.if` template-conditional ---
+    // `dmg.if` template-conditional
 
     fn dmg_if_test_ctx(if_expr: Option<&str>) -> anodizer_core::context::Context {
         use anodizer_core::config::{Config, CrateConfig, DmgConfig};
@@ -2323,9 +2315,7 @@ crates:
         );
     }
 
-    // -------------------------------------------------------------------
     // `dmg.amd64_variant` filter
-    // -------------------------------------------------------------------
 
     /// Build a context with three darwin/amd64 binaries (variants v1/v2/v3)
     /// and one darwin/arm64 binary. The `amd64_variant` field on the config
@@ -2435,9 +2425,7 @@ crates:
         assert_eq!(dmgs[0].target.as_deref(), Some("aarch64-apple-darwin"));
     }
 
-    // -------------------------------------------------------------------
     // Default name template shape
-    // -------------------------------------------------------------------
 
     #[test]
     fn test_default_name_template_contains_amd64_variant_suffix() {
@@ -2499,9 +2487,7 @@ crates:
         );
     }
 
-    // -------------------------------------------------------------------
     // mod_timestamp template rendering — positive assertion via helper
-    // -------------------------------------------------------------------
 
     #[test]
     fn test_resolve_mod_timestamp_renders_built_in_var() {
@@ -2532,9 +2518,7 @@ crates:
         );
     }
 
-    // -------------------------------------------------------------------
     // volume_name resolution — positive assertion via helper
-    // -------------------------------------------------------------------
 
     #[test]
     fn test_resolve_volume_name_renders_template() {
@@ -2588,9 +2572,7 @@ crates:
         );
     }
 
-    // -------------------------------------------------------------------
     // extra_files multi-match + constant name_template must bail
-    // -------------------------------------------------------------------
 
     #[test]
     fn test_extra_files_multi_match_name_template_bails() {
@@ -2653,9 +2635,7 @@ crates:
         );
     }
 
-    // -------------------------------------------------------------------
     // Duplicate filename in staging bails with a clear error
-    // -------------------------------------------------------------------
 
     #[test]
     fn test_duplicate_staged_filename_bails() {
@@ -2709,9 +2689,7 @@ crates:
         );
     }
 
-    // -------------------------------------------------------------------
     // /Applications symlink helper — positive + negative assertion
-    // -------------------------------------------------------------------
 
     #[cfg(unix)]
     #[test]

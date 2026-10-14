@@ -36,9 +36,7 @@ use anodizer_core::build_env::{
     build_amd64_variant, clear_build_target_vars, seed_build_target_vars,
 };
 
-// ---------------------------------------------------------------------------
 // BuildStage
-// ---------------------------------------------------------------------------
 
 impl Stage for super::BuildStage {
     fn name(&self) -> &str {
@@ -77,10 +75,8 @@ impl Stage for super::BuildStage {
 
         apply_source_mutations(ctx, &crates, &default_targets, dry_run, &log)?;
 
-        // -----------------------------------------------------------------
         // Flatten the nested (crate, build, target) loops into a list of
         // BuildJob descriptors. No compilation happens here.
-        // -----------------------------------------------------------------
 
         // One resolution feeds the determinism seed, the cargo child's
         // SOURCE_DATE_EPOCH and the binary mtime, so all three agree.
@@ -109,9 +105,7 @@ impl Stage for super::BuildStage {
             .collect();
         ctx.set_built_crate_names(built_crate_names);
 
-        // -----------------------------------------------------------------
         // Ensure cross-compilation targets are installed via rustup.
-        // -----------------------------------------------------------------
 
         {
             let preps: Vec<TargetPrep> = build_jobs
@@ -125,9 +119,7 @@ impl Stage for super::BuildStage {
             ensure_targets_installed(ctx, &preps, &log, dry_run)?;
         }
 
-        // -----------------------------------------------------------------
         // Execute build jobs (with parallelism) then copy_from jobs.
-        // -----------------------------------------------------------------
 
         // Rust builds sharing the same workspace target/ directory can deadlock
         // when multiple cargo invocations run in parallel (they contend on
@@ -160,9 +152,7 @@ impl Stage for super::BuildStage {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Build planning
-// ---------------------------------------------------------------------------
 
 pub(crate) struct PlanInputs<'a> {
     crates: &'a [anodizer_core::config::CrateConfig],
@@ -745,7 +735,7 @@ fn plan_build_jobs(
                     }
                 }
 
-                // Surface a doomed routing decision before cargo spends
+                // Report a doomed routing decision before cargo spends
                 // minutes compiling: a cross-arch linux-gnu target on plain
                 // cargo fails at the first native-code dependency unless a
                 // system cross cc exists, and the resulting cc-rs error

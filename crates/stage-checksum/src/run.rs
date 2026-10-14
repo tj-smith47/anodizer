@@ -50,9 +50,7 @@ struct GlobalChecksumDefaults {
     split_format: Option<ChecksumSplitFormat>,
 }
 
-// ---------------------------------------------------------------------------
 // Extra-files glob resolution
-// ---------------------------------------------------------------------------
 
 /// Resolved extra file: the path on disk and an optional name_template override.
 struct ResolvedExtraFile {
@@ -79,9 +77,7 @@ fn resolve_extra_files(
         .with_context(|| "checksum: resolve extra_files")
 }
 
-// ---------------------------------------------------------------------------
 // ChecksumStage
-// ---------------------------------------------------------------------------
 
 /// Checksum stage: computes checksums for all build/archive artifacts.
 ///
@@ -192,9 +188,7 @@ impl Stage for ChecksumStage {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Run helpers
-// ---------------------------------------------------------------------------
 
 /// Pull global checksum defaults from `defaults.checksum`, applying the
 /// global `skip:` gate. Returns `None` when the stage is globally skipped
@@ -236,7 +230,7 @@ fn load_global_defaults(
 }
 
 /// Validate the global algorithm and every per-crate override.
-/// Fails fast so a typo (`algorithm: sha257`) surfaces before build/archive
+/// Fails fast so a typo (`algorithm: sha257`) is reported before build/archive
 /// run, not at the first `hash_file` call.
 fn validate_all_algorithms(global_algorithm: &str, crates: &[&CrateConfig]) -> Result<()> {
     validate_algorithm(global_algorithm)?;
@@ -733,9 +727,7 @@ fn propagate_checksum_metadata(
     }
 }
 
-// ---------------------------------------------------------------------------
 // refresh_combined_checksums — recompute and rewrite combined checksum files
-// ---------------------------------------------------------------------------
 
 /// Compile-time coupling to the determinism harness's aggregate registry: the
 /// combined checksums file this module writes is recognized by

@@ -424,7 +424,7 @@ fn get_current_branch_in_rejects_tag_shaped_github_ref_name() {
     // GITHUB_REF_NAME is injected via the env injection point, so each branch of the
     // fallback is driven without mutating process-global env.
 
-    // Tag-shaped: must NOT be accepted; bail surfaces.
+    // Tag-shaped: must NOT be accepted; the bail is returned.
     let env = crate::MapEnvSource::new().with("GITHUB_REF_NAME", "v0.4.5");
     let err = get_current_branch_in_with_env(dir, &env).unwrap_err();
     assert!(
@@ -474,7 +474,7 @@ fn branches_containing_sha_in_returns_empty_without_remote() {
     run(&["commit", "-m", "c1"]);
     let sha = get_head_commit_in(dir).unwrap();
     // No remote configured → `git branch -r --contains` returns
-    // empty, which the helper surfaces as `Vec::new()` so the
+    // empty, which the helper returns as `Vec::new()` so the
     // caller can fall back to local branch resolution.
     let branches = branches_containing_sha_in(dir, &sha).unwrap();
     assert!(branches.is_empty(), "no remote → no remote branches");
@@ -573,7 +573,7 @@ fn git_output_in_error_falls_back_to_stdout_when_stderr_empty() {
     let dir = tmp.path();
     init_repo_with_commits(dir, &["a"]);
     // `git commit -m ...` with an unchanged tree prints "nothing to
-    // commit" to STDOUT (not stderr); the error message must surface
+    // commit" to STDOUT (not stderr); the error message must include
     // that detail instead of `failed: ` with nothing after.
     let err = git_output_in(dir, &["commit", "-m", "no-op"]).unwrap_err();
     let msg = err.to_string();
@@ -967,7 +967,7 @@ fn get_commits_between_paths_with_files_in_preserves_multiline_body_for_later_co
     );
 }
 
-// ---- parse_commit_output: the single wire-format record decoder ----
+// parse_commit_output: the single wire-format record decoder
 
 #[test]
 fn parse_commit_output_empty_input_yields_no_commits() {
@@ -1036,7 +1036,7 @@ fn parse_commit_output_multiline_body_survives_record_separator_split() {
     assert_eq!(commits[1].body, "");
 }
 
-// ---- short_commit_str: pure SHA truncation ----
+// short_commit_str: pure SHA truncation
 
 #[test]
 fn short_commit_str_truncates_long_sha_to_seven() {
@@ -1055,7 +1055,7 @@ fn short_commit_str_returns_shorter_or_equal_input_unchanged() {
     assert_eq!(short_commit_str(""), "", "empty stays empty");
 }
 
-// ---- real-repo fixture helpers for the shelling functions ----
+// real-repo fixture helpers for the shelling functions
 
 /// Run a git command in `dir` with a pinned identity, asserting success.
 fn g(dir: &Path, args: &[&str]) {
@@ -1099,7 +1099,7 @@ fn commit_file(dir: &Path, path: &str, content: &str, subject: &str) {
     g(dir, &["commit", "-m", subject]);
 }
 
-// ---- get_commits_between_in / paths variants ----
+// get_commits_between_in / paths variants
 
 #[test]
 fn get_commits_between_in_returns_only_post_base_commits() {
@@ -1161,7 +1161,7 @@ fn get_commits_between_paths_in_unions_multiple_paths() {
     assert!(!subjects.contains(&"feat: c"));
 }
 
-// ---- get_all_commits_* ----
+// get_all_commits_*
 
 #[test]
 fn get_all_commits_in_returns_every_commit_on_head() {
@@ -1204,7 +1204,7 @@ fn get_all_commits_paths_with_files_in_pairs_files() {
     assert_eq!(pairs[0].files, vec!["crates/core/lib.rs".to_string()]);
 }
 
-// ---- get_commits_reachable_paths_in: bound at an explicit ref ----
+// get_commits_reachable_paths_in: bound at an explicit ref
 
 #[test]
 fn get_commits_reachable_paths_in_stops_at_the_given_rev() {
@@ -1239,7 +1239,7 @@ fn get_commits_reachable_paths_with_files_in_pairs_touched_files() {
     assert_eq!(pairs[0].files, vec!["src/main.rs".to_string()]);
 }
 
-// ---- subject-only message helpers ----
+// subject-only message helpers
 
 #[test]
 fn get_last_commit_messages_in_returns_n_subjects_newest_first() {
@@ -1294,7 +1294,7 @@ fn get_commit_messages_between_path_in_filters_range_and_path() {
     assert_eq!(msgs, vec!["feat: src".to_string()]);
 }
 
-// ---- diff / change-detection helpers ----
+// diff / change-detection helpers
 
 #[test]
 fn has_changes_since_in_detects_path_touched_after_tag() {
@@ -1338,7 +1338,7 @@ fn paths_changed_since_tag_in_returns_false_when_git_fails() {
     assert!(!paths_changed_since_tag_in(dir, "nope-no-such-tag", &["a"]).unwrap());
 }
 
-// ---- rev resolution helpers ----
+// rev resolution helpers
 
 #[test]
 fn head_commit_hash_in_matches_rev_parse_head() {
@@ -1422,7 +1422,7 @@ fn head_commit_timestamp_in_returns_pinned_committer_epoch() {
     );
 }
 
-// ---- log_subjects_for_range ----
+// log_subjects_for_range
 
 #[test]
 fn log_subjects_for_range_returns_full_bodies_for_path() {
@@ -1466,7 +1466,7 @@ fn log_subjects_for_range_propagates_pathspec_fatal() {
     assert!(err.contains("git log HEAD failed"), "{err}");
 }
 
-// ---- add_path_in + commit_in ----
+// add_path_in + commit_in
 
 #[test]
 fn add_path_in_then_commit_in_creates_commit() {
@@ -1508,7 +1508,7 @@ fn add_path_in_errors_on_missing_file() {
     );
 }
 
-// ---- reset_hard_in ----
+// reset_hard_in
 
 #[test]
 fn reset_hard_in_moves_head_and_restores_tree() {
@@ -1529,7 +1529,7 @@ fn reset_hard_in_moves_head_and_restores_tree() {
     );
 }
 
-// ---- push_branch_in error path (no remote) ----
+// push_branch_in error path (no remote)
 
 #[test]
 fn push_branch_in_bails_without_origin_remote() {
@@ -1544,7 +1544,7 @@ fn push_branch_in_bails_without_origin_remote() {
     );
 }
 
-// ---- resolve_rollback_identity / read_git_identity ----
+// resolve_rollback_identity / read_git_identity
 
 #[test]
 #[serial_test::serial(git_env)]
@@ -1620,9 +1620,7 @@ fn read_git_identity_reads_configured_values() {
     assert_eq!(email.as_deref(), Some("configured@x.com"));
 }
 
-// ---------------------------------------------------------------------------
 // Squash-merged pull requests expand into their commits
-// ---------------------------------------------------------------------------
 
 const SQUASH_BODY: &str = "\
 Closes the long-standing dmg bug.

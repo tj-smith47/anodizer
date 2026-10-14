@@ -289,7 +289,7 @@ pub fn build_is_skipped(
 /// Whether a build entry's `skip:` evaluates truthy, keeping a render error as
 /// an error.
 ///
-/// The planner surfaces a broken `skip:` expression instead of building the
+/// The planner reports a broken `skip:` expression instead of building the
 /// entry it could not decide about; [`build_is_skipped`] is the lenient
 /// reading of the same rule for callers that only need the predicate.
 pub fn try_build_is_skipped(

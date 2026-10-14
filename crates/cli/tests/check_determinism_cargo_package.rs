@@ -20,7 +20,7 @@
 //!   `git worktree add --detach <tmp> <commit>`, so the recorded sha
 //!   matches and the worktree is clean before `cargo package`.
 //!
-//! Any residual drift after these workarounds surfaces as
+//! Any residual drift after these workarounds is reported as
 //! `drift_count` greater than zero and the test fails with the report
 //! content attached. The test does not encode "known broken"
 //! tolerance — that would defeat the point of the regression
@@ -130,7 +130,7 @@ fn cargo_package_stage_is_byte_stable_on_minimal_repo() {
     // Per-run byte-stability: the harness must exit zero AND every
     // cargo-package row must be marked deterministic with a populated
     // single-hash field. A drift in either dimension is a regression
-    // surface this test exists to catch.
+    // path this test exists to catch.
     assert!(
         output.status.success(),
         "harness exited non-zero (drift detected); stderr={}\nreport={}",

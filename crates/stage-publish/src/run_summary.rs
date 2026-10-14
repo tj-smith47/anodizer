@@ -719,7 +719,7 @@ pub fn status_table_rows(
             rows.push((String::new(), format!("- {issue}")));
         }
     }
-    // Only surface the retry-backoff row when the run actually backed off:
+    // Only report the retry-backoff row when the run actually backed off:
     // a clean run reads noise-free, while a flaky remote leaves a visible
     // "spent Ns retrying" trace even though the run ultimately succeeded.
     if summary.retry_backoff_secs > 0.0 {
@@ -769,7 +769,7 @@ pub fn emit_status_table(
 /// The lines [`emit_status_table`] produces, rendered at nesting `depth`
 /// instead of written to the log — what a document quoting the section must
 /// contain, character for character. Holding a document to the renderer is a
-/// test need, so this is not part of the crate's shipped surface.
+/// test need, so this is not part of the crate's shipped API.
 #[cfg(test)]
 pub fn summary_section_lines(
     summary: &RunSummary,

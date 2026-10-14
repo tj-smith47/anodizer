@@ -396,8 +396,9 @@ pub(crate) fn process_sign_configs(
                 .map(|n| n.to_string_lossy().into_owned())
                 .unwrap_or_else(|| sig_path.display().to_string());
             // Per-target binary signatures live in per-target directories
-            // (the preserved-bin layout keys on the directory), so their bare basenames collide across targets in
-            // the registry and on the release. Register them under the
+            // (the preserved-bin layout keys on the directory), so their bare
+            // basenames collide across targets in the registry and on the
+            // release. Register them under the
             // config-derived asset name, unique per (crate, target, binary),
             // and carry the triple on the artifact. The on-disk path is
             // untouched.

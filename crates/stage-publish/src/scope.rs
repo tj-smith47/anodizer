@@ -162,7 +162,7 @@ mod tests {
         assert!(!scope_available_with_env("OTHER_TOKEN write", &env));
     }
 
-    // ---- warn_scope_unavailable_msg --------------------------------------
+    // warn_scope_unavailable_msg
 
     #[test]
     fn warn_msg_includes_prefix_publisher_label_and_remedy() {

@@ -67,9 +67,7 @@ fn show_head(dir: &Path, rel: &str) -> String {
     String::from_utf8_lossy(&out.stdout).into_owned()
 }
 
-// ---------------------------------------------------------------------------
 // Shared per-crate fixtures
-// ---------------------------------------------------------------------------
 
 /// A two-crate per-crate workspace whose crates all enroll `shared.md`, each
 /// tagged at its own `(name, version)` and bumped by one `feat:` commit
@@ -239,9 +237,7 @@ crates:
     git_add_commit(root, "fix: a bug");
 }
 
-// ---------------------------------------------------------------------------
 // Mode 1: single-crate (--crate + version_sync)
-// ---------------------------------------------------------------------------
 
 #[test]
 fn single_crate_rewrites_enrolled_version_files() {
@@ -369,9 +365,7 @@ crates:
     assert_eq!(read(root, "Chart.yaml"), "appVersion: v0.1.0\n");
 }
 
-// ---------------------------------------------------------------------------
 // Mode 2: workspace-lockstep
-// ---------------------------------------------------------------------------
 
 #[test]
 fn lockstep_rewrites_top_level_version_files() {
@@ -430,9 +424,7 @@ version = "0.1.0"
     );
 }
 
-// ---------------------------------------------------------------------------
 // Mode 3: workspace per-crate (flat crates: with independent versions)
-// ---------------------------------------------------------------------------
 
 #[test]
 fn per_crate_rewrites_each_crates_own_version_files() {
@@ -922,14 +914,12 @@ version = "0.1.0"
     assert_eq!(read(root, "Chart.yaml"), "appVersion: v0.1.0\n");
 }
 
-// ---------------------------------------------------------------------------
 // Invoked from a SUBDIRECTORY of the workspace
 //
 // `tag` discovers the workspace root and runs every git op there. The enrolled
 // version_files (and the manifest/lockfile IO) must resolve against that same
 // root, not the process cwd — otherwise a top-level `Chart.yaml` misresolves
 // when `tag` is run from a crate subdirectory. One test per config mode.
-// ---------------------------------------------------------------------------
 
 #[test]
 fn single_crate_from_subdir_rewrites_top_level_version_files() {
@@ -1355,9 +1345,7 @@ fn per_crate_bare_and_anchored_share_one_file() {
     assert_eq!(show_head(root, "shared.md"), expected);
 }
 
-// ---------------------------------------------------------------------------
 // One declared crate, tagged without `--crate`
-// ---------------------------------------------------------------------------
 
 /// A workspace declaring exactly ONE crate that enrolls nothing of its own,
 /// with a TOP-LEVEL `version_files` list, at 0.1.0 with a `fix:` commit after
@@ -1891,9 +1879,7 @@ fn repo_level_manifest_is_the_one_check_reads() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // One occurrence matcher for both commands
-// ---------------------------------------------------------------------------
 
 /// A flat repo at 1.2.3 whose enrolled file mentions only NEIGHBOURING version
 /// strings: `1.2.3` appears as a substring of both, but never as its own word.

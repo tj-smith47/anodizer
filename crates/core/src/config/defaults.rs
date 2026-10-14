@@ -22,9 +22,7 @@ use super::version_files::VersionFileEntry;
 use super::{ChecksumConfig, CrossStrategy, DockerSignConfig, DockerV2Config, SignConfig};
 use crate::packagers::{InstallScriptConfig, MakeselfConfig, SrpmConfig};
 
-// ---------------------------------------------------------------------------
 // Defaults
-// ---------------------------------------------------------------------------
 
 /// Workspace-level defaults. Each key has the same shape as the matching key
 /// under `crates[]` or at the top level, and fills what the config left
@@ -58,7 +56,7 @@ use crate::packagers::{InstallScriptConfig, MakeselfConfig, SrpmConfig};
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct Defaults {
-    // --- Build axis ---
+    // Build axis
     /// Default build settings merged into every `crates[].builds[]` entry;
     /// a field the build sets keeps its value. A crate with no `builds`
     /// gets one build made from this block.
@@ -74,7 +72,7 @@ pub struct Defaults {
     /// top-level `upx` list is empty.
     pub upx: Option<UpxConfig>,
 
-    // --- Packaging axis ---
+    // Packaging axis
     /// Default nfpm (deb/rpm/apk) settings, merged into each crate's nfpm
     /// entry with the same `id` (or, with no `id`, `package_name`), or
     /// appended when none matches.
@@ -114,12 +112,12 @@ pub struct Defaults {
     #[serde(alias = "docker_v2")]
     pub dockers_v2: Option<DockerV2Config>,
 
-    // --- Publish axis ---
+    // Publish axis
     /// Default publisher settings, one block per publisher, each merged into
     /// every crate's matching `publish.*` block.
     pub publish: Option<PublishDefaults>,
 
-    // --- Sign / notarize / sbom ---
+    // Sign / notarize / sbom
     /// Default artifact signing settings, used as the one top-level `signs`
     /// entry when that list is empty.
     pub sign: Option<SignConfig>,
@@ -136,7 +134,7 @@ pub struct Defaults {
     /// that list is empty.
     pub sbom: Option<SbomConfig>,
 
-    // --- Cross-cutting ---
+    // Cross-cutting
     /// Build targets for every build that sets no `targets` of its own
     /// (e.g. `["x86_64-unknown-linux-gnu", "aarch64-apple-darwin"]`). When
     /// unset or empty, anodizer's built-in target list applies.
@@ -158,7 +156,7 @@ pub struct Defaults {
     /// block. Same shape as `crates[].checksum`.
     pub checksum: Option<ChecksumConfig>,
 
-    // --- Crate-axis vs workspace-axis (mutually exclusive) ---
+    // Crate-axis vs workspace-axis (mutually exclusive)
     /// Per-crate fallbacks for a config with a top-level `crates:` list:
     /// `tag_template` is used by every crate whose own `tag_template` is
     /// unset or empty. Setting this block without a top-level `crates:`

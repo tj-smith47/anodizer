@@ -56,9 +56,7 @@ fn attest_config(
     }
 }
 
-// ---------------------------------------------------------------------------
 // subjects mode
-// ---------------------------------------------------------------------------
 
 /// subjects mode writes `dist/attestation-subjects.json` whose digests are the
 /// SAME sha256 stage-checksum computed (rule #11: derive, don't recompute
@@ -353,9 +351,7 @@ fn missing_block_is_noop() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // emit mode
-// ---------------------------------------------------------------------------
 
 /// emit mode writes a valid in-toto v1 statement: correct `_type`,
 /// `predicateType = slsa provenance v1`, and `subject[].digest.sha256`
@@ -481,9 +477,7 @@ fn emit_statement_is_signed_by_existing_sign_stage() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // workspace per-crate (no clobber)
-// ---------------------------------------------------------------------------
 
 /// In workspace per-crate mode (multiple published crates in one run), each
 /// crate's subjects manifest is written under a crate-prefixed name so they
@@ -635,9 +629,7 @@ fn statement_is_byte_deterministic() {
     assert_eq!(a, b, "statement bytes must be deterministic");
 }
 
-// ---------------------------------------------------------------------------
 // release-uploadable coverage (finding #1)
-// ---------------------------------------------------------------------------
 
 /// Selecting `package` attests a `.deb` (LinuxPackage) — the gap that left a
 /// shipped `.deb` un-attested with no way to select it.
@@ -690,7 +682,7 @@ fn package_kind_attests_linux_package() {
     );
 }
 
-/// The default (no `artifacts:`) attests the full release-uploadable surface
+/// The default (no `artifacts:`) attests the full release-uploadable set
 /// together — archive + checksum + sbom + .deb in one manifest — derived from
 /// `release_uploadable_kinds()` rather than a hand-curated subset.
 #[test]
@@ -905,9 +897,7 @@ fn empty_match_emits_warn() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // dry-run safety (no hashing of unwritten sidecars)
-// ---------------------------------------------------------------------------
 
 /// Register an artifact whose backing file is NOT on disk and which carries no
 /// `sha256` metadata — the shape a checksum sidecar has in a dry-run, where the
@@ -1042,7 +1032,7 @@ fn collect_subjects_skips_appbundle_directory() {
 }
 
 /// The dry-run placeholder must not mask a genuine failure: outside dry-run, a
-/// missing file with no metadata digest still surfaces the hashing error.
+/// missing file with no metadata digest still returns the hashing error.
 #[test]
 fn non_dry_run_missing_file_still_errors() {
     let tmp = TempDir::new().unwrap();

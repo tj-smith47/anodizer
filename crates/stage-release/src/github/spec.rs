@@ -402,7 +402,7 @@ mod already_exists_tests {
     #[test]
     fn bails_when_replace_forbidden_and_sizes_differ() {
         // `if !replace_existing_artifacts { return unrecoverable }`.
-        // Surfaces the conflict instead of silently overwriting.
+        // Reports the conflict instead of silently overwriting.
         assert_eq!(
             classify_already_exists(false, uploaded(100), 200, None),
             AlreadyExistsAction::BailReplaceForbidden,
@@ -560,7 +560,7 @@ mod existing_assets_precheck_tests {
     fn conflicts_when_assets_present_and_replace_forbidden() {
         // The scenario that was previously unrecoverable: partial assets
         // from a prior failed attempt exist, and replace_existing_artifacts
-        // is false. The helper must surface them so the caller can bail.
+        // is false. The helper must report them so the caller can bail.
         let assets = &["app_linux_amd64.tar.gz", "checksums.txt"];
         let result = check_existing_assets_block_upload(false, false, false, assets);
         let names = result.expect("should detect conflict");
@@ -592,7 +592,7 @@ mod existing_assets_precheck_tests {
     fn skip_upload_wins_even_with_assets_and_no_replace() {
         // skip_upload short-circuits BEFORE the asset-list inspection runs.
         // Pinning this so a future refactor doesn't reorder the early-return
-        // and accidentally surface a conflict during a no-op upload pass.
+        // and accidentally report a conflict during a no-op upload pass.
         let result = check_existing_assets_block_upload(true, false, false, &["x.tar.gz"]);
         assert!(
             result.is_none(),
@@ -691,7 +691,7 @@ mod already_exists_action_derive_tests {
     fn debug_format_names_the_variant() {
         // The error-path log lines format the action via `{:?}` to identify
         // which branch the classifier picked. Pin the variant names so a
-        // future rename (`SkipIdempotent` -> `Idempotent`) surfaces in the
+        // future rename (`SkipIdempotent` -> `Idempotent`) shows up in the
         // log diff instead of silently breaking grep-based triage.
         assert_eq!(
             format!("{:?}", AlreadyExistsAction::SkipIdempotent),
@@ -710,7 +710,7 @@ mod already_exists_action_derive_tests {
 
 #[cfg(test)]
 mod spec_struct_surface_tests {
-    //! Pin the field surface of the three "context bundles" passed
+    //! Pin the fields of the three "context bundles" passed
     //! into `run_github_backend`. Each is `Clone + Copy` so a struct
     //! can be constructed, copied, and read field-by-field through
     //! the copy — a future field removal/rename breaks compilation

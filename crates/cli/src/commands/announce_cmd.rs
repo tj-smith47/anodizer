@@ -129,7 +129,7 @@ crates:
     }
 
     /// `announce --merge` reaches `find_config` first; an absent config must
-    /// surface as the find-config error, identical to the no-merge path.
+    /// are reported as the find-config error, identical to the no-merge path.
     #[test]
     fn merge_missing_config_bails() {
         let tmp = tempfile::tempdir().unwrap();

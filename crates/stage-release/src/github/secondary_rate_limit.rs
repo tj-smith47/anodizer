@@ -1,7 +1,7 @@
 //! Secondary rate-limit detection and backoff for GitHub uploads.
 //!
 //! GitHub's *secondary* rate limit is distinct from the proactive primary-limit
-//! check in `rate_limit.rs`. It is triggered by burst patterns and surfaces as
+//! check in `rate_limit.rs`. It is triggered by burst patterns and shows up as
 //! an HTTP 403 or 429 whose response body contains
 //! `"You have exceeded a secondary rate limit"`. GitHub may also include a
 //! `Retry-After` header (integer seconds) as a hint.
@@ -49,9 +49,7 @@ pub(crate) const SECONDARY_RL_FALLBACK_SECS: u64 = 60;
 /// misbehaving proxy or pathological server response.
 const RETRY_AFTER_MAX_SECS: u64 = 600;
 
-// ---------------------------------------------------------------------------
 // RetryAfterCapture — shared state read by the retry loops
-// ---------------------------------------------------------------------------
 
 /// Shared capture of the most recent `Retry-After` header value (seconds).
 ///
@@ -83,9 +81,7 @@ impl RetryAfterCapture {
     }
 }
 
-// ---------------------------------------------------------------------------
 // RetryAfterLayer / RetryAfterService — tower middleware
-// ---------------------------------------------------------------------------
 
 /// Tower [`Layer`] that wraps an inner HTTP service with
 /// [`RetryAfterService`], capturing `Retry-After` headers before octocrab
@@ -233,7 +229,7 @@ mod tests {
     /// default tower retry (`RetryConfig::Simple(3)`) would re-issue 429 / 5xx
     /// requests up to four times, requiring the responder to accept four
     /// sequential connections whose backoff timing flaked under CPU-saturated
-    /// parallel test runs (a failed transport attempt surfaced a connect error
+    /// parallel test runs (a failed transport attempt returned a connect error
     /// instead of the typed `Error::GitHub`). One served response is enough to
     /// produce the typed GitHub error this test classifies, deterministically.
     fn make_github_error_sync(status: u16, body: &'static str) -> octocrab::Error {

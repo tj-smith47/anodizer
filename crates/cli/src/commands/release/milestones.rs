@@ -59,7 +59,7 @@ fn resolve_milestone_for_close(
 
 /// Pre-flight milestone resolution at validate time.
 ///
-/// Surfaces config-resolution failures (empty rendered name, unresolvable
+/// Reports config-resolution failures (empty rendered name, unresolvable
 /// repo) before the main release pipeline runs, so a misconfigured
 /// `milestones:` block fails fast instead of after a full build. Routes
 /// through [`Context::strict_guard`], matching [`close_milestones`].
@@ -960,7 +960,7 @@ mod tests {
         );
     }
 
-    // ---- retry plumbing through close_milestone_gitlab --------------------
+    // retry plumbing through close_milestone_gitlab
     //
     // Pin: each milestone HTTP call must route through retry_http_async so
     // transient 5xx / 429 / network failures retry per the user's policy.
@@ -1014,7 +1014,7 @@ mod tests {
         );
     }
 
-    // ---- resolve_milestone_repo — owner/name resolution logic ----------
+    // resolve_milestone_repo — owner/name resolution logic
     //
     // This is the multi-crate grouping core: it must prefer an explicit
     // `milestones.repo`, else a crate release block matching the active SCM
@@ -1128,7 +1128,7 @@ mod tests {
     #[test]
     fn resolve_repo_falls_back_to_any_block_when_active_provider_absent() {
         // Active provider is Gitea, but the only crate has just a GitHub
-        // block. The fallback (any provider) must surface it rather than
+        // block. The fallback (any provider) must report it rather than
         // returning empty.
         let config = Config {
             crates: vec![crate_with(release_with(
@@ -1218,7 +1218,7 @@ mod tests {
         assert_eq!((o.as_str(), n.as_str()), ("", ""));
     }
 
-    // ---- resolve_milestone_api_url — base-URL normalization ------------
+    // resolve_milestone_api_url — base-URL normalization
 
     fn config_with_gitlab_api(api: Option<&str>) -> Config {
         Config {
@@ -1306,7 +1306,7 @@ mod tests {
         assert!(resolve_milestone_api_url(&cfg, &config_with_gitlab_api(None)).is_none());
     }
 
-    // ---- empty-token guard on every provider close ---------------------
+    // empty-token guard on every provider close
     //
     // The first line of each provider close is a token presence check. An
     // empty token must bail with a provider-specific message BEFORE any HTTP
@@ -1449,7 +1449,7 @@ mod tests {
         );
     }
 
-    // ---- GitLab close — milestone-absent maps to NotFound ---------------
+    // GitLab close — milestone-absent maps to NotFound
 
     #[test]
     fn gitlab_close_milestone_absent_returns_not_found() {
@@ -1481,7 +1481,7 @@ mod tests {
         );
     }
 
-    // ---- Gitea close — end-to-end list + PATCH against a mock -----------
+    // Gitea close — end-to-end list + PATCH against a mock
 
     #[test]
     fn gitea_close_lists_finds_and_patches() {
@@ -1517,7 +1517,7 @@ mod tests {
         use std::sync::atomic::Ordering;
         // List finds the milestone, but the close PATCH 404s (deleted between
         // list and close). The Gitea close maps that specific 404 to NotFound
-        // rather than surfacing it as a hard error.
+        // rather than reporting it as a hard error.
         let (addr, calls) = spawn_oneshot_http_responder(vec![
             "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 27\r\n\r\n[{\"id\":7,\"title\":\"v2.0.0\"}]",
             "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n",
@@ -1578,7 +1578,7 @@ mod tests {
         assert_eq!(calls.load(Ordering::SeqCst), 2);
     }
 
-    // ---- close_milestones — real publish path drives a provider close --
+    // close_milestones — real publish path drives a provider close
 
     #[test]
     fn close_milestones_drives_gitlab_close_when_not_dry_run() {

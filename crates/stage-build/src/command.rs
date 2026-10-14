@@ -4,9 +4,7 @@ use std::path::{Path, PathBuf};
 use anodizer_core::config::CrossStrategy;
 use anodizer_core::tool_detect::on_path;
 
-// ---------------------------------------------------------------------------
 // BuildCommand — a description of the command to run
-// ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone)]
 pub struct BuildCommand {
@@ -17,9 +15,7 @@ pub struct BuildCommand {
     pub cwd: PathBuf,
 }
 
-// ---------------------------------------------------------------------------
 // detect_cross_strategy
-// ---------------------------------------------------------------------------
 
 pub(crate) fn detect_cross_strategy() -> CrossStrategy {
     detect_cross_strategy_impl(zigbuild_available(), on_path("cross"))
@@ -188,11 +184,11 @@ pub(crate) fn cross_gnu_cargo_fallback_warning(
     ))
 }
 
-/// Outcome of [`cross_gnu_cargo_fallback_gate`]: how loudly to surface a
+/// Outcome of [`cross_gnu_cargo_fallback_gate`]: how loudly to report a
 /// cross-arch `*-linux-gnu` target resolving to plain `cargo build`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum CrossGnuFallback {
-    /// Working (or plausibly operator-managed) setup — surface the routing
+    /// Working (or plausibly operator-managed) setup — report the routing
     /// decision but let the build proceed.
     Warn(String),
     /// Provably doomed: no cross gcc on PATH and no operator override.
@@ -341,9 +337,7 @@ pub(crate) fn same_windows_family(host: &str, target: &str) -> bool {
     host.contains("-windows-") && target.contains("-windows-")
 }
 
-// ---------------------------------------------------------------------------
 // resolve_build_program — shared cross_tool / strategy resolution
-// ---------------------------------------------------------------------------
 
 /// Resolve the build program and subcommand from the cross strategy and
 /// optional cross_tool override. When `cross_tool` is set it takes precedence
@@ -385,9 +379,7 @@ pub(crate) fn resolve_build_program(
     (prog, subcmd)
 }
 
-// ---------------------------------------------------------------------------
 // BuildContext + helpers
-// ---------------------------------------------------------------------------
 
 /// Per-call context shared by [`build_command`] and [`build_lib_command`].
 ///
@@ -452,17 +444,13 @@ fn build_target_command(target_selector: &[&str], ctx: &BuildContext<'_>) -> Bui
     }
 }
 
-// ---------------------------------------------------------------------------
 // build_command — `cargo build --bin <binary>`
-// ---------------------------------------------------------------------------
 
 pub(crate) fn build_command(binary: &str, ctx: &BuildContext<'_>) -> BuildCommand {
     build_target_command(&["--bin", binary, "--target", ctx.target], ctx)
 }
 
-// ---------------------------------------------------------------------------
 // build_lib_command — `cargo build --lib`
-// ---------------------------------------------------------------------------
 
 /// Build command for library targets (cdylib, staticlib, etc.).
 /// Uses `--lib` instead of `--bin`.
@@ -470,9 +458,7 @@ pub(crate) fn build_lib_command(ctx: &BuildContext<'_>) -> BuildCommand {
     build_target_command(&["--lib", "--target", ctx.target], ctx)
 }
 
-// ---------------------------------------------------------------------------
 // detect_crate_type
-// ---------------------------------------------------------------------------
 
 /// Check if a crate has a binary target.
 ///

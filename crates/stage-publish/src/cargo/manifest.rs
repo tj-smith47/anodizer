@@ -1,8 +1,6 @@
 //! Reading crate and workspace `Cargo.toml` version references.
 
-// ---------------------------------------------------------------------------
 // publish_to_cargo
-// ---------------------------------------------------------------------------
 
 /// Whether a `[<section>]` Cargo.toml block contains a literal
 /// `version = "..."` or a `version.workspace = true` reference.

@@ -116,7 +116,7 @@ fn sync_fork(
 }
 
 /// Check whether the `gh` CLI is available (spawn probe). A probe FAILURE
-/// (permission denied, exec-format — presence unknown) is surfaced as a
+/// (permission denied, exec-format — presence unknown) is reported as a
 /// WARN before falling back to the token/API transport, never silently
 /// collapsed into "gh absent": a quiet reroute would hide a broken gh from
 /// the operator while changing which transport (and which capabilities,
@@ -135,12 +135,10 @@ fn gh_is_available(log: &StageLogger) -> bool {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Shared messages — single source of truth for the PR-already-exists
 // branch so both transports and the unit tests assert on the same
 // string. Mirrors the `run_*_message` pattern used elsewhere in
 // stage-publish.
-// ---------------------------------------------------------------------------
 
 /// Warn message rendered when the gh CLI / API reports the PR already
 /// exists and `update_existing_pr` is false. Operators see this in
@@ -159,9 +157,7 @@ pub(crate) fn pr_exists_update_status_message(label: &str, head: &str) -> String
     format!("{label} PR for '{head}' already exists — updated in place")
 }
 
-// ---------------------------------------------------------------------------
 // PR specs — bundle the request shape shared by both transports
-// ---------------------------------------------------------------------------
 
 /// Pull-request payload, shared by [`create_pr_via_gh_cli`] and
 /// [`create_pr_via_api_with_env`].
@@ -414,7 +410,7 @@ fn create_pr_via_gh_cli(
 /// whether or not the caller opted into `update_existing_pr`: the API
 /// transport cannot force-push (no working tree handy), so
 /// `update_existing_pr = true` is a no-op here — a warn says the in-place
-/// update needs the `gh` CLI, and `PendingValidation` is still surfaced
+/// update needs the `gh` CLI, and `PendingValidation` is still reported
 /// because the open PR did not advance to the new manifest. Returns
 /// `None` on success. Returns `Some(Failed(msg))` for transport
 /// failure, HTTP-client build failure, and non-success HTTP status —
@@ -813,7 +809,7 @@ pub(crate) enum PrTransport {
     /// `gh` is missing but a token resolved — fall back to the
     /// GitHub REST API.
     Api,
-    /// Neither `gh` nor a token is available. Callers must surface
+    /// Neither `gh` nor a token is available. Callers must report
     /// `PublisherOutcome::Failed` here; returning `None` silently
     /// would let dispatch record `Succeeded` for a publisher that
     /// did no work.
@@ -1266,12 +1262,10 @@ mod tests {
         );
     }
 
-    // -----------------------------------------------------------------
     // `create_pr_via_api_with_env` HTTP coverage. Each test redirects
     // requests to an in-process responder by injecting
     // `ANODIZER_GITHUB_API_BASE` through a [`MapEnvSource`] — no process
     // env mutation, no env mutex acquisition, no shared state.
-    // -----------------------------------------------------------------
 
     fn env_with_base(base: &str) -> MapEnvSource {
         MapEnvSource::new().with("ANODIZER_GITHUB_API_BASE", base)
@@ -1655,14 +1649,12 @@ mod tests {
         assert!(outcome.is_none());
     }
 
-    // =================================================================
     // Local-git-fixture infrastructure for the flows that shell out to
     // `git` (`sync_fork`, and `maybe_submit_pr_with_env`'s cross-repo
     // fork-sync + post-sync force-push). All of these run against a
     // local bare repo reached over a `file://`-equivalent filesystem
     // path — no network. Mirrors the `init_bare_remote_with_one_commit`
     // helper in `util/git_revert.rs`.
-    // =================================================================
 
     fn git_ok(dir: &Path, args: &[&str]) {
         anodizer_core::test_helpers::git_test_ok(dir, args)
@@ -1778,9 +1770,7 @@ mod tests {
         (upstream_url, work, upstream)
     }
 
-    // -----------------------------------------------------------------
     // `sync_fork`
-    // -----------------------------------------------------------------
 
     /// Success path: when the upstream base branch carries a commit the
     /// fork doesn't have yet, `sync_fork` fetches upstream and rebases the
@@ -1859,7 +1849,6 @@ mod tests {
         );
     }
 
-    // -----------------------------------------------------------------
     // `maybe_submit_pr_with_env` — cross-repo fork-sync + force-push side
     // effects. These run BEFORE the transport dispatch, so they are
     // observable on the local `file://` origin. To keep the transport
@@ -1869,7 +1858,6 @@ mod tests {
     // transport onto an in-process scripted responder. Both touch
     // `PATH`, so they hold the env mutex and run `#[serial(path_env)]`
     // (the shared crate-wide PATH-mutation group).
-    // -----------------------------------------------------------------
 
     /// Install a `gh` stub that exits non-zero on `--version` so
     /// `gh_is_available()` reports false, then prepend it to `PATH`.
@@ -2214,7 +2202,7 @@ mod tests {
     }
 
     /// No token anywhere (repo config absent, env unset) AND gh absent =>
-    /// `NoneAvailable` => the function MUST surface `Failed`, never a
+    /// `NoneAvailable` => the function MUST report `Failed`, never a
     /// silent `None` that dispatch would record as `succeeded`. End-to-end
     /// proof of the silent-skip contract at the orchestration boundary.
     #[cfg(unix)]
@@ -2275,12 +2263,10 @@ mod tests {
         drop(work);
     }
 
-    // -----------------------------------------------------------------
     // `create_pr_via_api_with_env` — REQUEST-CONTENT assertions. The
     // existing tests assert the returned outcome per status code; these
     // pin the actual request the API transport emits (method, path, and
     // JSON payload fields) via the scripted responder's request log.
-    // -----------------------------------------------------------------
 
     /// `pull_request.token` wins over `repository.token` and over the
     /// environment chain: with gh absent, the API transport sends it as the
@@ -2593,7 +2579,7 @@ mod tests {
         drop(work);
     }
 
-    // -- reconcile_open_prs ------------------------------------------------
+    // reconcile_open_prs
     // Every PR-mode publisher funnels its probe through this function, so a
     // wrong verdict here is the difference between skipping a needed publish
     // and opening a duplicate PR. Neither failure is loud.

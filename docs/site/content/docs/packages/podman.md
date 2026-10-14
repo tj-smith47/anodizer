@@ -1,6 +1,6 @@
 +++
 title = "Podman backend"
-description = "Build and push images with podman (Linux-only)"
+description = "Build and push images with podman in place of docker buildx (Linux-only)"
 weight = 5
 template = "docs.html"
 +++

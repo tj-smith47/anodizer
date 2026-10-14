@@ -64,7 +64,7 @@ pub(crate) fn resolve_rollback_credentials(
             config_password: entry.password.as_deref(),
             env_prefix: "ARTIFACTORY",
             // Rollback is best-effort; tolerate anonymous so a missing
-            // credential surfaces as a 401 in the deletion summary rather
+            // credential shows up as a 401 in the deletion summary rather
             // than bailing here.
             anonymous_ok: true,
         },
@@ -101,7 +101,7 @@ pub(crate) fn classify_delete_status(status: reqwest::StatusCode) -> DeleteOutco
 /// `PublishEvidence::extra` resolved to a configured basic-auth pair;
 /// otherwise `bearer` falls back to `ARTIFACTORY_TOKEN` /
 /// `ARTIFACTORY_SECRET`. Both `None` is acceptable — the DELETE will
-/// surface a 401 in the failed bucket rather than silently 200ing.
+/// report a 401 in the failed bucket rather than silently 200ing.
 #[derive(Clone, Debug)]
 pub(crate) struct RollbackJob {
     pub(crate) url: String,
@@ -196,6 +196,4 @@ pub(crate) fn parallel_delete(
     }
 }
 
-// ---------------------------------------------------------------------------
 // Tests
-// ---------------------------------------------------------------------------

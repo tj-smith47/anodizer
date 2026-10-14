@@ -3,9 +3,7 @@ use serde::{Deserialize, Serialize};
 
 use super::{CommitAuthorConfig, ContentSource, MakeLatestConfig};
 
-// ---------------------------------------------------------------------------
 // SnapshotConfig
-// ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -20,9 +18,7 @@ pub struct SnapshotConfig {
     pub version_template: String,
 }
 
-// ---------------------------------------------------------------------------
 // NightlyConfig
-// ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
@@ -200,9 +196,7 @@ pub fn validate_nightly_publish_repo(config: &crate::config::Config) -> Result<(
     }
 }
 
-// ---------------------------------------------------------------------------
 // MetadataConfig
-// ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default, deny_unknown_fields)]

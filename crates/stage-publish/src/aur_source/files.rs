@@ -1,8 +1,6 @@
 use anyhow::{Context as _, Result};
 
-// ---------------------------------------------------------------------------
 // AUR source render specs
-// ---------------------------------------------------------------------------
 //
 // The original `generate_source_srcinfo` and `generate_source_pkgbuild`
 // functions took 12 and 19 positional arguments respectively. Bundle them
@@ -39,7 +37,7 @@ pub(super) struct AurDeps<'a> {
 }
 
 /// People credits — `# Maintainer:` / `# Contributor:` comment lines.
-/// PKGBUILD-only (.SRCINFO does not surface these).
+/// PKGBUILD-only (.SRCINFO does not report these).
 #[derive(Clone, Copy)]
 pub(super) struct AurPeople<'a> {
     pub(super) maintainers: &'a [String],

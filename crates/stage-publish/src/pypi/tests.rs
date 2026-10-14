@@ -52,9 +52,7 @@ fn static_gnu_traits() -> BinaryTraits {
     }
 }
 
-// -----------------------------------------------------------------------------
 // Platform-tag derivation
-// -----------------------------------------------------------------------------
 
 #[test]
 fn gnu_targets_tag_manylinux_from_glibc_floor() {
@@ -321,9 +319,7 @@ fn inspect_binary_degrades_on_non_object_bytes() {
     assert!(t.macos_min.is_none());
 }
 
-// -----------------------------------------------------------------------------
 // Wheel assembly
-// -----------------------------------------------------------------------------
 
 fn spec(tag: &str) -> WheelSpec {
     WheelSpec {
@@ -458,9 +454,7 @@ fn wheel_bytes_are_deterministic() {
     );
 }
 
-// -----------------------------------------------------------------------------
 // Upload protocol
-// -----------------------------------------------------------------------------
 
 fn upload_ctx_pieces(
     tmp: &std::path::Path,
@@ -648,9 +642,7 @@ fn duplicate_is_a_hard_error_when_skip_existing_false() {
     assert!(err.to_string().contains("skip_existing"), "{err:#}");
 }
 
-// -----------------------------------------------------------------------------
 // Publish orchestration (per config mode)
-// -----------------------------------------------------------------------------
 
 fn demo_crate(name: &str, path: &str) -> CrateConfig {
     CrateConfig {
@@ -870,9 +862,7 @@ fn run_publish_with_binaries(
     files
 }
 
-// -----------------------------------------------------------------------------
 // METADATA gaps: Description-Content-Type, Project-URL map, Author headers
-// -----------------------------------------------------------------------------
 
 #[test]
 fn metadata_emits_author_project_urls_and_content_type_before_body() {
@@ -1003,9 +993,7 @@ fn author_and_project_urls_render_through_templates() {
     );
 }
 
-// -----------------------------------------------------------------------------
 // P4: per-target platform-tag overrides (all three config modes)
-// -----------------------------------------------------------------------------
 
 fn override_cfg(repo: String, extra: impl FnOnce(&mut PypiConfig)) -> PypiConfig {
     let mut overrides = std::collections::BTreeMap::new();
@@ -1091,9 +1079,7 @@ fn no_override_keeps_auto_detected_tag() {
     assert_eq!(files[0].platform_tag, "musllinux_1_2_aarch64");
 }
 
-// -----------------------------------------------------------------------------
 // F7: microarch variant selection
-// -----------------------------------------------------------------------------
 
 #[test]
 fn amd64_variant_selects_matching_microarch_build() {
@@ -1214,9 +1200,7 @@ fn dry_run_makes_no_requests() {
     assert_eq!(log.lock().unwrap().len(), 0, "dry-run makes no requests");
 }
 
-// -----------------------------------------------------------------------------
 // Config parsing
-// -----------------------------------------------------------------------------
 
 #[test]
 fn parse_minimal_pypi_block() {
@@ -1282,9 +1266,7 @@ pypis:
     );
 }
 
-// -----------------------------------------------------------------------------
 // Publisher contract
-// -----------------------------------------------------------------------------
 
 #[test]
 fn pypi_publisher_classification() {
@@ -1370,9 +1352,7 @@ fn token_resolution_ladder() {
     assert_eq!(resolve_token(&ctx, &cfg).expect("resolve"), "inline-tok");
 }
 
-// -----------------------------------------------------------------------------
 // Trusted Publishing (OIDC)
-// -----------------------------------------------------------------------------
 
 #[test]
 fn mint_token_url_maps_only_pypi_hosts() {
@@ -1594,7 +1574,7 @@ fn auto_mode_routes_around_a_token_render_error_to_oidc() {
 fn auto_mode_surfaces_the_token_render_error_without_oidc() {
     use super::publisher::resolve_upload_credential;
     // No OIDC fallback to route around to: the token-render error IS the
-    // actionable failure and must be surfaced (not swallowed into the generic
+    // actionable failure and must be reported (not swallowed into the generic
     // no-credential guidance).
     let ctx = TestContextBuilder::new()
         .project_name("demo")
@@ -1646,9 +1626,7 @@ fn oidc_mint_errors_on_custom_index() {
     assert!(err.to_string().contains("only supported against"), "{err}");
 }
 
-// -----------------------------------------------------------------------------
 // Preflight
-// -----------------------------------------------------------------------------
 
 #[test]
 fn preflight_blocks_on_illegal_project_name() {
@@ -1730,9 +1708,7 @@ fn version_probe_maps_known_hosts_to_json_api() {
     assert_eq!(version_probe("not a url", "my-tool", "1.2.3"), None);
 }
 
-// -----------------------------------------------------------------------------
 // C8 — anchored simple-index probe
-// -----------------------------------------------------------------------------
 
 #[test]
 fn simple_index_probe_matches_exact_version_only() {
@@ -1760,10 +1736,8 @@ fn simple_index_probe_matches_exact_version_only() {
     assert!(!body_lists_version(underscore, "foo", "1.2.3"));
 }
 
-// -----------------------------------------------------------------------------
 // The landing probe's own parsing: filename -> (name, version), and whether a
 // page lists one exact file
-// -----------------------------------------------------------------------------
 
 /// The `(name, version)` a distribution filename carries. A wheel escapes the
 /// name so the FIRST `-` splits it; an sdist has no such guarantee, so the
@@ -1853,9 +1827,7 @@ fn a_non_distribution_filename_is_unverifiable_not_absent() {
     );
 }
 
-// -----------------------------------------------------------------------------
 // C7 — sdist upload echoes PKG-INFO's own metadata_version + version
-// -----------------------------------------------------------------------------
 
 /// Build a minimal sdist `.tar.gz` carrying `<name>-<version>/PKG-INFO` with
 /// the given headers.
@@ -2034,9 +2006,7 @@ fn sdist_upload_form_carries_pkg_info_metadata_version() {
     assert!(body.contains("name=\"filetype\"\r\n\r\nsdist"), "{body}");
 }
 
-// -----------------------------------------------------------------------------
 // C15 — per-entry metadata scoped to the entry's crate (ids)
-// -----------------------------------------------------------------------------
 
 #[test]
 fn metadata_scopes_to_entry_crate_via_ids() {
@@ -2116,9 +2086,7 @@ fn metadata_scopes_to_entry_crate_via_ids() {
     );
 }
 
-// -----------------------------------------------------------------------------
 // C19 — metadata template errors propagate (never ship raw source)
-// -----------------------------------------------------------------------------
 
 #[test]
 fn metadata_template_error_aborts_publish() {
@@ -2146,9 +2114,7 @@ fn metadata_template_error_aborts_publish() {
     assert!(files.is_empty());
 }
 
-// -----------------------------------------------------------------------------
 // C11 — config-time platform-tag collision preflight
-// -----------------------------------------------------------------------------
 
 fn crate_with_targets(name: &str, path: &str, targets: &[&str]) -> CrateConfig {
     use anodizer_core::config::BuildConfig;
@@ -2213,10 +2179,8 @@ fn preflight_passes_single_crate_multi_target() {
     ));
 }
 
-// -----------------------------------------------------------------------------
-// Rollback burn-probe surface: static (context-free) name/repository
+// Rollback burn probe: static (context-free) name/repository
 // resolvers + the fail-closed live-index probe.
-// -----------------------------------------------------------------------------
 
 #[test]
 fn static_project_name_prefers_cfg_name_else_crate() {
@@ -2393,7 +2357,7 @@ fn pypi_version_live_reports_false_when_absent_from_simple_index() {
 fn pypi_version_live_fails_closed_when_unreachable() {
     use super::publisher::pypi_version_live;
     // Nothing listens on 127.0.0.1:1 → the /simple/ GET fails at the
-    // transport layer. An unreachable index must surface Err so the rollback
+    // transport layer. An unreachable index must return Err so the rollback
     // guard fails closed (never mistaking an outage for "not published").
     let err = pypi_version_live(
         "http://127.0.0.1:1/legacy/",
@@ -2409,9 +2373,7 @@ fn pypi_version_live_fails_closed_when_unreachable() {
     );
 }
 
-// -----------------------------------------------------------------------------
 // targets: allowlist (subset of built targets; win_amd64 collision avoidance)
-// -----------------------------------------------------------------------------
 
 /// Without a `targets:` allowlist, a build that ships BOTH
 /// `x86_64-pc-windows-msvc` and `x86_64-pc-windows-gnu` derives the SAME
@@ -2619,14 +2581,12 @@ pypis:
     assert!(PypiConfig::default().targets.is_none(), "default is None");
 }
 
-// -----------------------------------------------------------------------------
 // rollback: warn-only teardown of already-uploaded (one-way) PyPI files.
-// A published filename can never be re-uploaded, so rollback only surfaces
+// A published filename can never be re-uploaded, so rollback only reports
 // per-file guidance — no network. Two branches: empty evidence, and a
 // mixed set where a `skipped_existing` file (already live from an earlier
 // run) is excluded from the per-file warns while a freshly-uploaded one is
 // named.
-// -----------------------------------------------------------------------------
 
 fn pypi_file(
     filename: &str,
@@ -2708,12 +2668,10 @@ fn rollback_warns_per_uploaded_file_skipping_idempotent_skips() {
     );
 }
 
-// -----------------------------------------------------------------------------
 // run(): the Publisher trait entrypoint wrapping publish_to_pypi. On success
 // it returns evidence; on a mid-publish error it records a Failed outcome and
 // STILL returns Ok(evidence) so dispatch keeps the partial evidence rather
 // than dropping it.
-// -----------------------------------------------------------------------------
 
 #[test]
 fn run_returns_empty_evidence_when_no_pypis_configured() {

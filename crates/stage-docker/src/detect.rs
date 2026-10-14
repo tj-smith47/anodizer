@@ -3,9 +3,7 @@ use std::sync::OnceLock;
 
 use anodizer_core::log::StageLogger;
 
-// ---------------------------------------------------------------------------
 // is_retriable_error
-// ---------------------------------------------------------------------------
 
 /// Determine whether a docker error message indicates a transient failure
 /// worth retrying — a narrow predicate: `io.EOF` plus the exact HTTP
@@ -96,9 +94,7 @@ pub fn is_retriable_build(error_msg: &str) -> bool {
         .any(|p| lower.contains(p))
 }
 
-// ---------------------------------------------------------------------------
 // docker_supports_provenance  (cached probe)
-// ---------------------------------------------------------------------------
 
 /// Cached result of probing `docker buildx build --help` for `--provenance`.
 ///
@@ -128,9 +124,7 @@ pub(crate) fn docker_supports_provenance() -> bool {
     })
 }
 
-// ---------------------------------------------------------------------------
 // is_docker_daemon_available
-// ---------------------------------------------------------------------------
 
 /// Cached result of probing `docker info` for daemon availability.
 ///
@@ -152,16 +146,14 @@ pub(crate) fn is_docker_daemon_available() -> bool {
     })
 }
 
-// ---------------------------------------------------------------------------
 // check_buildx_driver
-// ---------------------------------------------------------------------------
 
 /// Outcome of probing `docker buildx version`.
 ///
 /// Modelled as a small enum so [`format_buildx_version_warning`] is pure and
 /// table-testable independent of the host's docker install. Production code
 /// produces values from [`check_buildx_version`]; tests can construct them
-/// directly to exercise the warning surface.
+/// directly to exercise the warning output.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum BuildxVersionProbe {
     /// `docker buildx version` exited 0.
@@ -235,7 +227,7 @@ pub(crate) fn probe_buildx_version() -> BuildxVersionProbe {
 /// logger if buildx is unavailable. Complements [`check_buildx_driver`]: this
 /// confirms the plugin is reachable, while `check_buildx_driver` validates
 /// the active driver. Both are lenient (warn-only) because docker setups vary
-/// and downstream `buildx build` will surface a hard error if it actually
+/// and downstream `buildx build` will report a hard error if it actually
 /// cannot run.
 pub(crate) fn check_buildx_version(log: &StageLogger) {
     run_buildx_version_check(log, probe_buildx_version);

@@ -10,9 +10,7 @@ use anodizer_core::config::ArchiveFileSpec;
 use anodizer_core::context::Context;
 use anodizer_core::stage::Stage;
 
-// ---------------------------------------------------------------------------
 // Info.plist generation
-// ---------------------------------------------------------------------------
 
 /// The fallback `LSMinimumSystemVersion` written to `Info.plist` when the
 /// config does not set `min_os_version`.
@@ -67,9 +65,7 @@ pub fn generate_info_plist(
     )
 }
 
-// ---------------------------------------------------------------------------
 // AppBundleStage
-// ---------------------------------------------------------------------------
 
 pub struct AppBundleStage;
 
@@ -196,7 +192,7 @@ fn copy_extra_files(
                                 );
                             }
                         }
-                        // Surface an invalid pattern here too — silently
+                        // Report an invalid pattern here too — silently
                         // swallowing the `Err` would skip the multi-match
                         // guard and defer the diagnostic to the copy path's
                         // warn, hiding the real cause from a dst-rename user.
@@ -747,9 +743,7 @@ impl Stage for AppBundleStage {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Tests
-// ---------------------------------------------------------------------------
 
 /// Environment requirements for the appbundle stage: none. The stage
 /// assembles the `.app` directory layout with pure file operations — no
@@ -767,9 +761,7 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
 
-    // -----------------------------------------------------------------------
     // Info.plist generation
-    // -----------------------------------------------------------------------
 
     /// Two assemblies of the same `.app` bundle at a fixed mtime /
     /// SOURCE_DATE_EPOCH are byte-identical, so the bundle is GATED in the
@@ -939,9 +931,7 @@ mod tests {
         assert!(plist.contains("<string>com.example.myapp</string>"));
     }
 
-    // -----------------------------------------------------------------------
     // App name extension enforcement
-    // -----------------------------------------------------------------------
 
     #[test]
     fn test_app_name_extension() {
@@ -960,9 +950,7 @@ mod tests {
         assert!(name_upper.to_lowercase().ends_with(".app"));
     }
 
-    // -----------------------------------------------------------------------
     // Bundle ID in plist
-    // -----------------------------------------------------------------------
 
     #[test]
     fn test_bundle_id_in_plist() {
@@ -970,9 +958,7 @@ mod tests {
         assert!(plist.contains("<string>com.example.myapp</string>"));
     }
 
-    // -----------------------------------------------------------------------
     // Stage behavior tests
-    // -----------------------------------------------------------------------
 
     #[test]
     fn test_stage_skips_no_config() {
@@ -2136,7 +2122,7 @@ crates:
         );
     }
 
-    // --- `app_bundle.if` template-conditional ---
+    // `app_bundle.if` template-conditional
 
     fn appbundle_if_test_ctx(if_expr: Option<&str>) -> anodizer_core::context::Context {
         use anodizer_core::artifact::{Artifact, ArtifactKind};
@@ -2205,9 +2191,7 @@ crates:
         );
     }
 
-    // -----------------------------------------------------------------------
     // min_os_version wired to Info.plist
-    // -----------------------------------------------------------------------
 
     #[test]
     fn test_info_plist_min_os_version_default() {
@@ -2286,9 +2270,7 @@ crates:
         );
     }
 
-    // -----------------------------------------------------------------------
     // Per-file info.mtime applied after copy
-    // -----------------------------------------------------------------------
 
     #[test]
     fn test_stage_live_extra_file_per_file_mtime() {
@@ -2354,9 +2336,7 @@ crates:
         );
     }
 
-    // -----------------------------------------------------------------------
     // info.mode / info.owner / info.group warnings
-    // -----------------------------------------------------------------------
 
     #[test]
     fn test_copy_extra_files_warns_for_unused_info_fields() {
@@ -2402,9 +2382,7 @@ crates:
         );
     }
 
-    // -----------------------------------------------------------------------
     // Multi-match glob with dst rename bails pre-flight
-    // -----------------------------------------------------------------------
 
     #[test]
     fn test_copy_extra_files_multiglob_with_dst_bails() {
@@ -2444,9 +2422,7 @@ crates:
         );
     }
 
-    // -----------------------------------------------------------------------
     // Per-file info.mtime survives the bundle-level mod_timestamp sweep
-    // -----------------------------------------------------------------------
 
     #[test]
     fn test_per_file_mtime_survives_bundle_mod_timestamp() {

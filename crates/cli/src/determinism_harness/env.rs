@@ -39,7 +39,7 @@ use std::path::Path;
 /// vars belong in `crates/core/src/user_command.rs`'s sandboxed env
 /// whitelist, not the harness's inheritance set.
 ///
-/// This list is the contractual surface on **all** platforms. On Windows,
+/// This list is the contract on **all** platforms. On Windows,
 /// [`build_subprocess_env`] additionally inherits the rest of the host env
 /// minus everything covered by `windows_env_should_drop`.
 pub(super) const HARNESS_ENV_ALLOWLIST: &[&str] = &[
@@ -69,7 +69,7 @@ pub(super) const HARNESS_ENV_ALLOWLIST: &[&str] = &[
 ];
 
 /// Credential-bearing env vars the Windows inherit-everything pass MUST
-/// drop. The explicit list is the contractual surface; the
+/// drop. The explicit list is the contract; the
 /// [`windows_env_should_drop`] suffix sweep is the defense-in-depth net
 /// for vars not named here.
 #[cfg(windows)]
@@ -366,7 +366,7 @@ pub(crate) fn build_subprocess_env_with_env(
     //
     // Also remap CARGO_HOME and CARGO_TARGET_DIR for the same reason:
     // registry dependency paths and incremental compilation artifacts
-    // can surface in panic strings via inlined helpers from std / proc
+    // can appear in panic strings via inlined helpers from std / proc
     // macros.
     //
     // Appended to any host-supplied RUSTFLAGS rather than overwriting:
@@ -549,7 +549,7 @@ pub(crate) fn build_subprocess_env_with_env(
         .or_insert_with(|| "error".into());
 
     // Marker for "this release run is a determinism-harness replica".
-    // Surfaced to user templates as `IsHarness` (see
+    // Exposed to user templates as `IsHarness` (see
     // `Context::populate_runtime_vars`) so `if_condition:` blocks can opt
     // stages in/out inside the harness. Set unconditionally — the property
     // holds for every replica child, not only the signing-key runs that

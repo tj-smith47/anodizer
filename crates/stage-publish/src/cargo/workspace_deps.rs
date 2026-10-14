@@ -43,9 +43,7 @@ pub(crate) fn expand_with_transitive_deps(
     out
 }
 
-// ---------------------------------------------------------------------------
 // wait_for_workspace_deps — pre-publish polling gate
-// ---------------------------------------------------------------------------
 
 /// Parse a crate's `Cargo.toml` for workspace-internal deps that resolve
 /// to a literal version pin, filtered to the set of crate names known to
@@ -220,9 +218,7 @@ pub(crate) fn wait_for_workspace_deps_to_appear(
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
 // publish-set dep-completeness guard
-// ---------------------------------------------------------------------------
 
 /// Registry state of a workspace-internal dependency that is NOT in the
 /// cargo-publish set, as observed by the guard's index check.
@@ -549,7 +545,7 @@ pub(crate) fn check_publish_set_completeness(
                 package: dep_name,
                 version: required_version,
             } = dep;
-            // Surfacing the in-code alias alongside the registry name saves
+            // Reporting the in-code alias alongside the registry name saves
             // the maintainer a grep when the two differ.
             let alias_note = if key != dep_name {
                 format!(" (declared as '{key}' via package rename)")
@@ -576,7 +572,7 @@ pub(crate) fn check_publish_set_completeness(
 
             if probe_version.is_empty() {
                 // No version to probe AND the dep isn't in the set: absence
-                // cannot be positively proven, so do not hard-fail — but surface
+                // cannot be positively proven, so do not hard-fail — but report
                 // it so a real gap isn't swallowed silently.
                 log.warn(&format!(
                     "crate '{publishing}' depends on workspace crate \

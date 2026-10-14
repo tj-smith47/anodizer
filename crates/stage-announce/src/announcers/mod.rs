@@ -52,9 +52,7 @@ use telegram::TelegramAnnouncer;
 use twitter::TwitterAnnouncer;
 use webhook::WebhookAnnouncer;
 
-// ---------------------------------------------------------------------------
 // Announcer trait + dispatch helper
-// ---------------------------------------------------------------------------
 
 /// Per-provider announce dispatch.
 ///
@@ -84,7 +82,7 @@ trait Announcer: Sync {
 
     /// Render — but do not send — exactly the templates this announcer's
     /// [`send`](Announcer::send) would render, so a broken template
-    /// (`{{ ReleaseURL }}` typo, undefined var, malformed Tera) surfaces as
+    /// (`{{ ReleaseURL }}` typo, undefined var, malformed Tera) is returned as
     /// an `Err` BEFORE any irreversible publisher fires.
     ///
     /// Reads ZERO credentials/env — only [`send`](Announcer::send) touches

@@ -1,10 +1,8 @@
 use super::*;
 
-// ---------------------------------------------------------------------------
 // URL-encoding aliases — consolidated onto `anodizer_core::url::percent_encode_path_segment`.
 // GitLab, Gitea and GitHub all use the same strict segment set so a tag like
 // `v1.0.0+build.1` produces identical URLs across backends.
-// ---------------------------------------------------------------------------
 
 pub(crate) fn encode_project_id(s: &str) -> String {
     percent_encode_path_segment(s)
@@ -16,9 +14,7 @@ pub(crate) fn encode_path_segment(s: &str) -> String {
     percent_encode_path_segment(s)
 }
 
-// ---------------------------------------------------------------------------
 // Public helpers
-// ---------------------------------------------------------------------------
 
 /// Build the GitLab project ID string from owner and name.
 ///

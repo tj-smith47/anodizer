@@ -43,9 +43,7 @@ fn http_response(status_line: &str, body: &str) -> String {
     )
 }
 
-// ---------------------------------------------------------------------------
 // Chocolatey poller
-// ---------------------------------------------------------------------------
 
 #[test]
 fn chocolatey_poller_resolves_approved_on_first_call() {
@@ -174,7 +172,7 @@ fn chocolatey_poller_404_throughout_window_returns_timeout_not_error() {
 fn chocolatey_poller_visible_then_404_returns_error() {
     // Regression detection: the page resolved (any 200 OK with a
     // pending callout) earlier in the run and then went 404. That
-    // IS unexpected and surfaces as Error so the operator sees the
+    // IS unexpected and shows up as Error so the operator sees the
     // takedown.
     let visible = http_response(
         "HTTP/1.1 200 OK",
@@ -202,9 +200,7 @@ fn chocolatey_poller_visible_then_404_returns_error() {
     }
 }
 
-// ---------------------------------------------------------------------------
 // WinGet poller
-// ---------------------------------------------------------------------------
 
 #[test]
 fn winget_poller_resolves_merged_pr() {
@@ -335,7 +331,7 @@ fn winget_poller_found_then_search_empty_returns_error() {
     // Regression detection: a matching PR was located on the first
     // search, but a subsequent search returns empty (and the cached
     // PR URL hits a NetworkError that forces a re-search). The
-    // disappearance is a regression and surfaces as Error.
+    // disappearance is a regression and shows up as Error.
     let pr_body = r#"{"state":"open","merged":false,"labels":[{"name":"New-Manifest"}]}"#;
     let (pr_addr, _pr_calls) = spawn_oneshot_http_responder(vec![
         Box::leak(http_response("HTTP/1.1 200 OK", pr_body).into_boxed_str()),
@@ -419,9 +415,7 @@ fn winget_poller_closed_unmerged_returns_rejected() {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Fan-out / parallel execution
-// ---------------------------------------------------------------------------
 
 #[test]
 fn run_post_publish_polls_returns_results_in_input_order() {
@@ -471,9 +465,7 @@ fn run_post_publish_polls_empty_returns_empty() {
     assert!(results.is_empty());
 }
 
-// ---------------------------------------------------------------------------
 // resolve_poll_config
-// ---------------------------------------------------------------------------
 
 #[test]
 fn resolve_poll_config_returns_none_when_cli_skip_set() {
@@ -525,9 +517,7 @@ fn resolve_poll_config_returns_none_when_unset() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // Burn-detection probes (published-state guard evidence)
-// ---------------------------------------------------------------------------
 
 #[test]
 fn chocolatey_burn_probe_pending_moderation_blocks() {

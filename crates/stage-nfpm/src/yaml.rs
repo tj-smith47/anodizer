@@ -124,9 +124,7 @@ pub(super) struct NfpmYamlFileInfo {
     pub(super) mtime: Option<String>,
 }
 
-// ---------------------------------------------------------------------------
 // Format-specific YAML model structs
-// ---------------------------------------------------------------------------
 
 #[derive(Serialize)]
 pub(super) struct NfpmYamlSignature {

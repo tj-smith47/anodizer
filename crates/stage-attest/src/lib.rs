@@ -35,9 +35,7 @@ use anodizer_core::config::{
 use anodizer_core::context::Context;
 use anodizer_core::stage::Stage;
 
-// ---------------------------------------------------------------------------
 // Subject model
-// ---------------------------------------------------------------------------
 
 /// A single attestation subject: an artifact filename plus its sha256 digest.
 ///
@@ -58,9 +56,7 @@ pub struct SubjectDigest {
     pub sha256: String,
 }
 
-// ---------------------------------------------------------------------------
 // in-toto v1 statement / SLSA provenance v1 predicate
-// ---------------------------------------------------------------------------
 
 const IN_TOTO_STATEMENT_TYPE: &str = "https://in-toto.io/Statement/v1";
 const SLSA_PROVENANCE_PREDICATE_TYPE: &str = "https://slsa.dev/provenance/v1";
@@ -163,9 +159,7 @@ impl InTotoStatement {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Subject derivation
-// ---------------------------------------------------------------------------
 
 /// The placeholder digest substituted for an absent file in dry-run: 64 zero
 /// hex chars. Same length/charset as a real sha256, so the rendered
@@ -185,7 +179,7 @@ const DRY_RUN_PLACEHOLDER_SHA256: &str =
 /// the dry-run, substitute [`DRY_RUN_PLACEHOLDER_SHA256`] for an absent file —
 /// the manifest/statement still renders for validation, mirroring how
 /// `write_output` no-ops in dry-run. A present file is still hashed for real, and
-/// outside dry-run a missing file surfaces the original error.
+/// outside dry-run a missing file returns the original error.
 fn resolve_sha256(artifact: &Artifact, dry_run: bool) -> Result<String> {
     if let Some(existing) = artifact.metadata.get("sha256") {
         return Ok(existing.clone());
@@ -275,9 +269,7 @@ fn collect_subjects(
     Ok(subjects)
 }
 
-// ---------------------------------------------------------------------------
 // Output naming (per-crate clobber avoidance)
-// ---------------------------------------------------------------------------
 
 /// Resolve the output filename for a crate's attestation output.
 ///
@@ -311,9 +303,7 @@ fn describe_selection(selected: Option<&[AttestationArtifactKind]>) -> String {
     }
 }
 
-// ---------------------------------------------------------------------------
 // AttestStage
-// ---------------------------------------------------------------------------
 
 /// Pipeline stage emitting SLSA build-provenance for binaries + archives.
 ///
@@ -377,7 +367,7 @@ impl Stage for AttestStage {
         for crate_name in &crates {
             let subjects = collect_subjects(ctx, crate_name, selected.as_deref(), dry_run)?;
             if subjects.is_empty() {
-                // Enabled but nothing matched: surface a warn (not a silent
+                // Enabled but nothing matched: log a warn (not a silent
                 // verbose line) so a misconfigured filter doesn't ship a passing
                 // run with zero attestation output. Mirrors the empty-match
                 // warn convention in stage-archive / stage-nfpm.

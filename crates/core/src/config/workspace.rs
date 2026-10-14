@@ -6,9 +6,7 @@ use super::{
     deserialize_signs, signs_schema,
 };
 
-// ---------------------------------------------------------------------------
 // WorkspaceConfig
-// ---------------------------------------------------------------------------
 
 /// A workspace represents an independent project root within a monorepo.
 /// Each workspace has its own crates, changelog, and release configuration,

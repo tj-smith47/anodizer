@@ -5,9 +5,7 @@ use crate::config::ForceTokenKind;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
-// ---------------------------------------------------------------------------
 // ScmTokenType
-// ---------------------------------------------------------------------------
 
 /// Which SCM backend is in use for the current release.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -27,9 +25,7 @@ impl fmt::Display for ScmTokenType {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Token type resolution
-// ---------------------------------------------------------------------------
 
 /// Resolve which SCM token type to use.
 ///
@@ -60,9 +56,7 @@ pub fn resolve_token_type(
     ScmTokenType::GitHub
 }
 
-// ---------------------------------------------------------------------------
 // Download URL
-// ---------------------------------------------------------------------------
 
 /// Return the base download URL for the given SCM backend.
 ///
@@ -87,9 +81,7 @@ pub fn default_download_url(token_type: ScmTokenType, custom_url: Option<&str>) 
     }
 }
 
-// ---------------------------------------------------------------------------
 // Release URL template
-// ---------------------------------------------------------------------------
 
 /// Build the release-asset download URL template for the given SCM backend.
 ///
@@ -127,15 +119,13 @@ pub fn release_url_template(
     }
 }
 
-// ---------------------------------------------------------------------------
 // Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    // -- Display -----------------------------------------------------------
+    // Display
 
     #[test]
     fn display_github() {
@@ -152,7 +142,7 @@ mod tests {
         assert_eq!(ScmTokenType::Gitea.to_string(), "gitea");
     }
 
-    // -- resolve_token_type ------------------------------------------------
+    // resolve_token_type
 
     #[test]
     fn resolve_force_github() {
@@ -218,7 +208,7 @@ mod tests {
         assert_eq!(result, ScmTokenType::GitHub);
     }
 
-    // -- default_download_url ---------------------------------------------
+    // default_download_url
 
     #[test]
     fn download_url_github_default() {
@@ -256,7 +246,7 @@ mod tests {
         assert_eq!(url, "https://github.com");
     }
 
-    // -- release_url_template ---------------------------------------------
+    // release_url_template
 
     #[test]
     fn release_template_github() {

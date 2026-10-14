@@ -8,9 +8,7 @@ use super::tokens::{MAX_EXPR_NESTING, Token, significant_tokens, token_to_str, t
 use regex::Regex;
 use std::sync::LazyLock;
 
-// ---------------------------------------------------------------------------
 // Pass 2c: Go-style `map "k1" "v1" ...` → `map(pairs=["k1", "v1", ...])`.
-// ---------------------------------------------------------------------------
 
 /// Regex matching Go-style variadic `map "k1" "v1" "k2" "v2" ...` calls.
 /// Each item can be a quoted string or a bare identifier.

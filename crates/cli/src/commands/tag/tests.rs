@@ -1,6 +1,6 @@
 use super::*;
 
-// ---- Push resolution tests ----
+// Push resolution tests
 
 /// Build a `TagOpts` carrying only the two push toggles under test;
 /// everything else is left at its inert default.
@@ -86,7 +86,7 @@ fn resolve_effective_sign_matrix() {
     }
 }
 
-// ---- Bump detection tests ----
+// Bump detection tests
 
 #[test]
 fn test_detect_bump_major_takes_precedence() {
@@ -187,9 +187,7 @@ fn test_detect_bump_default_none() {
     assert_eq!(result, BumpKind::None);
 }
 
-// ------------------------------------------------------------------
 // Conventional-commit layer tests
-// ------------------------------------------------------------------
 
 #[test]
 fn test_conventional_fix_triggers_patch() {
@@ -277,7 +275,7 @@ fn test_detect_bump_custom_tokens() {
     assert_eq!(result, BumpKind::Major);
 }
 
-// ---- Apply bump tests ----
+// Apply bump tests
 
 #[test]
 fn test_apply_bump_major() {
@@ -306,7 +304,7 @@ fn test_apply_bump_from_zero() {
     assert_eq!(apply_bump(0, 0, 0, &BumpKind::Major), (1, 0, 0));
 }
 
-// ---- pre-major demotion tests ----
+// pre-major demotion tests
 
 /// `demote_pre_major` only touches an inferred Major/Minor while the
 /// governing major is `0`, and the two axes never cascade.
@@ -516,7 +514,7 @@ fn detect_bump_demoted_honors_custom_tokens() {
     );
 }
 
-// ---- branch_matches tests ----
+// branch_matches tests
 
 #[test]
 fn test_branch_matches_exact() {
@@ -542,7 +540,7 @@ fn test_branch_matches_empty_patterns() {
     assert!(!branch_matches("main", &[]));
 }
 
-// ---- Prerelease suffix tests ----
+// Prerelease suffix tests
 
 #[test]
 fn test_prerelease_suffix_application() {
@@ -561,7 +559,7 @@ fn test_prerelease_suffix_custom() {
     assert_eq!(result, "2.0.0-rc.1");
 }
 
-// ---- Custom tag override tests ----
+// Custom tag override tests
 
 #[test]
 fn test_custom_tag_with_prefix() {
@@ -588,7 +586,7 @@ fn test_custom_tag_without_prefix() {
     assert_eq!(tag, "v5.0.0");
 }
 
-// ---- Config resolution tests ----
+// Config resolution tests
 
 #[test]
 fn test_resolved_config_defaults() {
@@ -743,7 +741,7 @@ fn test_resolved_config_full_config() {
     assert_eq!(resolved.none_string_token, "skip");
 }
 
-// ---- Config parsing from YAML tests ----
+// Config parsing from YAML tests
 
 #[test]
 fn test_tag_config_from_yaml_full() {
@@ -858,7 +856,7 @@ fn test_tag_hooks_default_none() {
     assert!(cfg.tag_post_hooks.is_none());
 }
 
-// ---- Integration-style bump logic tests ----
+// Integration-style bump logic tests
 
 #[test]
 fn test_full_bump_flow_major() {
@@ -890,7 +888,7 @@ fn test_full_bump_flow_prerelease() {
     assert_eq!(version, "1.3.0-beta");
 }
 
-// ---- detect_repo_shape unit tests ----
+// detect_repo_shape unit tests
 
 fn crate_cfg(name: &str, path: &str, template: &str) -> CrateConfig {
     CrateConfig {
@@ -1305,7 +1303,7 @@ fn detect_repo_shape_explicit_workspaces_shared_prefix_still_per_crate() {
     }
 }
 
-// ---- flat-aggregate coherence guard tests ----
+// flat-aggregate coherence guard tests
 
 /// Write a two-crate flat workspace whose members share `v{{ Version }}` but
 /// carry the supplied `[package].version` values, returning the root dir.
@@ -1836,7 +1834,7 @@ fn coherence_guard_rejects_divergent_mixed_leftover_subset() {
     );
 }
 
-// ---- anodizer-output line format tests ----
+// anodizer-output line format tests
 
 #[test]
 fn anodizer_output_format_empty() {
@@ -1884,9 +1882,7 @@ fn anodizer_output_versions_format_single_crate() {
     assert_eq!(json, "{\"cfgd-core\":\"0.4.0\"}");
 }
 
-// -----------------------------------------------------------------------
 // skip_ci_suffix
-// -----------------------------------------------------------------------
 
 #[test]
 fn skip_ci_suffix_on_appends_marker_with_leading_space() {
@@ -1898,9 +1894,7 @@ fn skip_ci_suffix_off_is_empty() {
     assert_eq!(skip_ci_suffix(false), "");
 }
 
-// -----------------------------------------------------------------------
 // shared_tag_prefix
-// -----------------------------------------------------------------------
 
 #[test]
 fn shared_tag_prefix_uniform_prefix_returns_it() {
@@ -1931,9 +1925,7 @@ fn shared_tag_prefix_empty_slice_returns_none() {
     assert_eq!(shared_tag_prefix(&[]), None);
 }
 
-// -----------------------------------------------------------------------
 // message_has_token (whole-word, not substring)
-// -----------------------------------------------------------------------
 
 #[test]
 fn message_has_token_matches_standalone_word() {
@@ -2004,9 +1996,7 @@ fn message_has_token_matches_token_anywhere_in_the_subject_and_never_in_the_body
     ));
 }
 
-// -----------------------------------------------------------------------
 // detect_conventional_bump
-// -----------------------------------------------------------------------
 
 #[test]
 fn detect_conventional_bump_feat_is_minor() {
@@ -2097,10 +2087,8 @@ fn conventional_classification_is_lockstep_between_tag_and_bump() {
     }
 }
 
-// -----------------------------------------------------------------------
 // plan_changelog_targets / collapse_targets_to_flat_aggregate /
 // plan_version_files_rewrites — small fixture builder for GroupTagResult.
-// -----------------------------------------------------------------------
 
 /// A bare `version_files` enrollment (whole-file sweep).
 fn vf(path: &str) -> anodizer_core::config::VersionFileEntry {

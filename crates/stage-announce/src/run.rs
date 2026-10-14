@@ -147,9 +147,7 @@ pub(crate) fn announce_should_run(
     ))
 }
 
-// ---------------------------------------------------------------------------
 // AnnounceStage
-// ---------------------------------------------------------------------------
 
 pub struct AnnounceStage;
 
@@ -231,7 +229,7 @@ fn announce_body(_stage: &AnnounceStage, ctx: &mut Context) -> Result<()> {
         AnnounceDecision::Deselected => {
             // Unreachable: the deselect short-circuit above runs first, before
             // snapshot/nightly/refresh. Handled for exhaustiveness so a future
-            // reordering surfaces here rather than silently broadcasting.
+            // reordering is caught here rather than silently broadcasting.
             log.status(&ctx.deselected_reason("announce"));
             return Ok(());
         }
@@ -419,7 +417,7 @@ mod gate_tests {
         ctx
     }
 
-    // ---- helper coverage -----------------------------------------------
+    // helper coverage
 
     #[test]
     fn evaluate_gate_none_never_skips() {
@@ -454,7 +452,7 @@ mod gate_tests {
         assert!(evaluate_gate(Some(&r), AnnounceGate::AllPublishers));
     }
 
-    // ---- happy-path-pending outcomes must NOT gate announce ----------
+    // happy-path-pending outcomes must NOT gate announce
 
     /// Construct a `PublisherResult` with an arbitrary outcome — used by
     /// the variant-specific tests below to exercise outcomes the basic
@@ -624,7 +622,7 @@ mod gate_tests {
         assert!(!evaluate_gate(None, AnnounceGate::None));
     }
 
-    // ---- stage-level coverage ------------------------------------------
+    // stage-level coverage
 
     #[test]
     fn announce_runs_when_gate_is_none() {
@@ -729,7 +727,7 @@ mod gate_tests {
         );
     }
 
-    // ---- operator-selection (`--publishers` / `--skip`) deselect gate ----
+    // operator-selection (`--publishers` / `--skip`) deselect gate
     //
     // AnnounceStage broadcasts to external channels (webhook/Slack/…) from a
     // pipeline stage OUTSIDE the trait dispatch chokepoint, so it must honor
@@ -843,7 +841,7 @@ mod gate_tests {
     #[test]
     fn announce_in_allowlist_is_not_deselected() {
         // `--publishers announce`: announce IS selected, so the deselect gate
-        // must NOT fire — the broken webhook template then surfaces its real
+        // must NOT fire — the broken webhook template then reports its real
         // render error, proving the dispatch path WAS entered.
         let opts = ContextOptions {
             publisher_allowlist: vec!["announce".to_string()],
@@ -1452,7 +1450,7 @@ mod summary_tests {
 
     /// A publish stage that aborts on a pre-dispatch guard (here: an
     /// `--allow-nondeterministic` name matching no emitted artifact) must
-    /// surface as the `aborted before dispatch` placeholder row. This pins
+    /// show up as the `aborted before dispatch` placeholder row. This pins
     /// two things at once: the disposition derivation in `emit_summary` AND
     /// that `set_publish_attempted()` fires BEFORE the pre-dispatch guards —
     /// moving it below them (or deleting it) regresses the row to the

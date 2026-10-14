@@ -3,7 +3,7 @@
 use super::preprocess;
 
 /// Force-touch every `LazyLock<Regex>` static in the preprocessor so an
-/// invalid literal surfaces here, not on the first real preprocess() call
+/// invalid literal fails here, not on the first real preprocess() call
 /// in the field. Each `LazyLock::new(|| static_regex(…))` panics on bad
 /// pattern; running them under the test binary turns a deferred panic into
 /// a deterministic test failure.
@@ -176,7 +176,7 @@ fn test_chained_named_filter_then_positional_rewrite() {
     );
 }
 
-// --- `in` positional syntax preprocessing tests ---
+// `in` positional syntax preprocessing tests
 
 #[test]
 fn test_preprocess_in_with_list_subexpr() {
@@ -243,7 +243,7 @@ fn test_preprocess_in_control_block_with_list_subexpr() {
     );
 }
 
-// --- `reReplaceAll` positional syntax preprocessing tests ---
+// `reReplaceAll` positional syntax preprocessing tests
 
 #[test]
 fn test_preprocess_re_replace_all_positional() {
@@ -299,7 +299,7 @@ fn test_preprocess_re_replace_all_control_block() {
     );
 }
 
-// --- `in` piped form preprocessing tests ---
+// `in` piped form preprocessing tests
 
 #[test]
 fn test_preprocess_in_piped() {
@@ -309,7 +309,7 @@ fn test_preprocess_in_piped() {
     assert_eq!(result, "{{ myList | in(value=\"val\") }}");
 }
 
-// --- list subexpr: escaped quotes and mixed quote styles ---
+// list subexpr: escaped quotes and mixed quote styles
 
 #[test]
 fn test_preprocess_list_subexpr_escaped_double_quotes_error_loudly() {
@@ -348,7 +348,7 @@ fn test_preprocess_list_subexpr_mixed_quote_styles() {
     );
 }
 
-// --- Finding 5: `(list ...)` with bare identifiers (variable references) ---
+// Finding 5: `(list ...)` with bare identifiers (variable references)
 
 #[test]
 fn test_preprocess_list_subexpr_with_bare_identifier() {
@@ -388,7 +388,7 @@ fn test_preprocess_list_subexpr_mixed_vars_and_strings() {
     );
 }
 
-// --- Now.Format method call rewrite tests ---
+// Now.Format method call rewrite tests
 
 #[test]
 fn test_preprocess_now_format_go_style() {
@@ -452,9 +452,7 @@ fn test_preprocess_now_format_does_not_affect_other_blocks() {
     );
 }
 
-// -----------------------------------------------------------------------
 // Pass 0: Go block syntax tests
-// -----------------------------------------------------------------------
 
 #[test]
 fn test_go_if_end() {
@@ -570,9 +568,7 @@ fn test_go_complex_nfpm_template() {
     );
 }
 
-// -----------------------------------------------------------------------
 // Pass 2b: comparison functions (eq/ne/gt/lt/ge/le), and/or, len
-// -----------------------------------------------------------------------
 
 #[test]
 fn test_eq_in_if_block() {
@@ -694,7 +690,7 @@ fn test_eq_with_dotted_path() {
     assert_eq!(result, "{% if Env.FOO == \"bar\" %}yes{% endif %}");
 }
 
-// --- and/or prefix to infix ---
+// and/or prefix to infix
 
 #[test]
 fn test_and_prefix_to_infix() {
@@ -730,7 +726,7 @@ fn test_or_with_parenthesized_eq() {
     );
 }
 
-// --- len function ---
+// len function
 
 #[test]
 fn test_len_in_expression() {
@@ -761,7 +757,7 @@ fn test_len_does_not_match_partial_word() {
     assert_eq!(result, "{{ Items | length }}");
 }
 
-// --- map positional syntax ---
+// map positional syntax
 
 #[test]
 fn test_map_positional_two_args() {
@@ -791,7 +787,7 @@ fn test_map_in_set_block() {
     assert_eq!(result, "{% set m = map(pairs=[\"x\", \"y\"]) %}");
 }
 
-// --- index positional syntax ---
+// index positional syntax
 
 #[test]
 fn test_index_positional_two_args() {
@@ -817,7 +813,7 @@ fn test_index_in_control_block() {
     );
 }
 
-// --- Combined pass tests ---
+// Combined pass tests
 
 #[test]
 fn test_go_style_full_pipeline_eq_and_map() {
@@ -966,7 +962,7 @@ fn test_plain_index_dot_survives_go_leading_dot_strip() {
     assert_eq!(result, "{{ Some[0].Field }}");
 }
 
-// ---- Pass 5: tera 1.x numeric-index compatibility (`list.0` → `list[0]`) ----
+// Pass 5: tera 1.x numeric-index compatibility (`list.0` → `list[0]`)
 
 #[test]
 fn test_numeric_index_simple() {
@@ -1065,7 +1061,7 @@ fn test_numeric_index_end_to_end_render() {
     assert_eq!(render("{{ list.1 | upper }}", &vars).unwrap(), "SECOND");
 }
 
-// --- raw string-boundary rule (shared `string_lit` helper) ---
+// raw string-boundary rule (shared `string_lit` helper)
 // All passes must close string literals exactly where the engine does:
 // first next occurrence of the opening delimiter (`"`, `'`, or backtick),
 // no escape awareness.
@@ -1099,7 +1095,7 @@ fn test_string_closes_at_first_quote_even_after_backslash() {
     assert_eq!(preprocess(input), input);
 }
 
-// --- multiline expression blocks receive every pass ---
+// multiline expression blocks receive every pass
 
 #[test]
 fn test_multiline_block_dot_strip_applies() {
@@ -1132,7 +1128,7 @@ fn test_multiline_block_numeric_index_rewrite_applies() {
     assert_eq!(preprocess("{{\n  list.0 }}"), "{{\n  list[0] }}");
 }
 
-// ---- Roster coverage: registered builtins vs. positional handling ----
+// Roster coverage: registered builtins vs. positional handling
 
 /// The positional-rewrite roster is hand-maintained, so a builtin registered
 /// without a matching entry silently loses its Go form — the template that
@@ -1166,7 +1162,7 @@ fn every_registered_builtin_has_positional_handling_or_an_exemption() {
     );
 }
 
-// ---- Positional form for the single-argument string builtins ----
+// Positional form for the single-argument string builtins
 
 #[test]
 fn test_preprocess_positional_tolower_toupper() {
@@ -1289,7 +1285,7 @@ fn test_control_block_uses_extended_roster() {
     );
 }
 
-// ---- Sub-expression arguments ----
+// Sub-expression arguments
 
 #[test]
 fn test_subexpr_argument_in_standalone_call() {
@@ -1451,7 +1447,7 @@ fn test_every_rostered_builtin_accepts_a_subexpr_argument() {
     }
 }
 
-// ---- Unbalanced expressions fail loudly ----
+// Unbalanced expressions fail loudly
 
 #[test]
 fn test_unclosed_subexpr_is_reported_not_rewritten() {
@@ -1540,7 +1536,7 @@ fn test_imbalance_diagnostic_is_bounded_and_utf8_safe() {
     assert!(err.contains('…'), "long block must be truncated: {err}");
 }
 
-// ---- Positional calls in `for` and `set` control blocks ----
+// Positional calls in `for` and `set` control blocks
 
 #[test]
 fn test_positional_call_in_for_block() {
@@ -1599,7 +1595,7 @@ fn test_plain_for_and_set_expressions_are_untouched() {
     }
 }
 
-// ---- Raw-escaped text is exempt from every pass ----
+// Raw-escaped text is exempt from every pass
 
 /// Text between `{% raw %}` and `{% endraw %}` reaches the engine literally, so
 /// no pass may rewrite it. One shape per pass, since each pass owns a different
@@ -1684,7 +1680,7 @@ fn test_expression_blocks_do_not_delimit_a_raw_span() {
     assert_eq!(preprocess("{{ raw }}{{ .B }}"), "{{ raw }}{{ B }}");
 }
 
-// ---- A positional call anywhere in a pipeline ----
+// A positional call anywhere in a pipeline
 
 /// Go accepts a positional call in every pipeline slot. Rewriting only the
 /// segment after the last pipe left the earlier ones as raw Go syntax, and the
@@ -1748,7 +1744,7 @@ fn test_pipe_inside_a_literal_or_subexpr_is_not_a_boundary() {
     );
 }
 
-// ---- Expression nesting is capped ----
+// Expression nesting is capped
 
 /// `{{ tolower (tolower ( … "A" … )) }}` with `n` nested calls, so `n` is both
 /// the call count and the parenthesis depth.
@@ -1811,7 +1807,7 @@ fn test_preprocess_stops_descending_past_the_cap() {
     );
 }
 
-// ---- join: the positional path builtin, and the untouched Tera filter ----
+// join: the positional path builtin, and the untouched Tera filter
 
 #[test]
 fn preprocess_positional_join() {

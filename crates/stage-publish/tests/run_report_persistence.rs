@@ -2,7 +2,7 @@
 //! and `rollback::run` reads it back without a "report not found"
 //! error.
 //!
-//! Closes the writer/reader gap surfaced by the 2026-05-15 release-
+//! Closes the writer/reader gap reported by the 2026-05-15 release-
 //! resilience audit (finding C1): before B4, no production code wrote
 //! `report.json`, so `anodizer tag rollback` was structurally
 //! unreachable. This test pins the round-trip via the production

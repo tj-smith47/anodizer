@@ -283,7 +283,7 @@ fn run_generate(
         .with_context(|| format!("{kind}: create staging dir {}", staging.display()))?;
     let out_path = staging.join(file_name);
 
-    // Bind the mode-A template surface, then render the command. `Shell` and
+    // Bind the mode-A template variables, then render the command. `Shell` and
     // `ArtifactPath` are bound only for the duration of THIS render and
     // cleared immediately after (see `clear_generate_vars`) so neither
     // outlives the call: a leftover `Shell` would bleed into the man-page

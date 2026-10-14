@@ -24,7 +24,7 @@
 //! `#![allow(dead_code)]` at module scope: cargo builds this module
 //! once per integration-test binary, but each binary only consumes
 //! a subset of the helpers. The unused-warning fires in the binary
-//! whose import surface doesn't reach a given helper — silencing it
+//! whose imports don't reach a given helper — silencing it
 //! at the module level is the canonical `tests/common/mod.rs` idiom.
 
 #![allow(dead_code)]

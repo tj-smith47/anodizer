@@ -54,7 +54,9 @@ impl AiProvider for OpenAiProvider {
             .as_deref()
             .and_then(anodizer_core::git::non_blank_token)
             .ok_or_else(|| {
-                anyhow::anyhow!("OPENAI_API_KEY is not set; required for the openai provider")
+                anyhow::anyhow!(
+                    "OPENAI_API_KEY is unset or blank; required for the openai provider"
+                )
             })?;
 
         let model = model.unwrap_or(DEFAULT_MODEL);

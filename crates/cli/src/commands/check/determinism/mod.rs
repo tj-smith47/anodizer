@@ -36,7 +36,7 @@ pub(crate) fn run(
     // `--inject-drift` is a test-only flag gated by
     // `ANODIZE_TEST_HARNESS=1`. The flag is hidden from `--help`, so the
     // only way for an operator to trip the rejection branch is to type
-    // it deliberately; the hard error keeps the surface from being
+    // it deliberately; the hard error keeps the flag from being
     // exercised accidentally on production releases. Gated FIRST — a
     // forbidden hidden flag must reject independent of any other arg's
     // value, so the operator gets the actionable "this flag is gated"
@@ -80,7 +80,7 @@ pub(crate) fn run(
     // docker-backend hint). Loading once means the load-time legacy-alias
     // warnings print once per invocation instead of once per probe.
     // Best-effort: a missing/unparseable config yields `None` and the real
-    // error surfaces from the pipeline itself.
+    // error is reported by the pipeline itself.
     // `apply_defaults` materializes `defaults:` producer blocks onto crates, so
     // every consumer below — the configured-producer detection AND the docker /
     // msi / signing / prebuilt probes — reads the SAME resolved view the
@@ -358,7 +358,7 @@ pub(crate) fn run(
             ))
         );
         for d in &report.drift {
-            // Surface `differing_bytes_summary` alongside hashes. The
+            // Report `differing_bytes_summary` alongside hashes. The
             // summary is already computed by the harness and stored in
             // `determinism.json`, but the JSON only ships if the publish
             // job runs — and publish is gated on determinism passing.

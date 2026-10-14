@@ -51,9 +51,7 @@ fn ctx_with_artifacts(crate_name: &str, artifacts: Vec<(&str, &str, &str)>) -> C
     ctx
 }
 
-// -----------------------------------------------------------------------
 // infer_os / infer_arch unit tests
-// -----------------------------------------------------------------------
 
 #[test]
 fn test_infer_os_linux() {
@@ -101,9 +99,7 @@ fn test_infer_arch_unknown() {
     assert_eq!(infer_arch("wasm32-unknown-unknown"), "wasm");
 }
 
-// -----------------------------------------------------------------------
 // find_artifacts_by_os tests
-// -----------------------------------------------------------------------
 
 #[test]
 fn test_find_artifacts_by_os_linux() {
@@ -194,9 +190,7 @@ fn test_find_artifacts_by_os_no_match() {
     assert!(windows.is_empty());
 }
 
-// -----------------------------------------------------------------------
 // find_all_platform_artifacts tests
-// -----------------------------------------------------------------------
 
 #[test]
 fn test_find_all_platform_artifacts() {
@@ -250,9 +244,7 @@ fn test_find_all_platform_artifacts_wrong_crate() {
     assert!(all.is_empty());
 }
 
-// -----------------------------------------------------------------------
 // artifact_to_os_artifact sha256 bail tests
-// -----------------------------------------------------------------------
 
 #[test]
 fn artifact_to_os_artifact_bails_on_empty_sha256() {
@@ -317,9 +309,7 @@ fn artifact_to_os_artifact_bails_on_missing_sha256_key() {
     );
 }
 
-// -----------------------------------------------------------------------
 // resolve_artifact_kind tests
-// -----------------------------------------------------------------------
 
 #[test]
 fn test_resolve_artifact_kind_none_defaults_to_archive() {
@@ -358,9 +348,7 @@ fn test_resolve_artifact_kind_unknown_defaults_to_archive() {
     ));
 }
 
-// -----------------------------------------------------------------------
 // render_url_template tests
-// -----------------------------------------------------------------------
 
 fn url_target<'a>(os: &'a str, arch: &'a str, triple: &'a str) -> UrlTarget<'a> {
     UrlTarget {
@@ -394,7 +382,7 @@ fn test_render_url_template_invalid_fallback() {
 }
 
 /// F1 — `render_url_template_with_ctx` exposes the full project template
-/// surface (`Tag`, `ProjectName`, `Version`, `Major/Minor/Patch`,
+/// variables (`Tag`, `ProjectName`, `Version`, `Major/Minor/Patch`,
 /// `Commit`, `Branch`, `PreviousTag`, `Env.*`, `ArtifactName`, …) — not
 /// just the lower-case 4-var subset. Dotted-variable configs that
 /// reference `{{ .Tag }}` or `{{ .Env.X }}` in `url_template:` would
@@ -408,7 +396,7 @@ fn test_render_url_template_with_ctx_full_surface() {
     let mut config = Config::default();
     config.project_name = "myapp".to_string();
     let mut ctx = Context::new(config, ContextOptions::default());
-    // Populate the full project template surface, then overlay per-artifact.
+    // Populate the full project template variables, then overlay per-artifact.
     ctx.template_vars_mut().set("Tag", "v1.2.3");
     ctx.template_vars_mut().set("Version", "1.2.3");
     ctx.template_vars_mut().set("Major", "1");
@@ -476,9 +464,7 @@ fn url_target_seeds_the_abi_and_the_variant_of_its_triple() {
     assert_eq!(render("", None), "abi= target= amd64= variant=");
 }
 
-// -----------------------------------------------------------------------
 // filter_by_variant tests
-// -----------------------------------------------------------------------
 
 #[test]
 fn test_filter_by_variant_no_filter_passes_all() {
@@ -656,9 +642,7 @@ fn test_filter_by_variant_combined() {
     assert!(result.iter().any(|a| a.url == "arm7"));
 }
 
-// -----------------------------------------------------------------------
 // should_skip_upload tests
-// -----------------------------------------------------------------------
 
 #[test]
 fn test_should_skip_upload_true_string() {
@@ -864,9 +848,7 @@ fn test_should_skip_upload_template_rendered_false() {
     assert!(!should_skip_upload(Some(&val), &ctx, &test_log(), None).unwrap());
 }
 
-// -----------------------------------------------------------------------
 // resolve_repo_owner_name tests
-// -----------------------------------------------------------------------
 
 #[test]
 fn test_resolve_repo_owner_name_modern_only() {
@@ -897,13 +879,11 @@ fn test_resolve_repo_owner_name_partial_returns_none() {
     assert_eq!(got, None);
 }
 
-// -----------------------------------------------------------------------
 // render_or_warn regression: malformed template must NOT propagate as
 // Err; instead, the raw value is preserved and a warning is emitted.
 // Pins the warn-and-fallback path against a future drift back to
 // `unwrap_or_else(|_| raw.clone())` (silent swallow) or `with_context()`
 // (hard-fail).
-// -----------------------------------------------------------------------
 
 /// Lenient (production dry-run / snapshot / nightly): a malformed Tera
 /// template (`{{ unclosed`) feeding `render_or_warn` must NOT error — it
@@ -989,9 +969,7 @@ fn test_render_or_warn_renders_well_formed_template() {
     assert_eq!(out, "myproj-bin");
 }
 
-// ---------------------------------------------------------------------------
 // cmd / token-redaction tests
-// ---------------------------------------------------------------------------
 //
 // `redact_output_token` and `replace_bytes` scrub tokens from
 // `std::process::Output` before its bytes flow into `StageLogger::error`
@@ -1103,9 +1081,7 @@ mod redact_output_token_tests {
     }
 }
 
-// ===========================================================================
 // Q-author1: resolve_commit_opts template-rendering tests
-// ===========================================================================
 
 #[cfg(test)]
 mod commit_opts_tests {
@@ -1208,7 +1184,7 @@ mod commit_opts_tests {
             "use_github_app_token must propagate from config to CommitOptions"
         );
         // Resolved name/email are still present (in case the consumer ever
-        // wants to surface them in logs); the consumer toggle is what
+        // wants to report them in logs); the consumer toggle is what
         // determines whether they are emitted on the wire.
         assert_eq!(opts.author_name.as_deref(), Some("override-name"));
         assert_eq!(opts.author_email.as_deref(), Some("override@example.com"));

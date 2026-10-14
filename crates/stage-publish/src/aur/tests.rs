@@ -2,9 +2,7 @@
 
 use super::*;
 
-// -----------------------------------------------------------------------
 // generate_pkgbuild tests
-// -----------------------------------------------------------------------
 
 #[test]
 fn test_generate_pkgbuild_basic() {
@@ -358,9 +356,7 @@ fn aur_ctx_with_description(description: Option<&str>, entries: &[(&str, &str, &
     ctx
 }
 
-// -----------------------------------------------------------------------
 // generate_srcinfo tests
-// -----------------------------------------------------------------------
 
 #[test]
 fn test_generate_srcinfo() {
@@ -520,9 +516,7 @@ fn test_generate_srcinfo_no_optdepends() {
     assert!(srcinfo.contains("pkgname = simple-bin"));
 }
 
-// -----------------------------------------------------------------------
 // publish_to_aur dry-run tests
-// -----------------------------------------------------------------------
 
 #[test]
 fn test_publish_to_aur_dry_run() {
@@ -740,7 +734,6 @@ fn test_aur_resolve_push_git_url_derives_from_name() {
     );
 }
 
-// -----------------------------------------------------------------------
 // Default() resolution
 //
 // Four defaults are applied at config-load time: name auto-suffixed
@@ -749,7 +742,6 @@ fn test_aur_resolve_push_git_url_derives_from_name() {
 // against the helper pair (`aur_default_package_name` →
 // `aur_resolve_defaults`) so a regression trips a unit test instead of
 // slipping through to a malformed PKGBUILD on disk.
-// -----------------------------------------------------------------------
 
 /// `aur.name` unset → raw default is `<crate>-bin`. When the crate name
 /// already ends in `-bin` (e.g. `foo-bin`), do NOT double-suffix.
@@ -976,9 +968,7 @@ fn aur_skip_upload_template_expands_to_true_on_snapshot() {
     );
 }
 
-// -----------------------------------------------------------------------
 // PKGBUILD field quoting
-// -----------------------------------------------------------------------
 
 #[test]
 fn pkgbuild_single_quotes_every_field() {
@@ -1094,9 +1084,7 @@ fn pkgdesc_is_rendered_before_quoting() {
     );
 }
 
-// -----------------------------------------------------------------------
 // extract_archive_extension
-// -----------------------------------------------------------------------
 
 #[test]
 fn extract_archive_extension_compound_tarballs() {
@@ -1126,11 +1114,9 @@ fn extract_archive_extension_no_extension_yields_empty() {
     assert_eq!(extract_archive_extension("https://x/release/binary"), "");
 }
 
-// -----------------------------------------------------------------------
 // generate_pkgbuild / generate_srcinfo — empty-extension rename branch
 // (the `String::new()` arm of the `if format.is_empty()` in both
 // renderers' `rename` construction).
-// -----------------------------------------------------------------------
 
 /// A source URL with no archive extension (e.g. a bare binary path)
 /// renders a `rename` token with NO trailing `.<ext>` — exercising the
@@ -1221,12 +1207,10 @@ fn test_generate_srcinfo_extensionless_source_renders() {
     );
 }
 
-// -----------------------------------------------------------------------
 // render_aur_pkgbuild_and_srcinfo_for_crate — the skip-aware render entry
 // the offline validator drives. Pure (no git): exercises the url
 // fallback / bail, the url_template branch, install-file emission, and the
 // skip / if / skip_upload gates.
-// -----------------------------------------------------------------------
 
 use anodizer_core::artifact::{Artifact, ArtifactKind};
 use anodizer_core::config::{AurConfig, Config, CrateConfig, PublishConfig, StringOrBool};
@@ -1961,14 +1945,12 @@ fn publish_to_aur_if_false_returns_false() {
     assert!(pushed.is_none(), "if:false must short-circuit to Ok(None)");
 }
 
-// -----------------------------------------------------------------------
 // Live git-over-ssh publish path — clone, write PKGBUILD/.SRCINFO/.install,
 // commit, push to AUR `master`. Driven against a local bare repo (the
 // `clone_repo_with_auth` no-token branch is a plain `git clone <localpath>`).
 // `#[cfg(unix)]`-gated: spawns git, sets process env for commit identity,
 // and asserts unix-path file modes. Precedent: homebrew/publish_formula.rs
 // `make_bare_tap`.
-// -----------------------------------------------------------------------
 
 #[cfg(unix)]
 fn git_ok(dir: &std::path::Path, args: &[&str]) {
@@ -2421,9 +2403,7 @@ fn resolve_aur_credentials_renders_templates() {
     assert!(!pk.unwrap().contains("{{"));
 }
 
-// -----------------------------------------------------------------------
 // aur_license_array — SPDX expression → pacman license=() entries
-// -----------------------------------------------------------------------
 
 /// An empty or whitespace-only license yields an empty array so the template
 /// emits a bare `license=()` (never `license=('')`, which namcap lints).
@@ -2478,9 +2458,7 @@ fn aur_license_array_keeps_with_exception_literal() {
     );
 }
 
-// -----------------------------------------------------------------------
 // aur_extra_install_lines — package() LICENSE/man/completion install lines
-// -----------------------------------------------------------------------
 
 use anodizer_core::config::{
     ArchiveConfig, ArchivesConfig, CompletionsConfig, CrateConfig as CfgCrateConfig, ManpagesConfig,
@@ -2635,9 +2613,7 @@ fn aur_url_template_renders_the_target_variant() {
     );
 }
 
-// -----------------------------------------------------------------------
 // PKGBUILD/.SRCINFO shape: source aliases, install file, per-arch package()
-// -----------------------------------------------------------------------
 
 /// Build a linux archive for a target with extra metadata beside the url
 /// and sha256 (`wrap_in_directory`, `extra_binaries`, …).

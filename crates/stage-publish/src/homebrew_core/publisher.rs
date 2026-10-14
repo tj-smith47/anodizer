@@ -21,7 +21,7 @@ use super::locate::locate_formula;
 use super::publish::publish_to_homebrew_core;
 use super::resolve::{
     TOKEN_ENV_VARS, resolve_commit_message, resolve_download_url, resolve_formula_name,
-    resolve_pr_token, resolve_token, resolve_upstream,
+    resolve_pr_token, resolve_token, resolve_upstream, token_order_hint,
 };
 
 simple_publisher!(
@@ -104,19 +104,26 @@ impl anodizer_core::Publisher for HomebrewCorePublisher {
     }
 
     fn requirements(&self, ctx: &Context) -> Vec<anodizer_core::EnvRequirement> {
-        let mut out = Vec::new();
-        for entry in active_homebrew_core_configs(ctx) {
-            let ladder: Vec<&str> = TOKEN_ENV_VARS
-                .iter()
-                .chain(anodizer_core::git::GITHUB_TOKEN_ENV_LADDER.iter())
-                .copied()
-                .collect();
-            out.extend(crate::publisher_helpers::secret_requirement(
-                entry.repository.as_ref().and_then(|r| r.token.as_deref()),
-                &ladder,
-            ));
+        // The bump reads the run's GitHub token after the publisher
+        // variables and before `ANODIZER_GITHUB_TOKEN` / `GITHUB_TOKEN` /
+        // `GH_TOKEN`, so a run that has one needs no variable at all.
+        if crate::util::run_github_token(ctx).is_some() {
+            return Vec::new();
         }
-        out
+        let ladder: Vec<&str> = TOKEN_ENV_VARS
+            .iter()
+            .chain(anodizer_core::git::GITHUB_TOKEN_ENV_LADDER.iter())
+            .copied()
+            .collect();
+        active_homebrew_core_configs(ctx)
+            .into_iter()
+            .filter_map(|entry| {
+                crate::publisher_helpers::secret_requirement(
+                    entry.repository.as_ref().and_then(|r| r.token.as_deref()),
+                    &ladder,
+                )
+            })
+            .collect()
     }
 
     /// Open-PR reconcile: `Complete` when every active entry's formula
@@ -270,10 +277,10 @@ impl anodizer_core::Publisher for HomebrewCorePublisher {
             let Some(token) = token else {
                 log.warn(&format!(
                     "skipped rollback for formula '{}' — no GitHub token resolvable \
-                     (${} / {} all unset)",
+                     (the bump read ${}; the order is {})",
                     t.formula,
                     env_hint,
-                    anodizer_core::git::GITHUB_TOKEN_ENV_LADDER.join(" / "),
+                    token_order_hint(),
                 ));
                 continue;
             };
@@ -378,11 +385,9 @@ impl anodizer_core::Publisher for HomebrewCorePublisher {
                     acc,
                     PreflightCheck::Warning(format!(
                         "homebrew-core: no GitHub token resolvable for the '{}' bump \
-                         — set ${} (or ${}, or {})",
+                         — set one of these, read in this order: {}",
                         formula,
-                        TOKEN_ENV_VARS[0],
-                        TOKEN_ENV_VARS[1],
-                        anodizer_core::git::GITHUB_TOKEN_ENV_LADDER.join(" / "),
+                        token_order_hint(),
                     )),
                 );
             }

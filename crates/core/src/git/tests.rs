@@ -396,7 +396,7 @@ fn test_parse_github_remote_empty() {
     assert_eq!(result, None);
 }
 
-// -- parse_remote_owner_repo (generic) -----------------------------------
+// parse_remote_owner_repo (generic)
 
 #[test]
 fn test_parse_remote_github_https() {
@@ -463,7 +463,7 @@ fn test_parse_remote_http() {
     assert_eq!(result, Some(("team".to_string(), "project".to_string())));
 }
 
-// -- parse_remote_web_base (host-preserving) ------------------------------
+// parse_remote_web_base (host-preserving)
 
 #[test]
 fn test_web_base_github_https() {
@@ -655,13 +655,11 @@ fn test_semver_build_metadata_ignored_in_ord_and_eq() {
     assert_eq!(pre_a, pre_b);
 }
 
-// -----------------------------------------------------------------------
 // find_latest_tag_matching + GitConfig integration tests
 //
 // Each test creates a fresh temporary git repository with tags, then
 // verifies that GitConfig fields (ignore_tags, ignore_tag_prefixes, etc.)
 // are respected.
-// -----------------------------------------------------------------------
 
 use serial_test::serial;
 
@@ -1468,9 +1466,7 @@ fn test_find_previous_tag_no_config_unchanged_behavior() {
     assert_eq!(result, Some("v1.0.0".to_string()));
 }
 
-// -----------------------------------------------------------------------
 // strip_monorepo_prefix tests
-// -----------------------------------------------------------------------
 
 #[test]
 fn test_strip_monorepo_prefix_with_match() {
@@ -1499,9 +1495,7 @@ fn test_strip_monorepo_prefix_partial_match() {
     );
 }
 
-// -----------------------------------------------------------------------
 // find_latest_tag_matching_with_prefix (monorepo) tests
-// -----------------------------------------------------------------------
 
 #[test]
 #[serial(cwd, path_env)]
@@ -1603,14 +1597,12 @@ fn test_find_latest_tag_with_monorepo_prefix_and_prerelease() {
     );
 }
 
-// -----------------------------------------------------------------------
 // bail!()-site redaction in git/ submodules.
 //
 // `git_output_in`, `add_path_in`, and `commit_in` interpolate raw `git`
 // stderr into anyhow errors. The redact wrapper inserted at each call
 // site must scrub any secret value reachable through the process env
 // (e.g. GITHUB_TOKEN) before the message reaches user-visible logs.
-// -----------------------------------------------------------------------
 
 use super::commits::{add_path_in, commit_in};
 
@@ -1668,7 +1660,7 @@ fn test_commit_in_bail_redacts_token_in_stderr() {
 
     // With nothing staged, `git commit -m <msg>` exits 1 and prints
     // "nothing to commit" to stderr. The message itself contains the
-    // secret; if a future git version surfaces commit-message text in
+    // secret; if a future git version prints commit-message text in
     // stderr the redact wrapper still scrubs the token.
     let msg_with_secret = format!("release {secret}");
     let err = commit_in(dir, &msg_with_secret, false)
@@ -1779,9 +1771,7 @@ fn head_is_at_tag_returns_false_when_head_has_no_tag() {
     );
 }
 
-// -----------------------------------------------------------------------
 // semver / smartsemver tag_sort modes
-// -----------------------------------------------------------------------
 
 #[test]
 #[serial(cwd, path_env)]
@@ -1902,7 +1892,7 @@ fn test_find_previous_tag_smartsemver_rc1_classified_as_prerelease() {
 #[serial(cwd, path_env)]
 fn test_find_previous_tag_smartsemver_skips_prerelease_predecessor() {
     // Regression: shipping v0.2.0 after a v0.2.0-beta.3
-    // tag must surface v0.1.0 as the predecessor (not the beta) so the
+    // tag must report v0.1.0 as the predecessor (not the beta) so the
     // changelog has real commits to enumerate.
     //
     // No template_vars are needed — current_tag carries the signal.
@@ -2172,10 +2162,8 @@ fn create_tag_local_only_reuses_already_signed_tag() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // Path-taking (`*_in`) tag mutate/query helpers — driven against throwaway
 // git repos (no cwd mutation, so no `#[serial]` needed).
-// ---------------------------------------------------------------------------
 
 /// Run a git command in `dir`, asserting success.
 fn tags_run_git(dir: &std::path::Path, args: &[&str]) {
@@ -2712,7 +2700,7 @@ fn tag_position_in_answers_on_a_detached_head() {
 
 /// `git merge-base --is-ancestor` exits 1 for the negative ANSWER and >=2 when
 /// it could not answer at all. A tag naming a non-commit object drives the
-/// latter, which must surface as an error rather than impersonate a position.
+/// latter, which must be returned as an error and never read as a position.
 #[test]
 fn tag_position_in_errors_when_the_reachability_query_fails() {
     use super::tags::tag_position_in;
@@ -2771,13 +2759,9 @@ fn list_tags_with_prefix_filters_and_sorts_by_reverse_semver() {
     );
 }
 
-// -----------------------------------------------------------------------
 // tracing capture, shared by the git submodules' inline tests
-// -----------------------------------------------------------------------
 
-// -----------------------------------------------------------------------
 // column.ui: a listing spawn's stdout stays one record per line
-// -----------------------------------------------------------------------
 
 mod column_ui {
     use super::{tags_init_commit_repo, tags_run_git};
@@ -2949,9 +2933,7 @@ mod column_ui {
     }
 }
 
-// -----------------------------------------------------------------------
 // git_command: the one constructor of a git spawn
-// -----------------------------------------------------------------------
 
 mod git_command_one_home {
     use crate::git::{git_command, git_command_in};
@@ -3498,7 +3480,7 @@ mod secret_renders {
         function_bodies, production_half, rust_sources, workspace_crate_dirs,
         workspace_production_sources,
     };
-    use std::collections::BTreeSet;
+    use std::collections::{BTreeMap, BTreeSet};
 
     /// The render calls a secret field could be handed to. `render_secret`
     /// renders through a closure that receives the template as a plain
@@ -3787,23 +3769,29 @@ mod secret_renders {
     /// The render calls in `body` handed a credential field: one named in
     /// `names`, read as a field or named in a field label, either in the
     /// call's arguments or in the expression an argument variable is bound
-    /// to ([`bound_expression`]), so `Some(raw) => ctx.render_template(raw)`
+    /// to, followed through a chain of bindings ([`reaches_credential`]),
+    /// or a parameter in `params`, which a caller hands a credential
+    /// ([`credential_parameters`]). So `Some(raw) => ctx.render_template(raw)`
     /// under `match cfg.webhook_url.as_deref()` is reported.
-    fn secret_render_calls(body: &str, names: &BTreeSet<&str>) -> Vec<String> {
-        let alternatives = names.iter().copied().collect::<Vec<_>>().join("|");
-        let secret = regex::Regex::new(&format!(r"\b({alternatives})\b[^(]")).expect("valid regex");
-        let comment_lines = regex::Regex::new(r"(?m)^\s*//.*$").expect("valid regex");
+    fn secret_render_calls(
+        body: &str,
+        names: &BTreeSet<&str>,
+        params: &BTreeSet<String>,
+    ) -> Vec<String> {
         let mut out = Vec::new();
+        if !RENDER_CALLS.iter().any(|call| body.contains(call)) {
+            return out;
+        }
+        let carries_secret = secret_matcher(names);
+        let bindings = Bindings::new(body);
         for call in RENDER_CALLS {
             for (idx, _) in body.match_indices(call) {
                 if !is_whole_call(body, idx, call) || body[..idx].ends_with("fn ") {
                     continue;
                 }
                 let args = call_arguments(&body[idx + call.len()..]);
-                let carries_secret = |text: &str| secret.is_match(&format!("{text} "));
                 let via_binding = argument_variables(args).into_iter().any(|ident| {
-                    bound_expression(body, idx, &ident)
-                        .is_some_and(|expr| carries_secret(&comment_lines.replace_all(expr, "")))
+                    reaches_credential(&bindings, idx, &ident, params, &carries_secret, MAX_HOPS)
                 });
                 if carries_secret(args) || via_binding {
                     out.push(format!(
@@ -3816,14 +3804,316 @@ mod secret_renders {
         out
     }
 
+    /// `pattern` compiled once per thread: the scan asks the same binding
+    /// patterns of every function body in the workspace.
+    fn cached_regex(pattern: String) -> regex::Regex {
+        thread_local! {
+            static CACHE: std::cell::RefCell<BTreeMap<String, regex::Regex>> =
+                const { std::cell::RefCell::new(BTreeMap::new()) };
+        }
+        CACHE.with(|cache| {
+            cache
+                .borrow_mut()
+                .entry(pattern)
+                .or_insert_with_key(|p| regex::Regex::new(p).expect("valid regex"))
+                .clone()
+        })
+    }
+
+    /// The most bindings [`reaches_credential`] follows from a render
+    /// argument back to the field it was read from.
+    const MAX_HOPS: usize = 8;
+
+    /// A test of whether a piece of source reads a field named in `names`,
+    /// with its `//` comment lines left out.
+    fn secret_matcher(names: &BTreeSet<&str>) -> impl Fn(&str) -> bool {
+        let alternatives = names.iter().copied().collect::<Vec<_>>().join("|");
+        let secret = cached_regex(format!(r"\b({alternatives})\b[^(]"));
+        let comment_lines = cached_regex(r"(?m)^\s*//.*$".to_string());
+        move |text: &str| secret.is_match(&format!("{} ", comment_lines.replace_all(text, "")))
+    }
+
+    /// A test of whether a piece of source reads a field named in `names`
+    /// as a field (`cfg.token`, `entry.webhook_url`), with its `//` comment
+    /// lines left out: what marks a call argument as a credential handed to
+    /// another function, so a local variable that happens to be named
+    /// `token` marks nothing.
+    fn field_matcher(names: &BTreeSet<&str>) -> impl Fn(&str) -> bool {
+        let alternatives = names.iter().copied().collect::<Vec<_>>().join("|");
+        let field = cached_regex(format!(r"\.({alternatives})\b[^(]"));
+        let comment_lines = cached_regex(r"(?m)^\s*//.*$".to_string());
+        move |text: &str| field.is_match(&format!("{} ", comment_lines.replace_all(text, "")))
+    }
+
+    /// Whether the variable `ident`, read at offset `at` of `body`, holds a
+    /// credential: its binding reads one, or binds it from another variable
+    /// that does (`let hop = raw;`), up to `hops` bindings back, or it has no
+    /// binding in the body and is one of the parameters in `params`.
+    fn reaches_credential(
+        bindings: &Bindings<'_>,
+        at: usize,
+        ident: &str,
+        params: &BTreeSet<String>,
+        carries_secret: &dyn Fn(&str) -> bool,
+        hops: usize,
+    ) -> bool {
+        follow_binding(
+            bindings,
+            at,
+            ident,
+            params,
+            carries_secret,
+            hops,
+            &mut BTreeSet::new(),
+        )
+    }
+
+    /// [`reaches_credential`] with the bindings already asked about in
+    /// `seen`, so a binding read by several later ones is followed once.
+    fn follow_binding(
+        bindings: &Bindings<'_>,
+        at: usize,
+        ident: &str,
+        params: &BTreeSet<String>,
+        carries_secret: &dyn Fn(&str) -> bool,
+        hops: usize,
+        seen: &mut BTreeSet<(usize, String)>,
+    ) -> bool {
+        match bindings.bound(at, ident) {
+            Some((start, expr)) => {
+                if !seen.insert((start, ident.to_string())) {
+                    return false;
+                }
+                carries_secret(expr)
+                    || (hops > 0
+                        && argument_variables(expr).into_iter().any(|next| {
+                            follow_binding(
+                                bindings,
+                                start,
+                                &next,
+                                params,
+                                carries_secret,
+                                hops - 1,
+                                seen,
+                            )
+                        }))
+            }
+            None => params.contains(ident),
+        }
+    }
+
+    /// The name of the function `body` opens with.
+    fn function_name(body: &str) -> Option<&str> {
+        cached_regex(r"\bfn\s+([a-z_][a-z0-9_]*)".to_string())
+            .captures(body)
+            .map(|c| c.get(1).expect("name").as_str())
+    }
+
+    /// The items of a parameter or argument list, split at the commas
+    /// outside brackets, string literals and closure parameter lists, so
+    /// `a, |b, c| d, Vec<(e, f)>` is three items.
+    fn top_level_items(list: &str) -> Vec<&str> {
+        let mut items = Vec::new();
+        let (mut depth, mut angle, mut start) = (0usize, 0usize, 0usize);
+        let (mut in_str, mut in_closure) = (false, false);
+        let mut prev = '\0';
+        let mut chars = list.char_indices().peekable();
+        while let Some((i, c)) = chars.next() {
+            match c {
+                '"' if prev != '\\' => in_str = !in_str,
+                _ if in_str => {}
+                '(' | '[' | '{' => depth += 1,
+                ')' | ']' | '}' => depth = depth.saturating_sub(1),
+                '<' if prev.is_alphanumeric() || prev == ':' || prev == '_' => angle += 1,
+                '>' if angle > 0 && prev != '-' && prev != '=' => angle -= 1,
+                '|' if depth == 0 && angle == 0 => {
+                    if chars.peek().is_some_and(|(_, n)| *n == '|') {
+                        chars.next();
+                    } else {
+                        in_closure = !in_closure;
+                    }
+                }
+                ',' if depth == 0 && angle == 0 && !in_closure => {
+                    items.push(&list[start..i]);
+                    start = i + 1;
+                }
+                _ => {}
+            }
+            prev = c;
+        }
+        if !list[start..].trim().is_empty() {
+            items.push(&list[start..]);
+        }
+        items
+    }
+
+    /// The parameters of the function `body` opens with, a `self` receiver
+    /// left out so the list lines up with the arguments of a method call
+    /// and a free call alike. A parameter written as a pattern is `None`.
+    fn signature_parameters(body: &str) -> Vec<Option<String>> {
+        let Some(name) = function_name(body) else {
+            return Vec::new();
+        };
+        let after_name = body.find(&format!("fn {name}")).expect("named fn") + 3 + name.len();
+        let mut rest = &body[after_name..];
+        if rest.starts_with('<') {
+            let mut depth = 0usize;
+            let mut prev = '\0';
+            for (i, c) in rest.char_indices() {
+                match c {
+                    '<' => depth += 1,
+                    '>' if prev != '-' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            rest = &rest[i + 1..];
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+                prev = c;
+            }
+        }
+        let Some(open) = rest.find('(') else {
+            return Vec::new();
+        };
+        let ident = cached_regex(r"^(?:mut\s+)?([a-z_][a-z0-9_]*)$".to_string());
+        top_level_items(call_arguments(&rest[open + 1..]))
+            .into_iter()
+            .filter_map(|item| {
+                let pattern = item.split(':').next().unwrap_or("").trim();
+                if pattern
+                    .trim_start_matches('&')
+                    .trim_start_matches("mut ")
+                    .trim()
+                    == "self"
+                {
+                    return None;
+                }
+                Some(ident.captures(pattern).map(|c| c[1].to_string()))
+            })
+            .collect()
+    }
+
+    /// Every function parameter some caller hands a credential, keyed by the
+    /// function's name: an argument that reads a field named in `names` as a
+    /// field ([`field_matcher`]), or a variable holding one
+    /// ([`reaches_credential`]), or a parameter of the caller that is itself
+    /// in the result, followed until nothing new is found. A call is matched
+    /// to its function by name, so only a name one function in the
+    /// workspace carries is followed. A call of a secret renderer or a plain
+    /// render is not followed: the first is where a credential belongs, and
+    /// the second is reported where it is made.
+    fn credential_parameters(
+        bodies: &[String],
+        names: &BTreeSet<&str>,
+    ) -> BTreeMap<String, BTreeSet<String>> {
+        let carries_secret = field_matcher(names);
+        let call = regex::Regex::new(r"(?:^|[^\w!])([a-z_][a-z0-9_]*)\(").expect("valid regex");
+        let skipped: BTreeSet<&str> = RENDER_CALLS
+            .iter()
+            .chain(SECRET_RENDERERS)
+            .map(|c| {
+                c.trim_start_matches('.')
+                    .trim_end_matches('(')
+                    .rsplit("::")
+                    .next()
+                    .unwrap_or("")
+            })
+            .collect();
+        let signatures: BTreeMap<&str, Vec<Vec<Option<String>>>> =
+            bodies.iter().fold(BTreeMap::new(), |mut map, body| {
+                if let Some(name) = function_name(body) {
+                    map.entry(name)
+                        .or_default()
+                        .push(signature_parameters(body));
+                }
+                map
+            });
+        let mut tainted: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+        let mut indexes: Vec<Option<Bindings<'_>>> = bodies.iter().map(|_| None).collect();
+        loop {
+            let mut grew = false;
+            for (n, body) in bodies.iter().enumerate() {
+                let empty = BTreeSet::new();
+                let own = function_name(body)
+                    .and_then(|n| tainted.get(n))
+                    .unwrap_or(&empty)
+                    .clone();
+                if own.is_empty() && !carries_secret(body) {
+                    continue;
+                }
+                for cap in call.captures_iter(body) {
+                    let callee = cap.get(1).expect("callee");
+                    let name = callee.as_str();
+                    if skipped.contains(name) || body[..callee.start()].ends_with("fn ") {
+                        continue;
+                    }
+                    let Some(shapes) = signatures.get(name).filter(|s| s.len() == 1) else {
+                        continue;
+                    };
+                    let args = call_arguments(&body[callee.end() + 1..]);
+                    let bindings = indexes[n].get_or_insert_with(|| Bindings::new(body));
+                    for (i, arg) in top_level_items(args).into_iter().enumerate() {
+                        let credential = carries_secret(arg)
+                            || argument_variables(arg).into_iter().any(|v| {
+                                reaches_credential(
+                                    bindings,
+                                    callee.start(),
+                                    &v,
+                                    &own,
+                                    &carries_secret,
+                                    MAX_HOPS,
+                                )
+                            });
+                        if !credential {
+                            continue;
+                        }
+                        for shape in shapes {
+                            if let Some(Some(param)) = shape.get(i) {
+                                grew |= tainted
+                                    .entry(name.to_string())
+                                    .or_default()
+                                    .insert(param.clone());
+                            }
+                        }
+                    }
+                }
+            }
+            if !grew {
+                return tainted;
+            }
+        }
+    }
+
+    /// The plain renders of a credential in `bodies`, each with the index of
+    /// the body it is in: [`secret_render_calls`] on every body, with the
+    /// parameters its callers hand a credential.
+    fn credential_render_calls(bodies: &[String], names: &BTreeSet<&str>) -> Vec<(usize, String)> {
+        let tainted = credential_parameters(bodies, names);
+        let empty = BTreeSet::new();
+        bodies
+            .iter()
+            .enumerate()
+            .flat_map(|(i, body)| {
+                let params = function_name(body)
+                    .and_then(|n| tainted.get(n))
+                    .unwrap_or(&empty);
+                secret_render_calls(body, names, params)
+                    .into_iter()
+                    .map(move |call| (i, call))
+            })
+            .collect()
+    }
+
     /// The variables `args` passes whole: `raw`, `&raw`, `raw.as_str()`,
     /// `Some(raw)`; a variable read for one of its fields (`cfg.name`) or
     /// called (`f(x)`) is left out.
     fn argument_variables(args: &str) -> Vec<String> {
-        let ident = regex::Regex::new(
-            r"(?:^|[^\w.:])([a-z_][a-z0-9_]*)((?:\.(?:as_str|as_deref|as_ref|clone|to_string|trim)\(\))*)",
-        )
-        .expect("valid regex");
+        let ident = cached_regex(
+            r"(?:^|[^\w.:])([a-z_][a-z0-9_]*)((?:\.(?:as_str|as_deref|as_ref|clone|to_string|trim)\(\))*)"
+                .to_string(),
+        );
         let mut out = Vec::new();
         for cap in ident.captures_iter(args) {
             let end = cap.get(0).expect("whole match").end();
@@ -3837,66 +4127,113 @@ mod secret_renders {
         out
     }
 
-    /// The expression the variable `ident` is bound to by the last binding
-    /// of it before offset `at` in `body`: a `let`, an `if let` or
-    /// `while let`, a `for` pattern, a match arm `Some(ident) =>` (the
-    /// scrutinee of the `match` the arm belongs to) or a closure parameter
-    /// (the statement text before the closure).
-    fn bound_expression<'a>(body: &'a str, at: usize, ident: &str) -> Option<&'a str> {
-        let id = regex::escape(ident);
-        let before = &body[..at];
-        let last = |pattern: String| {
-            regex::Regex::new(&pattern)
-                .expect("valid regex")
-                .captures_iter(before)
-                .last()
-                .map(|c| {
+    /// The shapes that bind a variable, each with its pattern group (the
+    /// variables it binds) and, where it has one, its expression group.
+    const BINDING_SHAPES: &[(&str, &str)] = &[
+        (
+            "let",
+            r"\blet\s+(?:mut\s+)?([a-z_][a-z0-9_]*)\s*(?::[^=;]+)?=([^;]*)",
+        ),
+        ("if let", r"\b(?:if|while)\s+let\s+([^=;]*)=([^{;]*)\{"),
+        ("for", r"\bfor\s+([^;{]*)\bin\b([^{;]*)\{"),
+        (
+            "arm",
+            r"\b(?:Some|Ok)\(\s*(?:ref\s+)?(?:mut\s+)?([a-z_][a-z0-9_]*)\s*\)\s*(?:if\b[^{};]*?)?=>",
+        ),
+        ("closure", r"\|([^|;{}]*)\|"),
+    ];
+
+    /// One binding found in a function body.
+    struct Binding {
+        kind: &'static str,
+        start: usize,
+        end: usize,
+        names: BTreeSet<String>,
+        expression: Option<(usize, usize)>,
+    }
+
+    /// Every binding of a function body, read once so each variable lookup
+    /// is a search of this list.
+    struct Bindings<'a> {
+        body: &'a str,
+        all: Vec<Binding>,
+    }
+
+    impl<'a> Bindings<'a> {
+        fn new(body: &'a str) -> Self {
+            let word = cached_regex(r"\b[a-z_][a-z0-9_]*\b".to_string());
+            let mut all = Vec::new();
+            for (kind, pattern) in BINDING_SHAPES {
+                let shape = cached_regex(pattern.to_string());
+                let mut from = 0;
+                while let Some(c) = shape.captures_at(body, from) {
                     let whole = c.get(0).expect("whole match");
-                    (
-                        whole.start(),
-                        whole.end(),
-                        c.get(1).map(|g| (g.start(), g.end())),
-                    )
-                })
-        };
-        let candidates = [
-            (
-                "let",
-                last(format!(r"\blet\s+(?:mut\s+)?{id}\s*(?::[^=;]+)?=([^;]*)")),
-            ),
-            (
-                "if let",
-                last(format!(
-                    r"\b(?:if|while)\s+let\s+[^=;]*\b{id}\b[^=;]*=([^{{;]*)\{{"
-                )),
-            ),
-            (
-                "for",
-                last(format!(r"\bfor\s+[^;{{]*\b{id}\b[^;{{]*\bin\b([^{{;]*)\{{")),
-            ),
-            ("arm", last(format!(r"\b(?:Some|Ok)\(\s*{id}\s*\)\s*=>"))),
-            (
-                "closure",
-                last(format!(r"\|[^|;{{}}]*\b{id}\b[^|;{{}}]*\|")),
-            ),
-        ];
-        let (kind, start, _, group) = candidates
-            .into_iter()
-            .filter_map(|(kind, m)| m.map(|(s, e, g)| (kind, s, e, g)))
-            .max_by_key(|(_, start, _, _)| *start)?;
-        match kind {
-            "arm" => {
-                let brace = enclosing_brace(body, start)?;
-                let head = &body[statement_start(body, brace)..brace];
-                head.rfind("match ").map(|i| &head[i + "match ".len()..])
+                    let names = c
+                        .get(1)
+                        .map(|g| word.find_iter(g.as_str()).map(|w| w.as_str().to_string()))
+                        .into_iter()
+                        .flatten()
+                        .collect();
+                    all.push(Binding {
+                        kind,
+                        start: whole.start(),
+                        end: whole.end(),
+                        names,
+                        expression: c.get(2).map(|g| (g.start(), g.end())),
+                    });
+                    from = whole.start()
+                        + body[whole.start()..]
+                            .chars()
+                            .next()
+                            .map_or(1, char::len_utf8);
+                }
             }
-            "closure" => {
-                let statement = &body[statement_start(body, start)..start];
-                // A closure handed to `render_secret` is its renderer: the
-                // template it receives is the credential, already labelled.
-                (!statement.contains("render_secret")).then_some(statement)
+            all.sort_by_key(|b| b.start);
+            Self { body, all }
+        }
+
+        /// The last binding of the variable `ident` before offset `at`, as
+        /// the offset it starts at and the expression it binds: a `let`, an
+        /// `if let` or `while let`, a `for` pattern, a match arm
+        /// `Some(ident) =>`, `Some(ref ident) =>` or `Some(ident) if … =>`
+        /// (the scrutinee of the `match` the arm belongs to) or a closure
+        /// parameter (the statement text before the closure). A `let` whose
+        /// expression runs past `at` binds the part before it.
+        fn bound(&self, at: usize, ident: &str) -> Option<(usize, &'a str)> {
+            let body = self.body;
+            let found = self.all.iter().rev().find(|b| {
+                b.start < at
+                    && b.names.contains(ident)
+                    && match b.kind {
+                        "let" => b.expression.is_some_and(|(s, _)| s <= at),
+                        _ => b.end <= at,
+                    }
+            })?;
+            let start = found.start;
+            match found.kind {
+                "arm" => {
+                    let brace = enclosing_brace(body, start)?;
+                    let head = &body[statement_start(body, brace)..brace];
+                    head.rfind("match ")
+                        .map(|i| (start, &head[i + "match ".len()..]))
+                }
+                "closure" => {
+                    let statement = &body[statement_start(body, start)..start];
+                    // A closure handed to `render_secret` is its renderer: the
+                    // template it receives is the credential, already labelled.
+                    Some((
+                        start,
+                        if statement.contains("render_secret") {
+                            ""
+                        } else {
+                            statement
+                        },
+                    ))
+                }
+                _ => found
+                    .expression
+                    .map(|(s, e)| (start, &body[s..e.min(at.max(s))])),
             }
-            _ => group.map(|(s, e)| &body[s..e]),
         }
     }
 
@@ -4011,7 +4348,7 @@ mod secret_renders {
                     let name = ctx.render_template(&cfg.name)?;\n    \
                     let kind = ctx.render_template(k.token())?;\n}";
         assert_eq!(
-            secret_render_calls(body, &names),
+            secret_render_calls(body, &names, &BTreeSet::new()),
             vec![
                 "render_or_warn(ctx, log, \"api_key\", raw)".to_string(),
                 "render_template(&cfg.repository.token)".to_string(),
@@ -4058,12 +4395,72 @@ mod secret_renders {
             })?;
         }"#;
         assert_eq!(
-            secret_render_calls(body, &names),
+            secret_render_calls(body, &names, &BTreeSet::new()),
             vec![
                 "render_or_warn(t)".to_string(),
                 "render_template(raw)".to_string(),
                 "render_template(&p)".to_string(),
                 "render_template(v)".to_string(),
+            ]
+        );
+    }
+
+    /// A credential reached through a guarded arm, a `ref` binding, a chain
+    /// of `let`s or a helper function's parameter is reported, and a helper
+    /// whose callers hand it no credential is not.
+    #[test]
+    fn a_credential_reached_through_a_guard_a_ref_a_chain_or_a_helper_is_reported() {
+        let names = BTreeSet::from(["webhook_url", "password"]);
+        let bodies = [
+            r#"fn guarded() {
+        match cfg.webhook_url.as_deref() {
+            Some(raw) if !raw.is_empty() => ctx.render_template(raw)?,
+            _ => {}
+        }
+    }"#,
+            r#"fn by_ref() {
+        match cfg.webhook_url {
+            Some(ref raw) => ctx.render_template(raw)?,
+            None => {}
+        }
+    }"#,
+            r#"fn chained() {
+        let raw = cfg.webhook_url.as_deref().unwrap_or_default();
+        let hop = raw;
+        let again = hop.trim();
+        ctx.render_template(again)?;
+        let color = cfg.color.clone();
+        let shade = color;
+        ctx.render_template(&shade)?;
+    }"#,
+            r#"fn send(ctx: &Context, cfg: &SlackAnnounce) -> Result<()> {
+        post(ctx, cfg.webhook_url.as_deref())?;
+        let p = cfg.password.clone();
+        forward(ctx, &p, |a, b| a + b)?;
+        log_name(ctx, &cfg.name);
+    }"#,
+            r#"fn post(ctx: &Context, url: Option<&str>) -> Result<()> {
+        let rendered = ctx.render_template_opt(url)?;
+    }"#,
+            r#"fn forward<F: Fn(u8, u8) -> u8>(ctx: &Context, secret: &str, f: F) -> Result<()> {
+        relay(ctx, secret)
+    }"#,
+            r#"fn relay(&self, ctx: &Context, value: &str) -> Result<()> {
+        ctx.render_template(value)
+    }"#,
+            r#"fn log_name(ctx: &Context, name: &str) {
+        ctx.render_template(name)?;
+    }"#,
+        ]
+        .map(str::to_string);
+        assert_eq!(
+            credential_render_calls(&bodies, &names),
+            vec![
+                (0, "render_template(raw)".to_string()),
+                (1, "render_template(raw)".to_string()),
+                (2, "render_template(again)".to_string()),
+                (4, "render_template_opt(url)".to_string()),
+                (6, "render_template(value)".to_string()),
             ]
         );
     }
@@ -4136,15 +4533,19 @@ mod secret_renders {
         );
 
         let names = unshared_credential_names();
-        let mut offenders = Vec::new();
+        let mut paths = Vec::new();
+        let mut bodies = Vec::new();
         for source in workspace_production_sources() {
             let text = std::fs::read_to_string(&source).expect("readable source");
             for body in function_bodies(production_half(&text)) {
-                for call in secret_render_calls(&body, &names) {
-                    offenders.push(format!("{}: {call}", source.display()));
-                }
+                paths.push(source.clone());
+                bodies.push(body);
             }
         }
+        let offenders: Vec<String> = credential_render_calls(&bodies, &names)
+            .into_iter()
+            .map(|(i, call)| format!("{}: {call}", paths[i].display()))
+            .collect();
         assert!(
             offenders.is_empty(),
             "these render a credential field without `render_secret`:\n{}",
@@ -4199,11 +4600,47 @@ mod credential_env_reads {
         "unwrap_or_default()",
         ".ok_or",
         ".filter(",
+        "map_or(false",
+        "is_some_and",
+        "unwrap_or_else(",
+        "!= \"\"",
+        "== \"\"",
+        "len() > 0",
+        "len() == 0",
     ];
+
+    /// The [`PRESENCE_TESTS`] that, written on a name a `let` binds, decide
+    /// presence on a later line: `name.is_empty()`, `name != ""`.
+    fn later_presence_test(name: &str, test: &str) -> Option<String> {
+        match test {
+            ".ok_or" | ".filter(" | "unwrap_or_else(" => None,
+            t if t.starts_with(['!', '=']) => Some(format!("{name} {t}")),
+            t => Some(format!("{name}.{t}")),
+        }
+    }
 
     /// Words of a computed variable name (`&t.token_env_var`,
     /// `&secret_name`) that mark it as naming a credential.
-    const CREDENTIAL_WORDS: &[&str] = &["token", "secret", "password", "passphrase", "webhook"];
+    const CREDENTIAL_WORDS: &[&str] = &[
+        "token",
+        "secret",
+        "password",
+        "passphrase",
+        "webhook",
+        "apikey",
+    ];
+
+    /// Whether an identifier in `lower` holds `key` as one of its
+    /// `_`-separated words beside another (`signing_key_env`, `api_key`,
+    /// `key_file`), so a bare `key` or `monkey_x` is no credential name.
+    fn has_key_word(lower: &str) -> bool {
+        lower
+            .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+            .any(|ident| {
+                let parts: Vec<&str> = ident.split('_').filter(|p| !p.is_empty()).collect();
+                parts.len() > 1 && parts.contains(&"key")
+            })
+    }
 
     /// Whether a string literal in `text` has a credential ending.
     fn has_credential_literal(text: &str) -> bool {
@@ -4216,7 +4653,7 @@ mod credential_env_reads {
     /// Whether the argument `arg` of the env read at `at` in `body` names a
     /// credential variable: a literal (or the literal of a `format!`) with a
     /// credential ending; a computed name with a credential word
-    /// ([`CREDENTIAL_WORDS`], `api_key`, `private_key`); a variable the
+    /// ([`CREDENTIAL_WORDS`], or `key` beside another word); a variable the
     /// function takes as a parameter, since its callers decide what it
     /// names; or the parameter of a closure that iterates such a parameter
     /// or a list of credential literals.
@@ -4227,10 +4664,7 @@ mod credential_env_reads {
         }
         let lower = arg.to_ascii_lowercase();
         let words: Vec<&str> = lower.split(|c: char| !c.is_ascii_alphanumeric()).collect();
-        if words.iter().any(|w| CREDENTIAL_WORDS.contains(w))
-            || lower.contains("api_key")
-            || lower.contains("private_key")
-        {
+        if words.iter().any(|w| CREDENTIAL_WORDS.contains(w)) || has_key_word(&lower) {
             return true;
         }
         if !arg.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
@@ -4276,8 +4710,10 @@ mod credential_env_reads {
     /// the body counts too. A read the statement passes through
     /// `non_blank_token` or a `trim` is sound.
     fn bare_empty_credential_reads(body: &str) -> Vec<String> {
-        let read = regex::Regex::new(r"(?:\benv_var|\benv::var|\.var|\blookup|\benv)\(")
-            .expect("valid regex");
+        let read = regex::Regex::new(
+            r"(?:\benv_var|\benv::var(?:_os)?|\.var(?:_os)?|\bvar_os|\blookup|\benv)\(",
+        )
+        .expect("valid regex");
         let let_binding = regex::Regex::new(
             r"let\s+(?:Some\()?(?:mut\s+)?([a-z_][a-z0-9_]*)\)?\s*(?::[^=]+)?=[^=]*$",
         )
@@ -4317,8 +4753,8 @@ mod credential_env_reads {
                 let name = &bound[1];
                 bare |= PRESENCE_TESTS
                     .iter()
-                    .filter(|t| t.ends_with("()"))
-                    .any(|t| later.contains(&format!("{name}.{t}")));
+                    .filter_map(|t| later_presence_test(name, t))
+                    .any(|t| later.contains(&t));
                 trimmed |= later.contains(&format!("non_blank_token(&{name})"))
                     || later.contains(&format!("non_blank_token({name}"))
                     || later.contains(&format!("{name}.trim()"));
@@ -4365,6 +4801,17 @@ mod credential_env_reads {
             let value = env.var(label).ok_or_else(|| anyhow!("unset"))?;
             let u = non_blank_token(&value);
             let w = host.var(key).unwrap_or_default();
+            let v1 = std::env::var_os("NPM_TOKEN").is_some();
+            let v2 = ctx.env_var("GEMFURY_TOKEN").map_or(false, |v| v.len() > 0);
+            let v3 = std::env::var("CHOCO_API_KEY").unwrap_or_else(|_| String::new());
+            if v3 != "" {}
+            let v4 = ctx.env_var(&self.signing_key_env).is_some_and(|v| v.starts_with('-'));
+            let v5 = env::var("PYPI_TOKEN")?;
+            if v5 == "" {}
+            let v6 = env::var("CARGO_REGISTRY_TOKEN")?;
+            if v6.len() == 0 {}
+            let v7 = ctx.env_var(&key_name).unwrap_or_default();
+            let v8 = ctx.env_var(&monkey_x).unwrap_or_default();
         }"#;
         assert_eq!(
             bare_empty_credential_reads(body),
@@ -4382,6 +4829,13 @@ mod credential_env_reads {
                 r#"env_var(name).filter(|s| !s.is_empty()))"#.to_string(),
                 r#"env_var(label).filter(|s| !s.is_empty())"#.to_string(),
                 r#"env_var(var).is_some_and(|v| !v.is_empty()))"#.to_string(),
+                r#"env::var_os("NPM_TOKEN").is_some()"#.to_string(),
+                r#"env_var("GEMFURY_TOKEN").map_or(false, |v| v.len() > 0)"#.to_string(),
+                r#"env::var("CHOCO_API_KEY").unwrap_or_else(|_| String::new())"#.to_string(),
+                r#"env_var(&self.signing_key_env).is_some_and(|v| v.starts_with('-'))"#.to_string(),
+                r#"env::var("PYPI_TOKEN")?"#.to_string(),
+                r#"env::var("CARGO_REGISTRY_TOKEN")?"#.to_string(),
+                r#"env_var(&key_name).unwrap_or_default()"#.to_string(),
             ]
         );
     }

@@ -210,7 +210,7 @@ pub fn run_post_publish_polls(jobs: Vec<PollJob>, log: &StageLogger) -> Vec<Post
             let status = job.execute(&worker_log);
             // Receiver only drops if the parent thread already gave up on
             // collecting results (panic in `run_post_publish_polls` or
-            // early-return). Surface that in logs so a missing result in
+            // early-return). Report that in logs so a missing result in
             // the final report is at least attributable.
             if let Err(send_err) = tx.send((
                 idx,

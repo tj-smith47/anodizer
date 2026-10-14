@@ -5,9 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use super::{StringOrBool, deserialize_string_or_bool_opt};
 
-// ---------------------------------------------------------------------------
 // CloudSmith publisher
-// ---------------------------------------------------------------------------
 
 /// Per-format distribution value. Accepts either a single distribution string
 /// (`deb: "ubuntu/focal"`) or an array of distribution slugs

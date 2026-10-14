@@ -1,9 +1,7 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Deserializer, Serialize};
 
-// ---------------------------------------------------------------------------
 // EnvFilesConfig — accepts list of .env paths OR structured token file paths
-// ---------------------------------------------------------------------------
 
 /// Environment file configuration.
 ///
@@ -269,9 +267,7 @@ pub fn load_env_files(
     Ok(vars)
 }
 
-// ---------------------------------------------------------------------------
 // env helpers — Vec<String> of "KEY=VAL" entries
-// ---------------------------------------------------------------------------
 //
 // Lifted to `crate::env` so they are reachable as
 // `anodizer_core::env::*` directly. The re-exports below preserve the
@@ -290,7 +286,7 @@ mod tests {
         crate::log::StageLogger::new("test", crate::log::Verbosity::Normal)
     }
 
-    // --- EnvFilesConfig deserialize dispatch ------------------------------
+    // EnvFilesConfig deserialize dispatch
 
     #[test]
     fn env_files_scalar_input_is_rejected() {
@@ -311,7 +307,7 @@ mod tests {
         assert!(tokens.as_token_files().is_some());
     }
 
-    // --- load_token_files candidate precedence ----------------------------
+    // load_token_files candidate precedence
 
     #[test]
     fn unset_field_prefers_anodizer_path_over_goreleaser() {
@@ -348,7 +344,7 @@ mod tests {
         assert_eq!(vars.get("GITLAB_TOKEN").unwrap(), "gl_fallback");
     }
 
-    // --- load_env_files strict-mode error ---------------------------------
+    // load_env_files strict-mode error
 
     #[test]
     fn strict_mode_errors_on_missing_env_file() {

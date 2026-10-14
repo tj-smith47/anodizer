@@ -14,9 +14,7 @@
 
 use serde::Serialize;
 
-// ---------------------------------------------------------------------------
 // Requirement vocabulary
-// ---------------------------------------------------------------------------
 
 /// Key-material families the preflight can structurally validate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
@@ -71,14 +69,14 @@ pub enum EnvRequirement {
 /// A requirement tagged with the publisher/stage that declared it.
 #[derive(Debug, Clone)]
 pub struct SourcedRequirement {
-    /// Declaring surface, e.g. `"publish:aur"` or `"stage:nfpm"`.
+    /// Declaring stage or publisher, e.g. `"publish:aur"` or `"stage:nfpm"`.
     pub source: String,
     pub requirement: EnvRequirement,
     /// When `true`, a failed probe is a non-fatal WARNING rather than a gate
-    /// failure: the declaring surface degrades gracefully without it. The
+    /// failure: the declaring stage degrades gracefully without it. The
     /// canonical case is the build stage's cross-compilation toolchain, which
     /// falls back `zigbuild → cargo → system gcc` per target — so a missing
-    /// `zig`/`cargo-zigbuild` must surface as "recommended", never block a
+    /// `zig`/`cargo-zigbuild` must show as "recommended", never block a
     /// release. `anodizer tools` still reports advisory requirements; only the
     /// pass/fail gate treats them as non-blocking.
     pub advisory: bool,
@@ -95,7 +93,7 @@ impl SourcedRequirement {
     }
 
     /// An advisory requirement: a failed probe WARNS instead of failing the
-    /// gate, because the declaring surface degrades gracefully without it (see
+    /// gate, because the declaring stage degrades gracefully without it (see
     /// [`SourcedRequirement::advisory`]).
     pub fn new_advisory(source: impl Into<String>, requirement: EnvRequirement) -> Self {
         Self {
@@ -106,9 +104,7 @@ impl SourcedRequirement {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Report
-// ---------------------------------------------------------------------------
 
 /// Classification of a preflight failure.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -138,9 +134,9 @@ pub struct EnvPreflightReport {
     pub checks: usize,
     pub failures: Vec<EnvCheckFailure>,
     /// Advisory checks that failed: the environment lacks a tool the run would
-    /// PREFER but does not require, because the declaring surface degrades
+    /// PREFER but does not require, because the declaring stage degrades
     /// gracefully (e.g. a missing cross-compile toolchain that the build stage
-    /// falls back from). Surfaced as warnings; never flips [`ok`](Self::ok).
+    /// falls back from). Reported as warnings; never flips [`ok`](Self::ok).
     #[serde(default)]
     pub warnings: Vec<EnvCheckFailure>,
 }
@@ -209,9 +205,7 @@ impl std::fmt::Display for EnvPreflightReport {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Probes — injectable so the engine stays pure and unit-testable
-// ---------------------------------------------------------------------------
 
 /// Side-effecting probes injected into [`evaluate`]. Production callers wire
 /// `tool` to [`crate::tool_detect::on_path`] (a pure PATH lookup mirroring how
@@ -226,9 +220,7 @@ pub struct EnvProbes<'a> {
     pub docker: &'a dyn Fn() -> bool,
 }
 
-// ---------------------------------------------------------------------------
 // Engine
-// ---------------------------------------------------------------------------
 
 /// Evaluate every requirement, de-duplicating identical requirements across
 /// sources, and return a collect-all report.
@@ -269,7 +261,7 @@ pub fn evaluate(
                 message,
                 needed_by,
             };
-            // Advisory failures warn; the surface degrades gracefully without
+            // Advisory failures warn; the stage degrades gracefully without
             // the tool, so they must not flip `ok()` or block the release gate.
             if advisory {
                 warnings.push(failure);
@@ -415,9 +407,7 @@ fn check_one(
     }
 }
 
-// ---------------------------------------------------------------------------
 // Key-material validation (structural parse — never echoes content)
-// ---------------------------------------------------------------------------
 
 /// Structurally validate key material. Returns `Err(reason)` with a
 /// description that never includes the key content.
@@ -488,9 +478,7 @@ fn validate_cosign_key(content: &str) -> Result<(), String> {
     Err("missing sigstore/cosign PEM header".to_string())
 }
 
-// ---------------------------------------------------------------------------
 // Template env-reference extraction
-// ---------------------------------------------------------------------------
 
 /// Extract env-var names referenced as `{{ .Env.NAME }}` / `{{ Env.NAME }}`
 /// from a templated config string.
@@ -862,7 +850,7 @@ mod tests {
         assert!(configured_producer_stages(&empty).is_empty());
 
         // A per-crate block (nfpm/flatpak) and a top-level block (srpm) each
-        // surface their token; nothing else does.
+        // report their token; nothing else does.
         let configured = Config {
             crates: vec![CrateConfig {
                 name: "x".to_string(),
@@ -923,7 +911,7 @@ mod tests {
     #[test]
     fn advisory_tool_failure_warns_and_does_not_fail_the_gate() {
         // A missing ADVISORY tool (the cross-compile toolchain the build stage
-        // falls back from) must surface as a warning, never a gate failure —
+        // falls back from) must show as a warning, never a gate failure —
         // the regression that made `anodizer release` abort on any box without
         // zig/cargo-zigbuild.
         let none = EnvProbes {

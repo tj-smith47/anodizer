@@ -3,7 +3,7 @@
 //! consumers can dispatch on variant rather than parsing free-form text.
 //!
 //! All variants are serde-friendly so they can be embedded in
-//! `dist/release-summary.json` or surfaced via `--json` output without
+//! `dist/release-summary.json` or reported via `--json` output without
 //! bespoke conversion code.
 
 use std::time::Duration;

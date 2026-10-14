@@ -149,9 +149,7 @@ fn take_per_format_lintian_overrides(
     Ok(Some(list))
 }
 
-// ---------------------------------------------------------------------------
 // Private helpers — sliced out of `run` to keep the body navigable.
-// ---------------------------------------------------------------------------
 
 pub(crate) fn validate_unique_config_ids(
     crates: &[anodizer_core::config::CrateConfig],

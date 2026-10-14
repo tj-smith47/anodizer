@@ -2,9 +2,7 @@ use super::*;
 
 use crate::util::OsArtifact;
 
-// -----------------------------------------------------------------------
 // krew-release-bot mode selection + webhook tests
-// -----------------------------------------------------------------------
 
 /// Explicit `mode: bot` / `mode: pr-direct` force the flow and skip
 /// the membership probe entirely (the probe would hit the network).
@@ -135,7 +133,7 @@ fn webhook_already_submitted_classifier() {
     assert!(!webhook_body_is_already_submitted("internal server error"));
     // The loose arms dropped from the classifier: a bare resource
     // "already exists" or generic "up-to-date" is NOT the server's
-    // duplicate-PR signal and must surface as a hard failure.
+    // duplicate-PR signal and must show up as a hard failure.
     assert!(!webhook_body_is_already_submitted(
         "opening pr: release already exists for tag v1.2.3"
     ));
@@ -191,7 +189,7 @@ fn webhook_submit_idempotent_on_already_exists() {
 }
 
 /// A genuine failure (non-200, body not an already-exists signal)
-/// surfaces a loud error — krew must never silently skip.
+/// reports a loud error — krew must never silently skip.
 #[test]
 fn webhook_submit_errors_on_genuine_failure() {
     use anodizer_core::test_helpers::responder::spawn_oneshot_http_responder;
@@ -216,9 +214,7 @@ fn webhook_submit_errors_on_genuine_failure() {
     );
 }
 
-// -----------------------------------------------------------------------
 // generate_manifest tests
-// -----------------------------------------------------------------------
 
 #[test]
 fn test_generate_manifest_basic() {
@@ -488,9 +484,7 @@ fn test_generate_manifest_complete_structure() {
     assert!(manifest.contains("Ensure kubectl is configured before use."));
 }
 
-// -----------------------------------------------------------------------
 // krew_arch / krew_os helper tests
-// -----------------------------------------------------------------------
 
 #[test]
 fn test_krew_arch_mapping() {
@@ -513,9 +507,7 @@ fn test_krew_os_mapping() {
     assert_eq!(krew_os("freebsd"), "freebsd");
 }
 
-// -----------------------------------------------------------------------
 // publish_to_krew dry-run tests
-// -----------------------------------------------------------------------
 
 #[test]
 fn test_publish_to_krew_missing_config() {
@@ -595,9 +587,7 @@ fn publish_to_krew_missing_repository_skips_the_entry() {
     );
 }
 
-// -----------------------------------------------------------------------
 // artifacts_to_platforms .exe / binary-name-resolution tests
-// -----------------------------------------------------------------------
 
 fn make_os_artifact(os: &str, arch: &str, binary: Option<&str>) -> OsArtifact {
     // Synthesize a genuine triple so `krew_eligible` (triple-based) keeps
@@ -694,9 +684,7 @@ fn make_os_artifact_full(
     }
 }
 
-// -----------------------------------------------------------------------
 // `files:` extraction-list derivation (binary + LICENSE + README)
-// -----------------------------------------------------------------------
 
 /// Flat archive (no wrap dir): the binary `from` is just the binary name,
 /// LICENSE + README are picked up from the bundled file set, all `to: "."`.
@@ -926,9 +914,7 @@ fn derive_krew_files_license_case_insensitive() {
     assert_eq!(files[1].from, "license.txt");
 }
 
-// -----------------------------------------------------------------------
 // shortDescription length validation
-// -----------------------------------------------------------------------
 
 /// A tagline within the krew-index norm produces no warning.
 #[test]
@@ -1030,7 +1016,6 @@ fn krew_skip_upload_template_expands_to_true_on_snapshot() {
     );
 }
 
-// =====================================================================
 // PUBLISH FLOW — render_krew_manifest_for_crate + publish_to_krew's
 // PrDirect clone→write→commit→push→PR path and its error/classifier
 // boundaries.
@@ -1048,7 +1033,6 @@ fn krew_skip_upload_template_expands_to_true_on_snapshot() {
 // `submit_pr_via_gh_with_opts_with_env`), so the responder address is a
 // per-Context value set via `inject_api_base` — not a process-global
 // mutation. Tokens come from `repository.token` config.
-// =====================================================================
 
 use anodizer_core::artifact::{Artifact, ArtifactKind};
 use anodizer_core::config::{
@@ -1333,10 +1317,8 @@ fn krew_url_template_renders_arm_from_the_triple() {
     assert!(manifest.contains("arch: arm\n"), "{manifest}");
 }
 
-// -----------------------------------------------------------------
 // render_krew_manifest_for_crate — skip / error boundaries that the
 // publish path short-circuits on before any clone.
-// -----------------------------------------------------------------
 
 /// `skip: true` short-circuits the renderer to `None` (the publisher
 /// renders nothing for this crate). Asserts the gate fires BEFORE the
@@ -1804,9 +1786,7 @@ fn render_manifest_files_block_per_crate_no_cross_leakage() {
     );
 }
 
-// -----------------------------------------------------------------
 // crate_has_krew_artifacts — eligibility predicate.
-// -----------------------------------------------------------------
 
 /// `crate_has_krew_artifacts` is true once an eligible archive exists
 /// and false on an empty artifact set — the live path errors and the
@@ -1839,9 +1819,7 @@ fn crate_has_krew_artifacts_reflects_artifact_presence() {
     );
 }
 
-// -----------------------------------------------------------------
 // publish_to_krew — PrDirect end-to-end against a local bare repo.
-// -----------------------------------------------------------------
 
 /// Full PrDirect single-crate publish: clone the (local) fork, write
 /// `plugins/<plugin>.yaml`, commit a `<plugin>-v<version>` branch,
@@ -2257,9 +2235,7 @@ fn render_manifest_homepage_explicit_override_is_rendered() {
     );
 }
 
-// -----------------------------------------------------------------
 // publish_to_krew — BotWebhook flow against a scripted responder.
-// -----------------------------------------------------------------
 
 /// `mode: bot` routes through the webhook flow: the publisher POSTs a
 /// `ReleaseRequest` (with the rendered manifest base64'd into
@@ -2367,7 +2343,7 @@ fn publish_to_krew_bot_webhook_without_release_github_bails() {
 }
 
 /// BotWebhook flow on a genuine server failure (HTTP 500 whose body is
-/// NOT an already-submitted signal): the publisher surfaces a loud
+/// NOT an already-submitted signal): the publisher reports a loud
 /// error — krew must never silently skip a one-way publish.
 #[test]
 fn publish_to_krew_bot_webhook_genuine_failure_bails() {
@@ -2417,10 +2393,8 @@ fn publish_to_krew_bot_webhook_genuine_failure_bails() {
     drop(bare);
 }
 
-// -----------------------------------------------------------------
 // artifacts_to_platforms — multi-platform expansion the publish path
 // feeds into the manifest.
-// -----------------------------------------------------------------
 
 /// A multi-OS artifact set expands to one platform entry per OS with
 /// the correct krew os/arch labels and the `.exe` suffix on Windows —
@@ -2444,9 +2418,7 @@ fn artifacts_to_platforms_multi_os_labels_and_exe() {
     );
 }
 
-// -----------------------------------------------------------------
 // generate_manifest — empty optional narrative fields are dropped.
-// -----------------------------------------------------------------
 
 /// An empty `description` is serialized as absent (no `description:`
 /// key) — the `if params.description.is_empty()` → None branch. A
@@ -2485,11 +2457,9 @@ fn generate_manifest_empty_description_and_caveats_are_omitted() {
     );
 }
 
-// -----------------------------------------------------------------
 // publish_to_krew — skip / falsy-`if` short-circuits on the LIVE
 // publish path (distinct from the renderer's gates), returning the
 // skipped outcome before any repository resolution.
-// -----------------------------------------------------------------
 
 /// `skip: true` on the publish path returns a skipped outcome
 /// (pushed=false) BEFORE the missing-repository check fires — the
@@ -2522,9 +2492,7 @@ fn publish_to_krew_falsy_if_short_circuits_before_repo_check() {
     assert!(!outcome.pushed, "falsy `if` path must report no push");
 }
 
-// -----------------------------------------------------------------
 // KrewPublisher::run — real-push path records a rollback target.
-// -----------------------------------------------------------------
 
 /// Drive the Publisher trait's `run` end-to-end with a real PrDirect
 /// push against a local bare fork. The `any_pushed` gate must populate
@@ -2648,7 +2616,7 @@ fn publish_residual_description_template_errors_before_push() {
 /// The same residual `krew.description` template stays lenient in
 /// dry-run: `publish_to_krew` early-returns before the manifest render
 /// (and therefore before the guard), so the call must still report a
-/// `Skipped` outcome rather than surface the residual as an error.
+/// `Skipped` outcome rather than report the residual as an error.
 #[test]
 fn publish_residual_description_template_dry_run_stays_lenient() {
     let mut c = pr_direct_crate("widget", "kubectl-widget", "/unused");

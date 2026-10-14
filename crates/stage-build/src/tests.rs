@@ -172,7 +172,7 @@ fn test_detect_cross_strategy_auto() {
     ));
 }
 
-// ---- Error path tests: invalid triple / build failures ----
+// Error path tests: invalid triple / build failures
 
 #[test]
 fn test_build_command_with_invalid_target_triple() {
@@ -326,7 +326,7 @@ fn test_build_stage_no_targets_skips_gracefully() {
     assert!(binaries.is_empty());
 }
 
-// ---- Error path tests: missing binaries / copy failures ----
+// Error path tests: missing binaries / copy failures
 
 #[test]
 fn test_copy_from_nonexistent_binary_errors_with_paths() {
@@ -454,7 +454,7 @@ fn test_build_command_with_env_vars() {
     );
 }
 
-// ---- cdylib detection tests ----
+// cdylib detection tests
 
 #[test]
 fn test_detect_crate_type_cdylib() {
@@ -544,7 +544,7 @@ crate_type = ["dylib"]
     assert_eq!(result, Some("dylib".to_string()));
 }
 
-// ---- build_lib_command tests ----
+// build_lib_command tests
 
 #[test]
 fn test_build_lib_command_uses_lib_flag() {
@@ -606,7 +606,7 @@ fn test_build_lib_command_zigbuild() {
     assert!(cmd.args.contains(&"--lib".to_string()));
 }
 
-// ---- Reproducible build env var injection ----
+// Reproducible build env var injection
 
 #[test]
 fn test_reproducible_build_sets_source_date_epoch_and_rustflags() {
@@ -717,7 +717,7 @@ fn test_reproducible_false_does_not_inject_env_vars() {
     assert!(stage.run(&mut ctx).is_ok());
 }
 
-// ---- Universal binary tests ----
+// Universal binary tests
 
 /// Helper: register a fake Binary artifact directly in the context.
 /// Mirrors production `artifact_meta` — both `binary` and `id` are set
@@ -1403,7 +1403,7 @@ fn test_universal_binary_default_name_uses_project_name() {
     );
 }
 
-// ---- Build ignore tests ----
+// Build ignore tests
 
 #[test]
 fn test_is_target_ignored_matches() {
@@ -1446,9 +1446,9 @@ fn test_is_target_ignored_multiple_rules() {
     assert!(!is_target_ignored("x86_64-unknown-linux-gnu", &ignores));
 }
 
-// ---- Build override tests ----
+// Build override tests
 
-// ---- C-new-2: resolve_target_env glob-match tests ----
+// C-new-2: resolve_target_env glob-match tests
 
 #[test]
 fn test_resolve_target_env_exact_match() {
@@ -1774,7 +1774,7 @@ fn test_find_matching_override_invalid_glob_warns() {
     assert!(result.is_none(), "invalid glob should not match anything");
 }
 
-// ---- Fix 5: cross_tool override test ----
+// Fix 5: cross_tool override test
 
 #[test]
 fn test_build_command_with_cross_tool() {
@@ -1798,7 +1798,7 @@ fn test_build_command_with_cross_tool() {
     assert!(cmd.args.contains(&"build".to_string()));
 }
 
-// ---- Fix 5: DEFAULT_TARGETS const test ----
+// Fix 5: DEFAULT_TARGETS const test
 
 #[test]
 fn test_default_targets_has_six_entries() {
@@ -1811,7 +1811,7 @@ fn test_default_targets_has_six_entries() {
     assert!(DEFAULT_TARGETS.contains(&"aarch64-unknown-linux-gnu"));
 }
 
-// ---- cargo_target_dir tests ----
+// cargo_target_dir tests
 //
 // Drives the env-fallback branches via injected `MapEnvSource` — no
 // `unsafe set_var`, no serial-test contention with sibling crates that
@@ -1892,7 +1892,7 @@ fn test_cargo_target_dir_build_env_overrides_process_env() {
     );
 }
 
-// ---- Fix 5: resolve_build_program tests ----
+// Fix 5: resolve_build_program tests
 
 #[test]
 fn test_resolve_build_program_auto() {
@@ -2420,7 +2420,7 @@ fn test_detect_cross_strategy_host_windows_keeps_cargo() {
     assert_eq!(strategy, CrossStrategy::Cargo);
 }
 
-// ---- Fix 5: config parsing with hooks test ----
+// Fix 5: config parsing with hooks test
 
 #[test]
 fn test_build_config_with_hooks() {
@@ -2447,7 +2447,7 @@ crates:
     assert_eq!(hooks.post.as_ref().unwrap().len(), 1);
 }
 
-// ---- Parity gap tests ----
+// Parity gap tests
 
 #[test]
 fn test_strip_glibc_suffix_with_version() {
@@ -3217,9 +3217,7 @@ fn test_detect_amd64_variant_no_rustflags() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // 2026-05-08 second-opinion parity audit regressions (Q-univ1, Q-rust1)
-// ---------------------------------------------------------------------------
 
 /// Q-univ1 — `universal_binaries[].id` default falls back to ProjectName-derived
 /// ids so a config that says `ids: [<project>]` matches
@@ -3655,7 +3653,7 @@ mod no_binary_skip_visibility {
 
     #[test]
     fn no_binary_skip_stays_debug_at_verbose() {
-        // `-v` alone must NOT surface the skip — it is per-crate no-op noise,
+        // `-v` alone must NOT show the skip — it is per-crate no-op noise,
         // not subprocess detail; only `--show-skipped` promotes it.
         let lines = capture_build_skip(false, Verbosity::Verbose);
         assert_eq!(lines.len(), 1, "{lines:?}");
@@ -3671,10 +3669,8 @@ mod no_binary_skip_visibility {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Projection agreement: real artifact registration + real archive naming
 // vs the config-time projection
-// ---------------------------------------------------------------------------
 
 /// Executable both-sides pin for the config-time projection: artifacts are
 /// registered through the runner's own `add_artifact` in the REAL
@@ -3738,7 +3734,7 @@ fn archive_group_variants_agree_with_the_projection() {
         .build();
     ctx.template_vars_mut().set("Version", "1.0.0");
 
-    // Register through the runner's own registration surface in ITS order:
+    // Register through the runner's own registration API in ITS order:
     // compile results are zipped back before copy_from jobs drain.
     super::run_helpers::add_artifact(
         &mut ctx,
@@ -3815,7 +3811,7 @@ fn archive_group_variants_agree_with_the_projection() {
     );
 }
 
-// ---- detect_cargo_profile ------------------------------------------------
+// detect_cargo_profile
 
 #[test]
 fn detect_profile_defaults_to_debug_on_empty_and_unmarked_flags() {
@@ -3947,9 +3943,7 @@ edition = "2021"
     );
 }
 
-// -----------------------------------------------------------------------
 // rustup target preparation runs in the build's own directory and env
-// -----------------------------------------------------------------------
 
 /// A [`TargetPrep`] for a target prepared from the repository root with no
 /// build env — the shape every pre-existing rustup test drove.

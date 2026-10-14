@@ -43,7 +43,7 @@ const CARGO_AUDIENCE: &str = "crates.io";
 
 /// crates.io Trusted-Publishing token endpoint. Fixed: crates.io Trusted
 /// Publishing has no custom-registry variant, so an `auth: oidc` block that
-/// targets a non-crates.io registry is a hard config error (surfaced by the
+/// targets a non-crates.io registry is a hard config error (reported by the
 /// caller, which knows the resolved registry).
 const MINT_URL: &str = "https://crates.io/api/v1/trusted_publishing/tokens";
 

@@ -5,9 +5,7 @@ use super::archives::{ArchiveFileSpec, ExtraFileSpec, TemplatedExtraFile};
 use super::build::BuildHooksConfig;
 use super::{Amd64Variant, StringOrBool, deserialize_string_or_bool_opt};
 
-// ---------------------------------------------------------------------------
 // DmgConfig
-// ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
@@ -55,9 +53,7 @@ pub struct DmgConfig {
     pub volume_name: Option<String>,
 }
 
-// ---------------------------------------------------------------------------
 // MsiConfig
-// ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
@@ -109,9 +105,7 @@ pub struct MsiConfig {
     pub hooks: Option<BuildHooksConfig>,
 }
 
-// ---------------------------------------------------------------------------
 // PkgConfig (macOS .pkg installer)
-// ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
@@ -163,9 +157,7 @@ pub struct PkgConfig {
     pub if_condition: Option<String>,
 }
 
-// ---------------------------------------------------------------------------
 // NsisConfig (Windows NSIS installer)
-// ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
@@ -214,9 +206,7 @@ pub struct NsisConfig {
     pub if_condition: Option<String>,
 }
 
-// ---------------------------------------------------------------------------
 // AppBundleConfig (macOS .app bundle)
-// ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
@@ -262,9 +252,7 @@ pub struct AppBundleConfig {
     pub if_condition: Option<String>,
 }
 
-// ---------------------------------------------------------------------------
 // FlatpakConfig (Linux Flatpak bundle)
-// ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default, deny_unknown_fields)]

@@ -804,7 +804,7 @@ fn cloudsmith_multi_distribution_stages_one_file_per_distro() {
     );
 }
 
-// ---- classify_cloudsmith_package_response ----------------------------
+// classify_cloudsmith_package_response
 //
 // Pure-function tests for the packages-list response classifier. The
 // network-bound `check_cloudsmith_package_exists` is exercised
@@ -910,7 +910,7 @@ fn cloudsmith_classify_picks_first_matching_filename() {
     assert_eq!(result, CloudsmithPackageState::SkipIdempotent);
 }
 
-// ---- live 3-step upload path (scripted_responder) --------------------
+// live 3-step upload path (scripted_responder)
 //
 // These tests redirect ALL Cloudsmith API traffic to an in-process TCP
 // responder via the `ANODIZE_CLOUDSMITH_API_BASE` env override, then drive a
@@ -1413,7 +1413,7 @@ fn live_precheck_bails_on_md5_mismatch() {
     );
 }
 
-/// A files/create that 4xxs surfaces the HTTP status and the response
+/// A files/create that 4xxs reports the HTTP status and the response
 /// body in the error chain (and does not retry — 4xx fast-fails).
 #[test]
 fn live_files_create_4xx_surfaces_body() {
@@ -1763,7 +1763,7 @@ fn live_step3_409_recovers_as_idempotent_skip() {
     );
 }
 
-/// step-3 409 + a re-query showing a DIFFERENT md5 ⇒ surface the conflict
+/// step-3 409 + a re-query showing a DIFFERENT md5 ⇒ report the conflict
 /// (a concurrent uploader published different bytes under the same name).
 #[test]
 fn live_step3_409_recovery_bails_on_md5_mismatch() {
@@ -1801,7 +1801,7 @@ fn live_step3_409_recovery_repropagates_when_not_found() {
     assert!(err.contains("409"), "original 409 status propagates: {err}");
 }
 
-// ---- live keep_versions retention pruning (list + DELETE) ------------
+// live keep_versions retention pruning (list + DELETE)
 //
 // The prune path (`prune_cloudsmith_versions` → `list_cloudsmith_package_versions`
 // → DELETE) was previously only exercised through the pure selector

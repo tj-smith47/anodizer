@@ -15,14 +15,12 @@ use super::*;
 pub trait PreflightChecker: Send + Sync {
     /// Human-readable publisher name used in report entries.
     fn publisher_name(&self) -> &str;
-    /// Query the remote registry for `package` at `version`. `log` surfaces
+    /// Query the remote registry for `package` at `version`. `log` shows the
     /// per-attempt retry warns from the underlying HTTP probes.
     fn check(&self, package: &str, version: &str, log: &StageLogger) -> PublisherState;
 }
 
-// ---------------------------------------------------------------------------
 // crates.io checker
-// ---------------------------------------------------------------------------
 
 pub struct CargoCratesIo {
     policy: RetryPolicy,
@@ -102,9 +100,7 @@ pub(super) fn query_crates_io(
     Ok(present)
 }
 
-// ---------------------------------------------------------------------------
 // Chocolatey checker
-// ---------------------------------------------------------------------------
 
 pub struct Chocolatey {
     source: String,
@@ -165,9 +161,7 @@ impl PreflightChecker for Chocolatey {
     }
 }
 
-// ---------------------------------------------------------------------------
 // WinGet checker
-// ---------------------------------------------------------------------------
 
 pub struct Winget {
     /// GitHub personal-access token (or `ANODIZER_GITHUB_TOKEN`).
@@ -359,7 +353,7 @@ pub(super) fn query_open_version_pr_at(
         }
     };
 
-    // Surface malformed JSON as a typed error so the caller maps it to
+    // Report malformed JSON as a typed error so the caller maps it to
     // Unknown — silently coalescing to `Null` makes a corrupted response
     // indistinguishable from "no PR" (Clean).
     let v: serde_json::Value = serde_json::from_str(&body)
@@ -384,7 +378,7 @@ pub(super) fn query_open_version_pr_at(
         return Ok(OpenPrLookup::NotFound);
     };
 
-    // Surface "row returned but no html_url" as a distinct outcome so the
+    // Report "row returned but no html_url" as a distinct outcome so the
     // caller can flag it as Unknown rather than synthesizing a misleading
     // listing-page URL.
     match row.get("html_url").and_then(|u| u.as_str()) {
@@ -393,9 +387,7 @@ pub(super) fn query_open_version_pr_at(
     }
 }
 
-// ---------------------------------------------------------------------------
 // AUR checker
-// ---------------------------------------------------------------------------
 
 pub struct Aur {
     policy: RetryPolicy,
@@ -417,7 +409,7 @@ impl PreflightChecker for Aur {
         match query_aur_rpc(package, version, &self.policy, self.deadline, log) {
             // AUR allows the same version to be re-pushed (it's a git push to
             // the AUR repo), so the row's existence is informational rather
-            // than a blocker. Surface as Unknown with a reason so the report
+            // than a blocker. Report as Unknown with a reason so the report
             // is honest about it instead of pretending the version is sealed.
             Ok(true) => PublisherState::Unknown {
                 reason: "AUR is informational — overwritable on republish".into(),
@@ -483,7 +475,7 @@ pub(super) fn query_aur_rpc_at(
         }
     };
 
-    // Surface malformed JSON as a typed error so the caller maps it to
+    // Report malformed JSON as a typed error so the caller maps it to
     // Unknown — silently coalescing to `Null` makes a corrupted response
     // indistinguishable from "no results" (Clean).
     let v: serde_json::Value = serde_json::from_str(&body)
@@ -499,9 +491,7 @@ pub(super) fn query_aur_rpc_at(
     Ok(found_version)
 }
 
-// ---------------------------------------------------------------------------
 // run_preflight — orchestrates all enabled checkers
-// ---------------------------------------------------------------------------
 
 /// Per-publisher checker construction. Production code uses
 /// [`RealCheckerFactory`] (which builds the real network-hitting checkers);
@@ -660,7 +650,7 @@ fn run_preflight_inner(
             .cloned()
             .unwrap_or_else(|| version.clone());
 
-        // ---- cargo -------------------------------------------------------
+        // cargo
         if publish.cargo.is_some() && probe("cargo") {
             log.verbose(&format!("checking cargo for '{}@{}'", krate.name, version));
             let checker = factory.cargo(policy, deadline);
@@ -673,7 +663,7 @@ fn run_preflight_inner(
             });
         }
 
-        // ---- chocolatey --------------------------------------------------
+        // chocolatey
         if let Some(ref choco_cfg) = publish.chocolatey
             && probe("chocolatey")
         {
@@ -697,7 +687,7 @@ fn run_preflight_inner(
             });
         }
 
-        // ---- winget ------------------------------------------------------
+        // winget
         if let Some(ref winget_cfg) = publish.winget
             && probe("winget")
         {
@@ -720,7 +710,7 @@ fn run_preflight_inner(
             });
         }
 
-        // ---- aur ---------------------------------------------------------
+        // aur
         if let Some(ref aur_cfg) = publish.aur
             && probe("aur")
         {

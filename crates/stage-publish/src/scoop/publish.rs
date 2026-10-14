@@ -6,9 +6,7 @@ pub(crate) fn pr_title(manifest_name: &str, version: &str) -> String {
     format!("Update {} manifest to {}", manifest_name, version)
 }
 
-// ---------------------------------------------------------------------------
 // publish_to_scoop
-// ---------------------------------------------------------------------------
 
 /// Render and push the Scoop manifest for `crate_name`.
 ///
@@ -269,7 +267,7 @@ pub fn publish_to_scoop(ctx: &mut Context, crate_name: &str, log: &StageLogger) 
             }
         });
     }
-    // Surface PR-already-exists skips to the dispatch summary table.
+    // Report PR-already-exists skips to the dispatch summary table.
     if let Some(pr_outcome) = pr_outcome.outcome {
         ctx.record_publisher_outcome(pr_outcome);
     }

@@ -113,9 +113,7 @@ fn add_binary(
     });
 }
 
-// -----------------------------------------------------------------------------
 // Config parsing
-// -----------------------------------------------------------------------------
 
 #[test]
 fn parse_minimal_npms_block_defaults_to_optional_deps() {
@@ -233,9 +231,7 @@ fn resolve_name_uses_configured_name_when_set() {
     assert_eq!(resolve_name(&cfg, "demo"), "@scope/foo");
 }
 
-// -----------------------------------------------------------------------------
 // target -> npm triple derivation (rule #11 — derived from real targets)
-// -----------------------------------------------------------------------------
 
 #[test]
 fn npm_triple_derives_os_cpu_libc_from_target() {
@@ -290,9 +286,7 @@ fn npm_triple_rejects_apple_non_macos() {
     }
 }
 
-// -----------------------------------------------------------------------------
 // Platform-binary collection (postinstall mode)
-// -----------------------------------------------------------------------------
 
 #[test]
 fn collect_platform_binaries_maps_archive_artifacts() {
@@ -324,9 +318,7 @@ fn collect_platform_binaries_maps_archive_artifacts() {
     assert_eq!(bins[1].url, "https://example.com/demo-linux-x64.tgz");
 }
 
-// -----------------------------------------------------------------------------
 // package.json generation (postinstall mode)
-// -----------------------------------------------------------------------------
 
 fn one_binary(os: &str, cpu: &str) -> PlatformBinary {
     PlatformBinary {
@@ -447,9 +439,7 @@ fn render_postinstall_js_includes_platform_check_and_sha256() {
     assert!(body.contains("tar -xzf "));
 }
 
-// -----------------------------------------------------------------------------
 // Tarball assembly (postinstall mode)
-// -----------------------------------------------------------------------------
 
 fn ctx_with_archives() -> anodizer_core::context::Context {
     let mut ctx = TestContextBuilder::new()
@@ -544,9 +534,7 @@ fn assemble_postinstall_tarball_residual_description_template_dry_run_stays_leni
         .expect("dry-run context must stay lenient on a residual template");
 }
 
-// -----------------------------------------------------------------------------
 // optional-deps layout generation (Part B — the realign)
-// -----------------------------------------------------------------------------
 
 fn optional_deps_ctx() -> (tempfile::TempDir, anodizer_core::context::Context) {
     let tmp = tempfile::TempDir::new().expect("tmp");
@@ -973,12 +961,10 @@ fn optional_deps_layout_is_deterministic() {
     assert_eq!(n1, n2);
 }
 
-// -----------------------------------------------------------------------------
 // Completeness gate — a configured target with no matching artifact must
 // hard-error before any npm publish, not silently narrow optionalDependencies
 // (npm versions are immutable; a partial platform set at version X can never
 // be repaired at X).
-// -----------------------------------------------------------------------------
 
 /// The 8-target anodizer-shaped crate config: 6 targets on the first build
 /// (gnu/darwin/msvc) + 2 musl targets on a second build — mirrors anodizer's
@@ -1513,7 +1499,6 @@ fn optional_deps_skip_true_build_targets_not_expected() {
     assert_eq!(names.len(), 6, "{names:?}");
 }
 
-// -----------------------------------------------------------------------------
 // Per-crate dispatch scope: `crate_universe()` returns every
 // configured crate, but a per-crate workspace run's `ctx.artifacts` only
 // carries the dispatched crate's binaries. An `npms[]` entry without `ids:`
@@ -1523,7 +1508,6 @@ fn optional_deps_skip_true_build_targets_not_expected() {
 // expected set. Proven across all three config modes: single-crate,
 // lockstep (multi-crate, implicit-all), per-crate (multi-crate,
 // `selected_crates` narrows to one).
-// -----------------------------------------------------------------------------
 
 fn sibling_crate(name: &str, targets: &[&str]) -> CrateConfig {
     CrateConfig {
@@ -1623,9 +1607,7 @@ fn optional_deps_per_crate_mode_sibling_extra_target_not_false_abort() {
     assert_eq!(layout.platforms.len(), 1);
 }
 
-// -----------------------------------------------------------------------------
 // platform_name_template + skip_metapackage
-// -----------------------------------------------------------------------------
 
 #[test]
 fn parse_platform_name_template_and_skip_metapackage() {
@@ -2004,9 +1986,7 @@ fn postinstall_gate_names_every_offending_field() {
     assert!(msg.contains("platform_name_template"), "{msg}");
 }
 
-// -----------------------------------------------------------------------------
 // Workspace per-crate config mode
-// -----------------------------------------------------------------------------
 
 #[test]
 fn optional_deps_filters_by_ids_for_workspace_per_crate() {
@@ -2054,9 +2034,7 @@ fn optional_deps_filters_by_ids_for_workspace_per_crate() {
     assert_eq!(layout.platforms[0].name, "@anodizer/demo-linux-x64-musl");
 }
 
-// -----------------------------------------------------------------------------
 // targets: allowlist (git-cliff shape — publish a subset of the built targets)
-// -----------------------------------------------------------------------------
 
 /// The six targets git-cliff publishes to npm.
 const GIT_CLIFF_SIX: &[&str] = &[
@@ -2422,9 +2400,7 @@ npms:
     assert!(NpmConfig::default().targets.is_none(), "default is None");
 }
 
-// -----------------------------------------------------------------------------
 // Publisher contract
-// -----------------------------------------------------------------------------
 
 #[test]
 fn npm_publisher_classification() {
@@ -2508,7 +2484,7 @@ fn preflight_skip_metapackage_without_artifacts_does_not_block() {
 fn preflight_skip_metapackage_layout_error_blocks() {
     // Artifacts ARE present but the config is invalid (optional-deps mode with
     // no scope and no platform_name_template): generate_layout errors, and
-    // preflight must surface it as a Blocker rather than swallow it.
+    // preflight must report it as a Blocker rather than swallow it.
     let (_tmp, mut ctx) = optional_deps_ctx();
     let cfg = NpmConfig {
         mode: NpmMode::OptionalDeps,
@@ -2525,9 +2501,7 @@ fn preflight_skip_metapackage_layout_error_blocks() {
     }
 }
 
-// -----------------------------------------------------------------------------
 // Preflight token severity vs. auth mode
-// -----------------------------------------------------------------------------
 
 /// A sealed context with one npm entry pointed at `addr`, carrying `token` and
 /// the given auth mode. `oidc` seeds the GitHub Actions OIDC request pair;
@@ -3029,9 +3003,7 @@ fn npm_publisher_run_with_no_npms_configured_is_noop() {
     assert!(evidence.primary_ref.is_none());
 }
 
-// -----------------------------------------------------------------------------
 // Dry-run + skip-paths (both modes)
-// -----------------------------------------------------------------------------
 
 #[test]
 fn publish_postinstall_dry_run_returns_empty_without_invoking_npm() {
@@ -3079,7 +3051,7 @@ fn publish_optional_deps_residual_description_template_errors_before_staging() {
 /// The same residual `description` template stays lenient in dry-run:
 /// `publish_optional_deps` early-returns before staging (and therefore
 /// before the guard), so the call must still report no targets rather than
-/// surface the residual as an error.
+/// report the residual as an error.
 #[test]
 fn publish_optional_deps_residual_description_template_dry_run_stays_lenient() {
     let (_tmp, mut ctx) = optional_deps_ctx();
@@ -3100,7 +3072,7 @@ fn publish_optional_deps_residual_description_template_dry_run_stays_lenient() {
 /// it feeds into every per-platform package, and the per-platform packages
 /// stage (and guard) first — see
 /// `publish_optional_deps_residual_description_template_errors_before_staging`,
-/// whose residual surfaces as `"npm platform package.json"`, never reaching
+/// whose residual shows up as `"npm platform package.json"`, never reaching
 /// the metapackage call site. No publish-level test can isolate this guard.
 ///
 /// This test instead proves the guard itself is correct and reachable in
@@ -3218,9 +3190,7 @@ fn publish_postinstall_no_matching_binaries_warns_and_returns_empty() {
     assert!(targets.is_empty());
 }
 
-// -----------------------------------------------------------------------------
 // Auth resolution — token vs Trusted Publishing (OIDC) vs neither
-// -----------------------------------------------------------------------------
 
 const OIDC_URL_VAR: &str = "ACTIONS_ID_TOKEN_REQUEST_URL";
 const OIDC_TOKEN_VAR: &str = "ACTIONS_ID_TOKEN_REQUEST_TOKEN";
@@ -3431,9 +3401,7 @@ fn auth_oidc_mode_requires_both_vars_present() {
     );
 }
 
-// -----------------------------------------------------------------------------
 // Per-package auth decision matrix (pure function — no I/O, no secrets)
-// -----------------------------------------------------------------------------
 
 #[test]
 fn decide_auth_matrix_auto() {
@@ -3500,10 +3468,8 @@ fn encode_package_path_scoped_and_unscoped() {
     assert_eq!(encode_package_path("anodizer"), "anodizer");
 }
 
-// -----------------------------------------------------------------------------
 // Existence probe — real GET + HTTP-status → PackageExistence mapping
 // (in-process responder; no real network beyond loopback)
-// -----------------------------------------------------------------------------
 
 #[test]
 fn probe_existence_maps_200_to_exists() {
@@ -3570,9 +3536,7 @@ fn probe_existence_transport_error_is_unknown() {
     );
 }
 
-// -----------------------------------------------------------------------------
 // latest-dist-tag regression guard
-// -----------------------------------------------------------------------------
 
 #[test]
 fn guard_demotes_a_backfill_below_registry_latest() {
@@ -3808,9 +3772,7 @@ fn probe_existence_url_encodes_scoped_name_on_the_wire() {
     );
 }
 
-// -----------------------------------------------------------------------------
 // resolve_auth_for_package end-to-end — probe drives the auto-mode decision
-// -----------------------------------------------------------------------------
 
 #[test]
 fn resolve_auth_auto_exists_prefers_oidc_over_token() {
@@ -4026,10 +3988,8 @@ fn auth_oidc_mode_no_fallback_to_token_present() {
     );
 }
 
-// -----------------------------------------------------------------------------
 // OIDC → token fallback (auto mode only): a failed Trusted Publishing publish
 // retries with the token and warns loudly that TP was not exercised.
-// -----------------------------------------------------------------------------
 
 #[test]
 fn oidc_failure_falls_back_to_token_with_loud_warning_in_auto() {
@@ -4370,9 +4330,7 @@ fn token_publish_success_does_not_trigger_fallback() {
     assert_eq!(attempts, 1);
 }
 
-// -----------------------------------------------------------------------------
 // Config parse: `auth:` round-trips; absent → auto.
-// -----------------------------------------------------------------------------
 
 #[test]
 fn config_auth_field_parses_and_defaults_to_auto() {
@@ -4394,9 +4352,7 @@ fn config_auth_field_parses_and_defaults_to_auto() {
     assert_eq!(back.auth, NpmAuthMode::Token);
 }
 
-// -----------------------------------------------------------------------------
 // Excluded-target warning (#2 — no silent platform-coverage gaps)
-// -----------------------------------------------------------------------------
 
 #[test]
 fn optional_deps_warns_on_unsupported_target_and_skips_it() {
@@ -4455,9 +4411,7 @@ fn collect_platform_binaries_warns_on_unsupported_archive_target() {
     assert!(cap.warn_count() >= 1, "sparc64 exclusion must warn");
 }
 
-// -----------------------------------------------------------------------------
 // optional-deps tarball reproducibility + binary mode (#3 — default-mode path)
-// -----------------------------------------------------------------------------
 
 #[test]
 fn assemble_optional_deps_tarball_is_reproducible_and_binary_is_0o755() {
@@ -4515,9 +4469,7 @@ fn assemble_optional_deps_tarball_is_reproducible_and_binary_is_0o755() {
     drop((t1, t2));
 }
 
-// -----------------------------------------------------------------------------
 // Partial-failure rollback-evidence survival (#1 — irreversible publisher)
-// -----------------------------------------------------------------------------
 
 /// End-to-end proof that a mid-sequence `npm publish` failure does NOT lose the
 /// rollback coordinates of packages already live on the registry. A fake `npm`
@@ -4724,7 +4676,7 @@ esac
         other => panic!("unexpected evidence shape: {other:?}"),
     }
 
-    // The failure is surfaced as a Failed outcome (the publisher catches the
+    // The failure is reported as a Failed outcome (the publisher catches the
     // staging error and records it rather than bubbling Err).
     let outcome = ctx
         .take_pending_outcome()
@@ -4735,10 +4687,8 @@ esac
     );
 }
 
-// -----------------------------------------------------------------------------
 // Per-field completeness: Cargo.toml fallback, author, engines, files,
 // publishConfig.provenance — validated against the esbuild/biome/swc exemplars.
-// -----------------------------------------------------------------------------
 
 /// Build a Context whose `derived_metadata` carries a `Cargo.toml [package]`
 /// fallback for each named crate (no top-level `metadata:` block) — the plain
@@ -5414,9 +5364,7 @@ require(scriptPath);
     );
 }
 
-// ---------------------------------------------------------------------------
 // Preflight requirements — auth-mode awareness (npm Trusted Publishing / OIDC)
-// ---------------------------------------------------------------------------
 
 const OIDC_URL: &str = "ACTIONS_ID_TOKEN_REQUEST_URL";
 const OIDC_TOKEN: &str = "ACTIONS_ID_TOKEN_REQUEST_TOKEN";
@@ -5623,9 +5571,7 @@ fn requirements_token_mode_still_requires_npm_token() {
     );
 }
 
-// -----------------------------------------------------------------------------
 // Rollback (`npm unpublish`) — best-effort teardown of already-pushed packages
-// -----------------------------------------------------------------------------
 
 /// A `PublishEvidence` carrying the npm rollback coordinates in `targets`.
 fn npm_evidence(
@@ -5756,9 +5702,7 @@ fn rollback_unpublishes_recorded_target_with_valid_token() {
     );
 }
 
-// -----------------------------------------------------------------------------
 // promote (live): dist-tag re-tag driven through a fake `npm` on PATH
-// -----------------------------------------------------------------------------
 
 /// Postinstall + Version selector: `resolve_version` returns the version
 /// verbatim (no `dist-tag ls` spawn) and the single metapackage is re-tagged

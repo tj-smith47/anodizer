@@ -147,7 +147,7 @@ pub(crate) fn process_docker_manifest(
         //   `_ = runCommand(ctx, ".", "docker", "manifest", "rm", manifest)`
         // — all errors ignored. A missing manifest is the common case (first
         // run / new tag), and any other failure (auth, network, daemon
-        // offline) will surface when `manifest create` runs right after, with
+        // offline) will show up when `manifest create` runs right after, with
         // a more actionable error.
         let mut rm_cmd = Command::new(manifest_bin);
         rm_cmd.args(["manifest", "rm", &manifest_name]);

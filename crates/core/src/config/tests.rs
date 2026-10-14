@@ -231,7 +231,7 @@ crates:
     );
 }
 
-// ---- MakeLatestConfig tests ----
+// MakeLatestConfig tests
 
 #[test]
 fn test_make_latest_auto() {
@@ -352,7 +352,7 @@ crates:
     assert_eq!(release.make_latest, Some(MakeLatestConfig::Bool(false)));
 }
 
-// ---- ChangelogConfig header/footer/disable tests ----
+// ChangelogConfig header/footer/disable tests
 
 #[test]
 fn test_changelog_header_footer() {
@@ -451,7 +451,7 @@ crates:
     assert_eq!(cl.sort, Some("desc".to_string()));
 }
 
-// ---- ChecksumConfig resolved_*() accessors (lazy-defaults policy) ----
+// ChecksumConfig resolved_*() accessors (lazy-defaults policy)
 
 #[test]
 fn test_checksum_resolved_algorithm_default() {
@@ -504,7 +504,7 @@ fn test_checksum_resolved_combined_name_template_user_value_wins() {
     );
 }
 
-// ---- Notarize resolved_*() accessors (lazy-defaults policy) ----
+// Notarize resolved_*() accessors (lazy-defaults policy)
 
 #[test]
 fn test_macos_sign_resolved_timestamp_url_default() {
@@ -612,7 +612,7 @@ fn test_macos_native_sign_notarize_resolved_use_user_value_wins() {
     assert_eq!(cfg.resolved_use(), MacOSNativeArtifactKind::Pkg);
 }
 
-// ---- SbomConfig resolved_*() accessors (lazy-defaults policy) ----
+// SbomConfig resolved_*() accessors (lazy-defaults policy)
 
 #[test]
 fn test_sbom_resolved_id_default() {
@@ -825,7 +825,7 @@ fn test_sbom_default_syft_env_non_syft_empty() {
     assert!(SbomConfig::default_syft_env_for("trivy", "archive").is_empty());
 }
 
-// ---- ReleaseConfig resolved_*() accessors (lazy-defaults policy) ----
+// ReleaseConfig resolved_*() accessors (lazy-defaults policy)
 
 #[test]
 fn test_release_resolved_name_template_default() {
@@ -1123,7 +1123,7 @@ fn test_validate_on_failure_not_rollback_rejects_workspace_crate_setting() {
         .expect_err("workspace-crate rollback must also be rejected");
 }
 
-// ---- ChangelogConfig resolved_*() accessors (lazy-defaults policy) ----
+// ChangelogConfig resolved_*() accessors (lazy-defaults policy)
 
 #[test]
 fn test_changelog_resolved_sort_default_empty() {
@@ -1283,7 +1283,7 @@ fn test_changelog_resolved_snapshot_user_value_wins() {
     assert!(cfg.resolved_snapshot());
 }
 
-// ---- MilestoneConfig resolved_*() accessors (lazy-defaults policy) ----
+// MilestoneConfig resolved_*() accessors (lazy-defaults policy)
 
 #[test]
 fn test_milestone_resolved_name_template_default() {
@@ -1330,7 +1330,7 @@ fn test_milestone_resolved_fail_on_error_user_value_wins() {
     assert!(cfg.resolved_fail_on_error());
 }
 
-// ---- ChecksumConfig disable tests ----
+// ChecksumConfig disable tests
 
 #[test]
 fn test_checksum_disable() {
@@ -1424,7 +1424,7 @@ crates:
     }
 }
 
-// ---- MakeLatestConfig serialization roundtrip ----
+// MakeLatestConfig serialization roundtrip
 
 #[test]
 fn test_make_latest_serialize_roundtrip() {
@@ -1446,7 +1446,7 @@ fn test_make_latest_serialize_roundtrip() {
     assert_eq!(json, "\"{{ if .IsSnapshot }}false{{ else }}true{{ end }}\"");
 }
 
-// ---- ReleaseConfig header/footer tests ----
+// ReleaseConfig header/footer tests
 
 #[test]
 fn test_release_header_footer_inline() {
@@ -1553,7 +1553,7 @@ crates:
     assert_eq!(release.footer, None);
 }
 
-// ---- ReleaseConfig extra_files tests ----
+// ReleaseConfig extra_files tests
 
 #[test]
 fn test_release_extra_files_glob_strings() {
@@ -1638,7 +1638,7 @@ crates:
     assert_eq!(release.extra_files, None);
 }
 
-// ---- ReleaseConfig templated_extra_files tests ----
+// ReleaseConfig templated_extra_files tests
 
 #[test]
 fn test_release_templated_extra_files_parsed() {
@@ -1695,7 +1695,7 @@ templated_extra_files:
     assert_eq!(tpl[0].dst.as_deref(), Some("RELEASE_NOTES.txt"));
 }
 
-// ---- ReleaseConfig skip_upload tests ----
+// ReleaseConfig skip_upload tests
 
 #[test]
 fn test_release_skip_upload() {
@@ -1748,7 +1748,7 @@ crates:
     );
 }
 
-// ---- ReleaseConfig replace_existing_draft / replace_existing_artifacts tests ----
+// ReleaseConfig replace_existing_draft / replace_existing_artifacts tests
 
 #[test]
 fn test_release_replace_existing_draft() {
@@ -1782,7 +1782,7 @@ crates:
     assert_eq!(release.replace_existing_artifacts, Some(true));
 }
 
-// ---- ReleaseConfig tag override tests ----
+// ReleaseConfig tag override tests
 
 #[test]
 fn test_release_tag_override_parsed() {
@@ -1871,7 +1871,7 @@ crates:
     assert_eq!(release.tag, Some("v{{ .Version }}".to_string()));
 }
 
-// ---- SignConfig / signs migration tests ----
+// SignConfig / signs migration tests
 
 #[test]
 fn test_signs_single_object() {
@@ -2065,7 +2065,7 @@ fn test_signs_default_config_has_empty_signs() {
     assert!(config.signs.is_empty());
 }
 
-// ---- binary_signs artifacts constraint ----
+// binary_signs artifacts constraint
 
 #[test]
 fn test_binary_signs_artifacts_binary_accepted() {
@@ -2147,7 +2147,7 @@ fn test_binary_signs_artifacts_schema_is_runtime_constrained() {
     // accepts a wider artifact filter set). The JSON schema therefore
     // inherits the unconstrained `Option<String>` shape from `SignConfig`
     // — this test pins that contract so any future schema-typing attempt
-    // surfaces as a deliberate decision (and updates this test + the
+    // shows up as a deliberate decision (and updates this test + the
     // documenting comment above `deserialize_binary_signs`).
     let json = super::config_schema();
     let sign_artifacts = json
@@ -2163,7 +2163,7 @@ fn test_binary_signs_artifacts_schema_is_runtime_constrained() {
     );
 }
 
-// ---- report_sizes tests ----
+// report_sizes tests
 
 #[test]
 fn test_report_sizes_true() {
@@ -2206,7 +2206,7 @@ crates:
     assert_eq!(config.report_sizes, None);
 }
 
-// ---- env tests ----
+// env tests
 
 #[test]
 fn test_env_field_parsed() {
@@ -2269,7 +2269,7 @@ crates = []
     assert!(env.contains(&"STAGE=prod".to_string()));
 }
 
-// ---- env list form tests ----
+// env list form tests
 
 #[test]
 fn test_env_list_form_parsed() {
@@ -2409,7 +2409,7 @@ workspaces:
     assert!(env.contains(&"WS_BUILD={{ .Tag }}".to_string()));
 }
 
-// ---- Error path tests: malformed YAML / schema violations ----
+// Error path tests: malformed YAML / schema violations
 
 #[test]
 fn test_malformed_yaml_syntax_error() {
@@ -2582,9 +2582,9 @@ fn test_completely_empty_yaml() {
     );
 }
 
-// ---- Unknown fields tests ----
+// Unknown fields tests
 
-// ---- BinstallConfig / VersionSyncConfig tests ----
+// BinstallConfig / VersionSyncConfig tests
 
 #[test]
 fn test_binstall_config_parsed() {
@@ -2800,7 +2800,7 @@ fn test_crate_config_default_has_none_binstall_version_sync() {
     assert!(config.version_sync.is_none());
 }
 
-// ---- Unknown fields tests ----
+// Unknown fields tests
 
 #[test]
 fn test_unknown_top_level_fields_rejected() {
@@ -2896,7 +2896,7 @@ crates:
     }
 }
 
-// ---- BuildConfig reproducible field tests ----
+// BuildConfig reproducible field tests
 
 #[test]
 fn test_build_config_reproducible_true() {
@@ -2948,7 +2948,7 @@ crates:
     assert_eq!(build.reproducible, None);
 }
 
-// ---- WorkspaceConfig tests ----
+// WorkspaceConfig tests
 
 #[test]
 fn test_workspace_config_parses() {
@@ -3045,7 +3045,7 @@ workspaces: []
     assert!(workspaces.is_empty());
 }
 
-// ---- ChocolateyConfig tests ----
+// ChocolateyConfig tests
 
 #[test]
 fn test_chocolatey_config_toml() {
@@ -3083,7 +3083,7 @@ name = "tool"
     assert_eq!(repo.owner.as_deref(), Some("org"));
 }
 
-// ---- Behavior-toggle test ----
+// Behavior-toggle test
 
 #[test]
 fn test_changelog_snapshot_field_parses() {
@@ -3114,7 +3114,7 @@ crates: []
     assert_eq!(cl.snapshot, None);
 }
 
-// ---- Plural-canonical key + alias tests ----
+// Plural-canonical key + alias tests
 
 #[test]
 fn test_top_level_plural_canonical_keys_parse() {
@@ -3205,7 +3205,7 @@ crates: []
     assert!(config.announce.unwrap().email.is_some());
 }
 
-// ---- Legacy-field rejection tests ( hard-break shape) ----
+// Legacy-field rejection tests ( hard-break shape)
 
 #[test]
 fn test_legacy_docker_field_rejected() {
@@ -3497,7 +3497,7 @@ crates: []
     );
 }
 
-// ---- Unified nFPM/SRPM content + signature tests ----
+// Unified nFPM/SRPM content + signature tests
 
 #[test]
 fn test_nfpm_content_canonical_keys_in_srpm_full() {
@@ -3636,9 +3636,9 @@ crates:
     );
 }
 
-// ---- WingetConfig tests ----
+// WingetConfig tests
 
-// ---- AurConfig tests ----
+// AurConfig tests
 
 #[test]
 fn test_aur_config_yaml() {
@@ -3779,11 +3779,11 @@ depends = ["glibc"]
     assert_eq!(aur.depends, Some(vec!["glibc".to_string()]));
 }
 
-// ---- KrewConfig tests ----
+// KrewConfig tests
 
-// ---- Combined all publishers ----
+// Combined all publishers
 
-// ---- Config version tests ----
+// Config version tests
 
 #[test]
 fn test_version_field_none_is_valid() {
@@ -3830,7 +3830,7 @@ fn test_version_field_99_is_rejected() {
     );
 }
 
-// ---- env_files tests ----
+// env_files tests
 
 #[test]
 fn test_env_files_list_form_parses() {
@@ -4096,7 +4096,7 @@ fn test_load_env_files_nonexistent_strict_mode_errors() {
     assert!(result.unwrap_err().contains("strict mode"));
 }
 
-// ---- env_files TOML tests ----
+// env_files TOML tests
 
 // NOTE: EnvFilesConfig uses a custom Deserialize impl that reads into
 // serde_yaml_ng::Value as an intermediate. Since serde_yaml_ng::Value
@@ -4160,7 +4160,7 @@ fn test_env_files_token_config_toml_rejects_unknown_fields() {
     );
 }
 
-// ---- BuildIgnore tests ----
+// BuildIgnore tests
 
 #[test]
 fn test_build_ignore_parses() {
@@ -4204,7 +4204,7 @@ crates: []
     assert!(defaults.builds.is_none());
 }
 
-// ---- BuildOverride tests ----
+// BuildOverride tests
 
 #[test]
 fn test_build_override_parses() {
@@ -4262,7 +4262,7 @@ crates: []
     assert!(defaults.builds.is_none());
 }
 
-// ---- JSON Schema generation test ----
+// JSON Schema generation test
 
 #[test]
 fn test_json_schema_generation() {
@@ -4275,13 +4275,11 @@ fn test_json_schema_generation() {
     assert!(json.contains("BuildOverride"));
 }
 
-// ---- Homebrew new fields parsing tests ----
+// Homebrew new fields parsing tests
 
-// ---- Scoop new fields parsing tests ----
+// Scoop new fields parsing tests
 
-// -----------------------------------------------------------------------
 // GitConfig tests
-// -----------------------------------------------------------------------
 
 #[test]
 fn test_git_config_all_fields() {
@@ -4515,7 +4513,7 @@ git:
     assert!(validate_tag_sort(&config).is_ok());
 }
 
-// ---- partial.by validation tests ----
+// partial.by validation tests
 
 #[test]
 fn test_validate_partial_none_is_ok() {
@@ -4558,7 +4556,7 @@ fn test_validate_partial_rejects_pre_rename_goos() {
     );
 }
 
-// ---- defaults axis-mismatch validation tests ----
+// defaults axis-mismatch validation tests
 
 #[test]
 fn test_validate_defaults_axis_no_defaults_is_ok() {
@@ -4693,9 +4691,7 @@ crates: []
     );
 }
 
-// ---------------------------------------------------------------------------
 // validate_release_backends tests
-// ---------------------------------------------------------------------------
 
 #[test]
 fn test_validate_release_backends_single_backend_is_ok() {
@@ -4796,9 +4792,7 @@ crates:
     assert!(!all_builds_prebuilt(&config));
 }
 
-// ---------------------------------------------------------------------------
 // validate_homebrew_cask_url_template tests
-// ---------------------------------------------------------------------------
 
 #[test]
 fn test_validate_homebrew_cask_url_template_both_set_rejected() {
@@ -4934,9 +4928,7 @@ workspaces:
     );
 }
 
-// ---------------------------------------------------------------------------
 // validate_winget_upgrade_behavior tests
-// ---------------------------------------------------------------------------
 
 #[test]
 fn test_validate_winget_upgrade_behavior_rejects_unknown_value() {
@@ -5054,9 +5046,7 @@ workspaces:
     );
 }
 
-// ---------------------------------------------------------------------------
 // validate_winget_dependency_architectures tests
-// ---------------------------------------------------------------------------
 
 #[test]
 fn test_validate_winget_dependency_architectures_rejects_unknown_value() {
@@ -5344,14 +5334,14 @@ crates:
     assert!(config.variables.is_none());
 }
 
-// ---- Project metadata accessor + fallback tests ------------------------
+// Project metadata accessor + fallback tests
 //
 // `meta_homepage` / `meta_description` / `meta_license` back the
 // `or_else(|| ctx.config.meta_*())` fallbacks that the per-publisher
 // blocks (homebrew formula + cask, scoop, dockerhub, mcp, nix, …)
 // consult when their own field is unset. These tests pin the
 // reference shape so a regression in the accessor (renaming
-// metadata fields, switching MetadataConfig storage) surfaces
+// metadata fields, switching MetadataConfig storage) shows up
 // before the publishers silently emit empty homepage / description
 // strings.
 
@@ -5390,7 +5380,7 @@ crates: []
     assert!(config.meta_first_maintainer().is_none());
 }
 
-// ---- Cargo.toml-derived metadata: per-crate accessors + precedence ----
+// Cargo.toml-derived metadata: per-crate accessors + precedence
 //
 // `populate_derived_metadata` reads each crate's `Cargo.toml [package]`
 // (description/license/homepage/authors) so a plain Rust project resolves
@@ -5559,7 +5549,7 @@ license-file = "LICENSE"
     assert!(config.meta_license_for("app").is_none());
 }
 
-// ---- `depends_on` derivation: config-load must derive it from Cargo.toml
+// `depends_on` derivation: config-load must derive it from Cargo.toml
 // for any crate entry that OMITS it, mirroring `anodizer init`'s scaffold-
 // time derivation, while an explicit `depends_on` stays a user override.
 
@@ -5761,7 +5751,7 @@ fn single_crate_mode_depends_on_derivation_is_noop() {
     assert!(config.crates.is_empty());
 }
 
-// ---- SnapcraftConfig disable StringOrBool tests ----
+// SnapcraftConfig disable StringOrBool tests
 
 #[test]
 fn test_snapcraft_disable_bool_true() {
@@ -5892,7 +5882,7 @@ crates:
     );
 }
 
-// ---- AurConfig disable StringOrBool tests ----
+// AurConfig disable StringOrBool tests
 
 #[test]
 fn test_aur_disable_bool_true() {
@@ -5970,7 +5960,7 @@ crates:
     assert!(aur.skip.is_none());
 }
 
-// ---- PublisherConfig disable StringOrBool tests ----
+// PublisherConfig disable StringOrBool tests
 
 #[test]
 fn test_publisher_disable_bool_true() {
@@ -6121,7 +6111,7 @@ crates:
     );
 }
 
-// ---- skip_upload StringOrBool tests for publisher configs ----
+// skip_upload StringOrBool tests for publisher configs
 
 #[test]
 fn test_aur_skip_upload_bool_true() {
@@ -6178,9 +6168,7 @@ crates:
     }
 }
 
-// -----------------------------------------------------------------------
 // TemplateFileConfig tests
-// -----------------------------------------------------------------------
 
 #[test]
 fn test_template_files_parses_from_yaml() {
@@ -6220,9 +6208,7 @@ crates: []
     assert!(config.template_files.is_none());
 }
 
-// -----------------------------------------------------------------------
 // IncludeSpec parsing tests
-// -----------------------------------------------------------------------
 
 #[test]
 fn test_include_spec_plain_string() {
@@ -6387,7 +6373,7 @@ crates: []
     }
 }
 
-// ---- Platform URL config tests ----
+// Platform URL config tests
 
 #[test]
 fn test_github_urls_config_all_fields() {
@@ -6782,9 +6768,7 @@ cloudsmiths:
     }
 }
 
-// -----------------------------------------------------------------------
 // env: Vec<String> tests — list-only, null/missing, parse helpers
-// -----------------------------------------------------------------------
 
 #[test]
 fn test_docker_sign_env_list_format() {
@@ -6881,7 +6865,7 @@ publishers:
 #[test]
 fn test_publisher_if_condition_parses() {
     // Spot-check that the new `if:` field deserializes via the `#[serde(rename = "if")]`
-    // attribute on PublisherConfig. Mirrors the surface every other new `if:`
+    // attribute on PublisherConfig. Mirrors every other new `if:`
     // consumer added in this batch (blob/upload/announce/archive/snapcraft/aur/etc.).
     let yaml = r#"
 project_name: test
@@ -7011,7 +6995,7 @@ sboms:
     assert!(s.env.is_none());
 }
 
-// ---- env map-form rejection tests (must be Vec<String>, not map) ----
+// env map-form rejection tests (must be Vec<String>, not map)
 
 /// Assert that the given YAML fails to deserialize into `Config` because an
 /// `env:` field was supplied as a map (`KEY: value`), where the
@@ -7122,7 +7106,7 @@ before:
     assert_env_map_rejected(yaml, "StructuredHook");
 }
 
-// ---- defaults.archives.format_overrides validation -------------------
+// defaults.archives.format_overrides validation
 
 #[test]
 fn test_validate_format_overrides_in_defaults_block_rejects_unknown_os() {
@@ -7171,7 +7155,7 @@ crates:
     validate_format_overrides(&config).expect("known os value should pass");
 }
 
-// ---- DefaultsCrateBlock / DefaultsWorkspaceBlock unknown-field rejection
+// DefaultsCrateBlock / DefaultsWorkspaceBlock unknown-field rejection
 
 #[test]
 fn test_defaults_crates_block_rejects_unknown_field() {
@@ -7218,16 +7202,14 @@ crates: []
     );
 }
 
-// ---------------------------------------------------------------------------
 // CrateConfig.tag_template resolution — crate override > defaults.crate >
 // the `<name>-v` convention, proven in all three config modes.
-// ---------------------------------------------------------------------------
 
 #[test]
 fn test_tag_family_template_default_when_unset() {
     // The `<name>-v` convention `init` writes and `tag` / `bump` / `changelog`
     // scan — NOT a bare `v`, which would put the release stage's tag outside
-    // the family every other surface looks in.
+    // the family every other command looks in.
     let cfg = CrateConfig {
         name: "solo".to_string(),
         ..Default::default()
@@ -7365,12 +7347,10 @@ fn test_anodizer_yaml_all_crates_resolve_same_tag_template() {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Derived tag family — `tag.tag_prefix` / Cargo lockstep fold at config load.
 // Every fixture uses a TempDir: anodizer's own root Cargo.toml declares
 // `[workspace.package].version`, so `Path::new(".")` would supply a false
 // lockstep signal.
-// ---------------------------------------------------------------------------
 
 fn cargo_workspace_dir(workspace_package_version: Option<&str>) -> tempfile::TempDir {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -7625,9 +7605,7 @@ workspaces:
     );
 }
 
-// ---------------------------------------------------------------------------
 // StringOrBool::try_evaluates_to_true — always-render normalization
-// ---------------------------------------------------------------------------
 //
 // The helper used to short-circuit on `!s.contains('{')` and skip the render
 // closure for plain literals. That diverged from the sibling `should_skip_upload`
@@ -7710,9 +7688,7 @@ fn test_try_evaluates_to_true_bool_variant_skips_render() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // evaluate_if_condition — central `if:` predicate
-// ---------------------------------------------------------------------------
 
 #[test]
 fn test_evaluate_if_condition_none_proceeds() {
@@ -7844,7 +7820,7 @@ fn test_evaluate_if_condition_bool_vars_snapshot_vs_release() {
     assert!(!eval(true, "{{ not IsSnapshot or IsHarness }}"));
 }
 
-// ---- F2: `disable` → `skip` serde aliases ----
+// F2: `disable` → `skip` serde aliases
 //
 // Imported docker_v2/snapcraft/nsis/msi/release configs use `disable:`;
 // anodizer renamed to `skip:`. With `deny_unknown_fields` on the
@@ -7939,13 +7915,13 @@ crates:
     }
 }
 
-// ---- amd64_variant field on DMG/MSI/NSIS/nfpm ----
+// amd64_variant field on DMG/MSI/NSIS/nfpm
 //
-// The `goamd64` field; previously absent on these surfaces, so
+// The `goamd64` field; previously absent on these configs, so
 // multi-amd64-variant builds couldn't filter. Tests assert the YAML round-
 // trips into the new struct field. Stage-level wiring (filter the artifact
 // set against the configured variant) lives in stage-{dmg,msi,nsis,nfpm}/
-// and is tracked separately — this commit adds the surface only.
+// and is tracked separately — this commit adds the config field only.
 
 #[test]
 fn test_dmg_amd64_variant_field_deserializes() {
@@ -8038,7 +8014,7 @@ crates:
     assert!(nfpm.amd64_variant.is_none());
 }
 
-// ---- Q-arch2: ID uniqueness for archives[] and universal_binaries[] ----
+// Q-arch2: ID uniqueness for archives[] and universal_binaries[]
 
 #[test]
 fn test_archives_id_uniqueness_rejects_duplicate() {
@@ -8122,7 +8098,7 @@ crates:
     super::validate_id_uniqueness(&config).expect("distinct ids must pass");
 }
 
-// ---- Q-src3: source.prefix_template defaults to name_template ----
+// Q-src3: source.prefix_template defaults to name_template
 
 #[test]
 fn test_source_prefix_template_defaults_to_name_template_when_unset() {
@@ -8161,7 +8137,7 @@ fn test_source_prefix_template_remains_none_when_name_template_unset() {
     assert!(src.prefix_template.is_none());
 }
 
-// ---- Q-brew1: HomebrewConflict accepts both string and object shapes ----
+// Q-brew1: HomebrewConflict accepts both string and object shapes
 //
 // Homebrew conflicts is `[]string` (just names). anodizer's
 // HomebrewConflict is a strict superset (`Name` | `WithReason`), modeled as
@@ -8246,7 +8222,7 @@ crates:
     assert_eq!(conflicts[1].name(), "bar");
 }
 
-// ---- legacy V1 `dockers:` block rejection ----
+// legacy V1 `dockers:` block rejection
 
 #[test]
 fn test_v1_dockers_block_rejected_with_migration_message() {
@@ -8284,7 +8260,7 @@ dockers_v2:
     super::validate_no_docker_v1(&raw).expect("dockers_v2 only must pass");
 }
 
-// ---- F3: legacy archive/snapshot/build aliases ----
+// F3: legacy archive/snapshot/build aliases
 
 #[test]
 fn test_archives_format_singular_alias_folds_into_formats() {
@@ -8685,7 +8661,7 @@ fn test_goamd64_alias_typo_rejected_at_parse() {
 #[test]
 fn test_builds_all_known_fields_still_parse() {
     // Guard: strictness must reject ONLY unknown fields. A build entry that
-    // exercises the full known `BuildConfig` surface (plus nested ignore /
+    // exercises the full known set of `BuildConfig` fields (plus nested ignore /
     // overrides / hooks / prebuilt) must still parse cleanly.
     let yaml = r#"
 project_name: test
@@ -9169,9 +9145,7 @@ crates:
     );
 }
 
-// ---------------------------------------------------------------------------
 // per-crate hooks (before / after / before_publish on CrateConfig)
-// ---------------------------------------------------------------------------
 
 #[test]
 fn crate_config_parses_per_crate_hooks() {
@@ -9212,7 +9186,7 @@ crates:
 fn crate_config_per_crate_hooks_default_none() {
     // Single-crate / lockstep configs that omit per-crate hooks leave the
     // fields unset — the global before/after/before_publish remain the only
-    // surface there.
+    // hooks there.
     let yaml = r#"
 project_name: test
 crates:
@@ -9230,9 +9204,7 @@ crates:
     );
 }
 
-// ---------------------------------------------------------------------------
 // warn_on_legacy_homebrew_formula — deprecation of brews / publish.homebrew
-// ---------------------------------------------------------------------------
 
 #[test]
 fn legacy_homebrew_formula_crate_publish_warns() {
@@ -9448,7 +9420,7 @@ crates:
     }
 }
 
-// ---- changelog.disable alias for skip ----
+// changelog.disable alias for skip
 
 #[test]
 fn test_changelog_disable_alias_parses() {
@@ -9492,7 +9464,7 @@ crates:
     }
 }
 
-// ---- validate_changelog_groups_depth ----
+// validate_changelog_groups_depth
 
 #[test]
 fn test_validate_changelog_groups_depth_accepts_one_level() {
@@ -9563,7 +9535,7 @@ workspaces:
     assert!(err.contains("workspaces[w].changelog"), "{err}");
 }
 
-// ---- validate_changelog_paths ----
+// validate_changelog_paths
 
 #[test]
 fn test_validate_changelog_paths_rejects_leading_slash() {
@@ -9617,7 +9589,7 @@ crates:
     assert!(validate_changelog_paths(&config).is_ok());
 }
 
-// ---- validate_exclude_globs ----
+// validate_exclude_globs
 
 #[test]
 fn test_validate_exclude_globs_accepts_valid_globs_all_destinations() {
@@ -9749,11 +9721,9 @@ crates: []
     assert!(err.contains("workspaces[ws].crates[a].blobs[0]"), "{err}");
 }
 
-// ---------------------------------------------------------------------------
 // Deprecation aliases
-// ---------------------------------------------------------------------------
 
-// ---- Row 1+2: nested docker_v2[].retry / docker_manifests[].retry ----
+// Row 1+2: nested docker_v2[].retry / docker_manifests[].retry
 
 #[test]
 fn legacy_docker_retry_warns_for_docker_v2() {
@@ -9863,10 +9833,10 @@ workspaces:
     );
 }
 
-// ---- Row 3: V1 dockers: block rejection ----
+// Row 3: V1 dockers: block rejection
 //
 // `test_v1_dockers_block_rejected_with_migration_message` already covers the
-// rejection. Add a sibling test asserting the load_config path also surfaces
+// rejection. Add a sibling test asserting the load_config path also reports
 // the migration pointer (catch regressions where the validator is removed
 // from the pipeline without removing this test).
 
@@ -9892,7 +9862,7 @@ dockers:
     assert!(err.contains("dockers_v2"), "missing v2 pointer: {err}");
 }
 
-// ---- Row 4: furies: → gemfury: rename (v2.14) ----
+// Row 4: furies: → gemfury: rename (v2.14)
 
 #[test]
 fn legacy_furies_top_level_parses_as_gemfury() {
@@ -10030,7 +10000,7 @@ crates:
     super::warn_on_legacy_nfpm_builds(&raw);
 }
 
-// ---- legacy `disable:` → `skip:` alias deprecation ----
+// legacy `disable:` → `skip:` alias deprecation
 
 fn disable_alias_warnings(yaml: &str) -> Vec<String> {
     let raw: serde_yaml_ng::Value = serde_yaml_ng::from_str(yaml).unwrap();
@@ -10209,7 +10179,7 @@ workspaces:
     );
 }
 
-// ---- NEGATIVE guards: the correctness constraint ----
+// NEGATIVE guards: the correctness constraint
 
 #[test]
 fn legacy_disable_alias_warns_on_npm_disable() {
@@ -10308,7 +10278,7 @@ dockers_v2:
     );
 }
 
-// ---- Row 5: nested mcp.github (v2.13.1) ----
+// Row 5: nested mcp.github (v2.13.1)
 
 #[test]
 fn legacy_mcp_github_block_rejected_with_migration_message() {
@@ -10346,7 +10316,7 @@ mcp:
     super::validate_no_mcp_github(&raw).expect("canonical mcp.* must pass");
 }
 
-// ---- Row 6: homebrew_casks[].binary singular → binaries plural (v2.12.6) ----
+// Row 6: homebrew_casks[].binary singular → binaries plural (v2.12.6)
 
 #[test]
 fn legacy_homebrew_cask_binary_singular_folds_into_binaries() {
@@ -10453,7 +10423,7 @@ crates:
     assert!(cask.legacy_binary.is_none());
 }
 
-// ---- Row 6b: homebrew_casks[].manpage singular → manpages plural ----
+// Row 6b: homebrew_casks[].manpage singular → manpages plural
 
 #[test]
 fn legacy_homebrew_cask_manpage_singular_folds_into_manpages() {
@@ -10598,9 +10568,7 @@ workspaces:
     );
 }
 
-// ---------------------------------------------------------------------------
-// `builder: prebuilt` config surface
-// ---------------------------------------------------------------------------
+// `builder: prebuilt` config fields
 
 #[test]
 fn builder_field_defaults_to_none_serde() {
@@ -11112,7 +11080,7 @@ fn default_cross_strategy_uses_configured_strategy() {
     assert_eq!(cfg.default_cross_strategy(), CrossStrategy::Cross);
 }
 
-// ---- crate_universe tests ----
+// crate_universe tests
 
 /// One crate config with just name + path, for crate-universe tests.
 fn universe_crate(name: &str, path: &str) -> super::CrateConfig {

@@ -10,7 +10,7 @@ use super::*;
 /// Returns `Ok(Some(cksum_hex))` if the index has this version (cksum may be
 /// an empty string if the index entry is malformed), `Ok(None)` if the crate
 /// or version isn't present, `Err` on transport errors. Used to make publishes
-/// idempotent across retries while surfacing same-version drift instead of
+/// idempotent across retries while reporting same-version drift instead of
 /// silently skipping a re-release that would install stale content.
 ///
 /// The sparse-index GET routes through
@@ -99,7 +99,7 @@ fn fetch_index_file(
         Err(err) => {
             // 404 = crate has never been published — not already published.
             // The retry helper Breaks 4xx with HttpError(status) in the chain;
-            // catch the 404 here and surface as Ok(None). Other 4xx and 5xx
+            // catch the 404 here and return Ok(None). Other 4xx and 5xx
             // exhaustion propagate.
             let status_code = anodizer_core::retry::http_status(&err);
             if status_code == 404 {

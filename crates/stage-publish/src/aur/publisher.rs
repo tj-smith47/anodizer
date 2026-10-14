@@ -1,9 +1,7 @@
 use super::*;
 use crate::publisher_helpers::count_noun;
 
-// ---------------------------------------------------------------------------
 // AurOurPublisher — Publisher trait wrapper (git-revert rollback)
-// ---------------------------------------------------------------------------
 
 /// `Publisher` for an owned AUR repo (the per-crate
 /// `publish.aur:` entry that pushes a binary PKGBUILD to a dedicated
@@ -24,7 +22,7 @@ use crate::publisher_helpers::count_noun;
 /// JSON, or the announce-time release-body summary). Rollback
 /// re-reads them from the live `ctx.config` at yank time so a
 /// rotated SSH key is correctly picked up; if the user rotated and
-/// the new key lacks AUR push access, the failure surfaces clearly
+/// the new key lacks AUR push access, the failure shows clearly
 /// in the per-target warn line.
 use crate::util::{RevertCounts, RevertTarget, revert_summary_line, run_revert_targets_parallel};
 use serde::{Deserialize, Serialize};

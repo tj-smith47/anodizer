@@ -298,9 +298,7 @@ pub(crate) fn submit_winget_pr(
     }
 }
 
-// ---------------------------------------------------------------------------
 // publish_to_winget
-// ---------------------------------------------------------------------------
 
 /// The side-effect-free product of rendering a crate's WinGet manifests: the
 /// three YAML documents plus the resolved identity fields the downstream

@@ -106,7 +106,7 @@ pub(crate) fn process_authenticode_config(
     if password.is_none() {
         log.verbose(&format!(
             "{label} config '{sub_label}': no authenticode cert password (${password_env_name} \
-             unset) — signing without -pass"
+             unset or blank) — signing without -pass"
         ));
     }
 

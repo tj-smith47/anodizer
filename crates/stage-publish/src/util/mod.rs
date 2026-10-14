@@ -45,12 +45,12 @@ mod tests;
 pub(crate) use anodizer_core::artifact::matches_id_filter;
 pub(crate) use attribution::{GENERATED_FILE_HEADER, SUBMITTED_BY_FOOTER};
 
-// Public surface preserved for external callers. Items with no current
+// Public API preserved for external callers. Items with no current
 // out-of-`util/` caller are intentionally NOT re-exported here — they
 // remain `pub(crate)` inside their submodule and are reachable via
 // `crate::util::<submod>::IDENT` if a future caller needs them. Adding
 // a re-export trips `unused_imports` warnings under `-D warnings` so
-// only living surface is exported.
+// only the living API is exported.
 pub(crate) use artifacts::{
     OsArtifact, filter_by_ids, find_all_platform_artifacts_with_variant,
     find_artifacts_by_os_with_variant,
@@ -79,7 +79,7 @@ pub(crate) use formats::{default_package_formats, format_matches};
 pub(crate) use git_revert::RevertTarget;
 // `FindPrError` is reached through its `Display` impl only — krew's
 // rollback formats `{e}` directly without naming variants. Keeping it
-// out of the re-export surface honours the "only living surface" rule
+// out of the re-exports honours the "only living API" rule
 // in the module rustdoc above.
 pub(crate) use github_pr::{
     CloseOutcome, close_pr_via_api_with_env, find_open_pr_numbers_for_head_with_env,

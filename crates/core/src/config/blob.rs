@@ -6,9 +6,7 @@ use super::{
     deserialize_string_or_vec_opt,
 };
 
-// ---------------------------------------------------------------------------
 // BlobConfig (S3/GCS/Azure cloud storage)
-// ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default, deny_unknown_fields)]

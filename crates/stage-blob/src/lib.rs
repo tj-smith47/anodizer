@@ -3,7 +3,7 @@
 //! - [`Provider`] — `s3` / `gs` / `azblob` selection.
 //! - [`BlobStage`] — the [`anodizer_core::stage::Stage`] driver. Each config is
 //!   prepared serially (template render, store build, KMS preflight) before the
-//!   parallel upload, so credential/KMS errors surface before any bytes leave.
+//!   parallel upload, so credential/KMS errors are reported before any bytes leave.
 
 mod content_type;
 mod kms;

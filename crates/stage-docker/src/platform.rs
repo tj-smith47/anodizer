@@ -1,6 +1,4 @@
-// ---------------------------------------------------------------------------
 // platform_to_arch
-// ---------------------------------------------------------------------------
 
 /// Extract the architecture component from a Docker platform string.
 ///
@@ -93,9 +91,7 @@ pub fn staging_platform_dir(platform: &str) -> String {
     }
 }
 
-// ---------------------------------------------------------------------------
 // tag_suffix
-// ---------------------------------------------------------------------------
 
 /// Extract the architecture portion of a platform string for use as a tag suffix.
 ///

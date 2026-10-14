@@ -26,9 +26,7 @@ pub const DEFAULT_ANNOUNCE_DEADLINE: std::time::Duration = std::time::Duration::
 /// second, enough for a reachable local relay to report.
 pub const MIN_ANNOUNCE_DEADLINE: std::time::Duration = std::time::Duration::from_secs(1);
 
-// ---------------------------------------------------------------------------
 // AnnounceConfig
-// ---------------------------------------------------------------------------
 
 /// When the announce stage runs, judged from the results of the publishers
 /// and blob uploads earlier in the same run:

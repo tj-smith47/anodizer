@@ -29,9 +29,7 @@ const PODMAN_PUSH_TIMEOUT: Duration = Duration::from_secs(600);
 /// retries within the build budget.
 const DOCKER_BUILD_TIMEOUT: Duration = Duration::from_secs(3600);
 
-// ---------------------------------------------------------------------------
 // list_staging_dir_recursive — diagnostic file listing
-// ---------------------------------------------------------------------------
 
 /// Recursively list files in the staging directory for COPY/ADD failure
 /// diagnostics.  Logs each entry as a warning so users can see exactly which
@@ -59,9 +57,7 @@ pub(crate) fn list_staging_dir_recursive(
     }
 }
 
-// ---------------------------------------------------------------------------
 // format_v2_created_images_log — structured log helper
-// ---------------------------------------------------------------------------
 
 /// Format the v2 created-images log line with `images` and `digest` as
 /// **separate** fields. Older
@@ -111,9 +107,7 @@ pub(crate) fn metadata_file_digest(raw: &str) -> Option<String> {
     (!digest.is_empty()).then(|| digest.to_string())
 }
 
-// ---------------------------------------------------------------------------
 // DockerBuildJob — prepared data for a single docker build
-// ---------------------------------------------------------------------------
 
 /// All the information needed to execute a single docker build command.
 ///
@@ -271,7 +265,7 @@ pub(crate) fn execute_docker_build(
             // below is the default-verbosity signal. `run_capture_timeout` already
             // teed the raw stream live (redacted) to stderr under `-v`; on the
             // failure path `check_output` re-emits the redacted output regardless of
-            // verbosity, so a build error still surfaces its context.
+            // verbosity, so a build error still shows its context.
             let stderr_text = String::from_utf8_lossy(&output.stderr).to_string();
 
             match log.check_output(output, &format!("docker {}", job.backend_label)) {

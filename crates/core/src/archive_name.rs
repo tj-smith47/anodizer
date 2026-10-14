@@ -954,7 +954,7 @@ mod tests {
 
     #[test]
     fn untagged_x86_64_default_archive_name_stays_suffix_free() {
-        // The "v1" baseline must never surface in a default asset name — the
+        // The "v1" baseline must never appear in a default asset name — the
         // `Amd64 != "v1"` guard suppresses it, so the historical name holds.
         let mut c = ctx();
         let stem =

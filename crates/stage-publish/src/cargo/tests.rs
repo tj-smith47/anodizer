@@ -2,9 +2,7 @@
 
 // path-stubs: cargo — the EnvGuard swaps below put a hand-built `cargo` on PATH
 
-// ---------------------------------------------------------------------------
 // Tests
-// ---------------------------------------------------------------------------
 
 use super::*;
 
@@ -261,7 +259,6 @@ fn test_expand_transitive_deps_ignores_external_deps() {
     assert!(!expanded.contains(&"serde".to_string()));
 }
 
-// -----------------------------------------------------------------------
 // crates.io idempotency (C-new-11 / C-new-13)
 //
 // The hash-match short-circuit in publish_to_cargo (cf. cargo.rs
@@ -272,7 +269,6 @@ fn test_expand_transitive_deps_ignores_external_deps() {
 // cargo itself uses, and (b) the JSONL parser, which must keep treating
 // "version present, no cksum" as a fall-back-to-skip rather than a
 // silently-missed publish.
-// -----------------------------------------------------------------------
 
 /// Sparse-index URL must follow the cargo registry layout:
 /// 1-char names live under `/1/<name>`, 2-char under `/2/<name>`,
@@ -367,7 +363,7 @@ fn test_parse_index_cksum_for_version_skips_garbage_lines() {
     );
 }
 
-// ---- content-vs-version guard decision unit tests --------------------
+// content-vs-version guard decision unit tests
 
 /// Build an in-memory `.crate` tarball (a gzip-compressed tar) with the
 /// given `(in-tar path, content)` entries — for `crates_equal_modulo_vcs`
@@ -1459,7 +1455,7 @@ fn crates_equal_modulo_vcs_lockfile_drift_on_example_crate_differs() {
     }
 }
 
-// ---- retry plumbing through is_already_published_at ------------------
+// retry plumbing through is_already_published_at
 //
 // Pin: the sparse-index GET must route through retry_http_blocking so
 // transient 5xx / 429 / network failures retry per the user's policy.
@@ -1581,7 +1577,7 @@ fn is_already_published_at_runs_the_full_ladder_without_a_deadline() {
 
 #[test]
 fn is_already_published_at_404_maps_to_ok_none() {
-    // A 404 must NOT retry and must surface as Ok(None) — preserving
+    // A 404 must NOT retry and must return Ok(None) — preserving
     // the "crate never published" signal that the publish pipeline
     // relies on to skip the drift check.
     use std::sync::atomic::Ordering;
@@ -1754,7 +1750,6 @@ fn poll_index_times_out_after_retrying_non_success_and_transport_errors() {
     );
 }
 
-// -----------------------------------------------------------------------
 // sparse-index propagation retry on cargo publish
 //
 // Defense in depth on top of poll_crates_io_index: even after the wait
@@ -1762,7 +1757,6 @@ fn poll_index_times_out_after_retrying_non_success_and_transport_errors() {
 // may hit a stale Fastly edge a beat later. run_cargo_publish_with_retry
 // narrows retry exclusively to the propagation-shaped error signatures
 // so real failures (auth, packaging, network) still fast-fail.
-// -----------------------------------------------------------------------
 
 /// Discriminator: every known propagation-style cargo stderr must match
 /// so the retry harness recognises it; non-propagation failures must NOT
@@ -1847,7 +1841,7 @@ fn is_transient_network_failure_rejects_unrelated_errors() {
     assert!(!is_transient_network_failure(
         "error: crate version `0.11.3` is already uploaded"
     ));
-    // A missing/yanked dependency surfaces "failed to download" too, but it
+    // A missing/yanked dependency reports "failed to download" too, but it
     // is NOT transient — retrying cannot conjure the version. The bare
     // phrase is deliberately excluded so this hard error fast-fails.
     assert!(!is_transient_network_failure(
@@ -1907,7 +1901,7 @@ fn cargo_version_matches_pinned_discriminator_strings() {
 
 /// End-to-end retry behaviour: stub `cargo` with a shell script that
 /// fails twice with a propagation-style stderr, then succeeds. The
-/// retry harness must persist through the failures and surface success.
+/// retry harness must persist through the failures and report success.
 ///
 /// Uses a counter file under tempdir so successive invocations of the
 /// same script select different exit paths — keeps the test
@@ -2025,7 +2019,7 @@ fn run_cargo_publish_with_retry_recovers_from_transient_network() {
 
 /// Fast-fail behaviour: a non-propagation failure (auth) must NOT
 /// trigger retry. The stub fails with a 401-style stderr; harness must
-/// surface immediately without further invocations.
+/// fail immediately without further invocations.
 #[cfg(unix)]
 #[test]
 fn run_cargo_publish_with_retry_does_not_retry_unrelated_failure() {
@@ -2236,13 +2230,11 @@ fn main() {
     assert_eq!(n, 1, "non-propagation failure must NOT retry");
 }
 
-// -----------------------------------------------------------------------
 // wait_for_workspace_deps — pre-publish gate
 //
 // Pin the manifest parser shape and the polling-success path. The
 // sparse-index URL math is exercised by `test_sparse_index_url_shape`
 // above; the gate reuses that helper unchanged.
-// -----------------------------------------------------------------------
 
 fn write_manifest(dir: &std::path::Path, body: &str) -> std::path::PathBuf {
     let p = dir.join("Cargo.toml");
@@ -2753,9 +2745,7 @@ fn probe_dep_on_index_returns_false_on_404() {
     assert!(!found);
 }
 
-// -----------------------------------------------------------------------
 // Operator-facing log message helpers.
-// -----------------------------------------------------------------------
 
 #[test]
 fn run_start_and_done_messages_carry_counts() {
@@ -2780,9 +2770,7 @@ fn run_no_eligible_crates_warning_names_the_total() {
     assert!(w.contains("--crate / --all"));
 }
 
-// -----------------------------------------------------------------------
 // strip_key_prefix — key-boundary check guarding `version` scans.
-// -----------------------------------------------------------------------
 
 #[test]
 fn strip_key_prefix_accepts_boundary_chars_only() {
@@ -2806,9 +2794,7 @@ fn strip_key_prefix_accepts_boundary_chars_only() {
     assert_eq!(strip_key_prefix("version", "version"), None);
 }
 
-// -----------------------------------------------------------------------
 // scan_section_version — section scoping + literal/workspace/none.
-// -----------------------------------------------------------------------
 
 #[test]
 fn scan_section_version_reads_literal_and_strips_inline_comment() {
@@ -2866,9 +2852,7 @@ fn scan_section_version_skips_comment_lines() {
     );
 }
 
-// -----------------------------------------------------------------------
 // find_workspace_root_manifest — anchored [workspace] header walk.
-// -----------------------------------------------------------------------
 
 /// Walks up from a leaf crate dir to the manifest carrying `[workspace]`.
 #[test]
@@ -2908,7 +2892,6 @@ fn find_workspace_root_manifest_ignores_metadata_subtable() {
     assert_eq!(find_workspace_root_manifest(root.path()), None);
 }
 
-// -----------------------------------------------------------------------
 // publish_to_cargo — end-to-end orchestration in dry-run mode.
 //
 // Dry-run takes the early `ctx.is_dry_run()` branch: it builds the same
@@ -2919,7 +2902,6 @@ fn find_workspace_root_manifest_ignores_metadata_subtable() {
 // and gating decisions WITHOUT any network or subprocess. Covers all
 // three config modes — single-crate, workspace-lockstep, workspace
 // per-crate — for the publish-graph walk.
-// -----------------------------------------------------------------------
 
 use anodizer_core::config::{PublishConfig, WorkspaceConfig};
 // `Verbosity` / `LogLevel` are not in the file-level imports `super::*`
@@ -2994,7 +2976,6 @@ fn dry_run_publish_order(ctx: &mut Context) -> Vec<String> {
         .collect()
 }
 
-// ---------------------------------------------------------------------------
 // resolve_workspace_cargo_token — the workspace credential-decision ladder
 //
 // The ladder (auth: token / auto / oidc × ambient-token × OIDC-context) was
@@ -3002,7 +2983,6 @@ fn dry_run_publish_order(ctx: &mut Context) -> Vec<String> {
 // a host that happened to carry a `CARGO_REGISTRY_TOKEN`. These drive it
 // directly through the builder's `MapEnvSource`, so every branch is proven
 // without touching the process environment (no `#[serial]`, parallel-safe).
-// ---------------------------------------------------------------------------
 
 /// A context whose crate universe is `crates`, with `env` seeded into the
 /// `MapEnvSource` the resolver reads (`env_source().var` / `env_var`).
@@ -3436,14 +3416,12 @@ fn publish_to_cargo_orders_diamond_dependency_graph() {
     assert_eq!(order, vec!["a", "b", "c", "d"]);
 }
 
-// -----------------------------------------------------------------------
 // cargo_publish_plan — the #25 single-source-of-truth extraction.
 //
 // Asserts the resolved plan directly (order + per-crate cfgs + per-crate
 // versions) rather than only the dry-run log, so a regression in the
-// version/cfg resolution surfaces even if the ordering stays correct.
+// version/cfg resolution shows up even if the ordering stays correct.
 // Covered across all three config modes per the all-modes requirement.
-// -----------------------------------------------------------------------
 
 /// Quiet logger for plan resolution — the plan emits skip/if status
 /// lines that go uninspected here, so a non-capturing logger suffices.
@@ -3946,9 +3924,7 @@ fn cargo_publish_plan_propagates_if_render_error() {
     );
 }
 
-// -----------------------------------------------------------------------
 // publish_to_cargo — empty-plan early return + no-eligible publisher run.
-// -----------------------------------------------------------------------
 
 /// When the expanded selection matches no cargo-eligible crate, the plan
 /// is empty and `publish_to_cargo` returns Ok without emitting any
@@ -4112,7 +4088,6 @@ fn a_failed_yank_redacts_the_registry_token_from_its_warning() {
     );
 }
 
-// -----------------------------------------------------------------------
 // extract_version_pin — the three TOML dep shapes + the None branches.
 //
 // workspace_deps_for_crate tests above exercise the happy paths end to
@@ -4120,7 +4095,6 @@ fn a_failed_yank_redacts_the_registry_token_from_its_warning() {
 // string, inline-table workspace-inherit, inline-table version, standard
 // table workspace-inherit, standard table version, no-version) is
 // observable in isolation.
-// -----------------------------------------------------------------------
 
 fn dep_item(toml_body: &str, key: &str) -> toml_edit::Item {
     let doc = toml_body.parse::<toml_edit::DocumentMut>().expect("parse");
@@ -4176,11 +4150,9 @@ fn extract_version_pin_standard_table_no_version_is_none() {
     assert_eq!(extract_version_pin(&item), None);
 }
 
-// -----------------------------------------------------------------------
 // workspace_deps_for_crate — degraded-input branches (unreadable /
 // unparseable manifest) must return an empty vec so the gate no-ops
 // rather than erroring out an otherwise-valid publish.
-// -----------------------------------------------------------------------
 
 #[test]
 fn workspace_deps_for_crate_missing_manifest_returns_empty() {
@@ -4225,10 +4197,8 @@ real = { path = "../real", version = "1.0.0" }
     );
 }
 
-// -----------------------------------------------------------------------
 // scan_section_version — workspace-inherit branches inside the scan that
 // the read_cargo_toml_version tests reach only indirectly.
-// -----------------------------------------------------------------------
 
 /// `version.workspace = true` immediately followed by another value on
 /// the same logical line is classified Workspace (the dot-form branch).
@@ -4264,17 +4234,15 @@ fn read_cargo_toml_version_workspace_root_without_version_is_none() {
     assert_eq!(read_cargo_toml_version(leaf.to_str().unwrap()), None);
 }
 
-// -----------------------------------------------------------------------
 // run_cargo_publish_with_retry — exhaustion path (all retries fail).
 //
 // The recovery + fast-fail paths are covered above; this pins the third
 // arm: a propagation-style failure that NEVER clears must retry the full
-// PUBLISH_PROPAGATION_RETRIES budget, then surface the last failure.
-// -----------------------------------------------------------------------
+// PUBLISH_PROPAGATION_RETRIES budget, then report the last failure.
 
 /// A stub that emits a propagation-style stderr on EVERY invocation must
 /// be retried exactly `PUBLISH_PROPAGATION_RETRIES` times (initial + the
-/// rest) and then surface the failure — never loop forever, never
+/// rest) and then report the failure — never loop forever, never
 /// succeed.
 #[cfg(unix)]
 #[test]

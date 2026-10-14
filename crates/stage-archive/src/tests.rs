@@ -142,9 +142,7 @@ fn test_format_for_target() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // New tests: tar.xz
-// ---------------------------------------------------------------------------
 
 #[test]
 fn test_create_tar_xz() {
@@ -169,9 +167,7 @@ fn test_create_tar_xz() {
     assert_eq!(entry.path().unwrap().to_str().unwrap(), "mybin");
 }
 
-// ---------------------------------------------------------------------------
 // New tests: tar.zst
-// ---------------------------------------------------------------------------
 
 #[test]
 fn test_create_tar_zst() {
@@ -196,9 +192,7 @@ fn test_create_tar_zst() {
     assert_eq!(entry.path().unwrap().to_str().unwrap(), "mybin");
 }
 
-// ---------------------------------------------------------------------------
 // New tests: binary format (copy)
-// ---------------------------------------------------------------------------
 
 #[test]
 fn test_copy_binary_single() {
@@ -214,9 +208,7 @@ fn test_copy_binary_single() {
     assert_eq!(fs::read(&dest).unwrap(), b"actual binary bytes");
 }
 
-// ---------------------------------------------------------------------------
 // New tests: glob pattern resolution
-// ---------------------------------------------------------------------------
 
 /// Pins W3: a single license/readme/changelog file produces exactly one
 /// resolved entry, regardless of which case glob hit it first. The dedup
@@ -379,9 +371,7 @@ fn test_resolve_glob_patterns_literal() {
     assert!(results.is_empty());
 }
 
-// ---------------------------------------------------------------------------
 // New tests: wrap_in_directory
-// ---------------------------------------------------------------------------
 
 #[test]
 fn test_wrap_in_directory_tar_gz() {
@@ -488,9 +478,7 @@ fn test_wrap_in_directory_tar_zst() {
     assert_eq!(entry.path().unwrap().to_str().unwrap(), "myapp-1.0.0/mybin");
 }
 
-// ---------------------------------------------------------------------------
 // Config parsing test for wrap_in_directory
-// ---------------------------------------------------------------------------
 
 #[test]
 fn test_archive_config_parses_wrap_in_directory() {
@@ -527,9 +515,7 @@ crates:
     }
 }
 
-// ---------------------------------------------------------------------------
 // Integration-style test: ArchiveStage.run
-// ---------------------------------------------------------------------------
 
 #[test]
 fn archive_name_template_empty_bails_with_actionable_error() {
@@ -828,9 +814,7 @@ fn test_archive_stage_zip_for_windows() {
     assert!(archives[0].path.exists());
 }
 
-// ---------------------------------------------------------------------------
 // Integration test: ArchiveStage with tar.xz format
-// ---------------------------------------------------------------------------
 
 #[test]
 fn test_archive_stage_tar_xz_format() {
@@ -894,9 +878,7 @@ fn test_archive_stage_tar_xz_format() {
     assert!(fs::metadata(&archives[0].path).unwrap().len() > 0);
 }
 
-// ---------------------------------------------------------------------------
 // Integration test: ArchiveStage with binary format
-// ---------------------------------------------------------------------------
 
 #[test]
 fn test_archive_stage_binary_format() {
@@ -965,9 +947,7 @@ fn test_archive_stage_binary_format() {
     assert_eq!(fs::read(&bins[0].path).unwrap(), b"raw binary content");
 }
 
-// -----------------------------------------------------------------------
 // Deep integration tests: realistic file trees, verify archive contents
-// -----------------------------------------------------------------------
 
 /// Helper: read all entries from a tar archive into a HashMap of name -> content.
 fn read_tar_entries<R: std::io::Read>(archive: tar::Archive<R>) -> HashMap<String, Vec<u8>> {
@@ -1186,9 +1166,7 @@ fn test_integration_tar_gz_with_wrap_dir_contents_verified() {
     );
 }
 
-// -----------------------------------------------------------------------
 // Integration test: tar.zst with realistic file tree
-// -----------------------------------------------------------------------
 
 #[test]
 fn test_integration_tar_zst_realistic_file_tree() {
@@ -1252,7 +1230,7 @@ fn test_integration_tar_zst_realistic_file_tree() {
     );
 }
 
-// -- TestContextBuilder integration test: verify stage-scoped vars --
+// TestContextBuilder integration test: verify stage-scoped vars
 
 #[test]
 fn test_archive_stage_scoped_vars_not_preset() {
@@ -1279,9 +1257,7 @@ fn test_archive_stage_scoped_vars_not_preset() {
     );
 }
 
-// -----------------------------------------------------------------------
 // Additional behavior tests — config fields actually do things
-// -----------------------------------------------------------------------
 
 #[test]
 fn test_format_for_target_multiple_overrides() {
@@ -1753,7 +1729,7 @@ fn test_archive_stage_wrap_in_directory_renders_template() {
     );
 }
 
-// ---- Error path tests: missing binary / archive failures ----
+// Error path tests: missing binary / archive failures
 
 #[test]
 fn test_missing_binary_artifact_errors_with_path() {
@@ -1913,7 +1889,7 @@ fn test_archive_unsupported_format_returns_error() {
     );
 }
 
-// ---- Reproducible archive mtime tests ----
+// Reproducible archive mtime tests
 
 #[test]
 fn test_create_tar_gz_with_fixed_mtime() {
@@ -2034,9 +2010,7 @@ fn test_reproducible_archive_is_deterministic() {
     );
 }
 
-// -----------------------------------------------------------------------
 // ids filtering tests
-// -----------------------------------------------------------------------
 
 #[test]
 fn test_archive_ids_filter_only_matching_builds() {
@@ -2228,9 +2202,7 @@ fn test_archive_ids_filter_none_includes_all() {
     );
 }
 
-// -----------------------------------------------------------------------
 // id metadata tests
-// -----------------------------------------------------------------------
 
 #[test]
 fn test_archive_id_metadata_propagated() {
@@ -2335,9 +2307,7 @@ fn test_archive_id_metadata_absent_when_not_set() {
     );
 }
 
-// -----------------------------------------------------------------------
 // formats (plural) tests
-// -----------------------------------------------------------------------
 
 #[test]
 fn test_archive_formats_plural_produces_multiple_archives() {
@@ -2473,9 +2443,7 @@ fn test_archive_formats_plural_ignores_singular_format() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // Uncompressed tar archive
-// ---------------------------------------------------------------------------
 
 #[test]
 fn test_create_tar_uncompressed() {
@@ -2499,9 +2467,7 @@ fn test_create_tar_uncompressed() {
     assert_eq!(entry.path().unwrap().to_str().unwrap(), "mybin");
 }
 
-// ---------------------------------------------------------------------------
 // Format alias tests: tgz, txz, tzst, tar via stage
-// ---------------------------------------------------------------------------
 
 #[test]
 fn test_archive_stage_tgz_alias() {
@@ -2752,9 +2718,7 @@ fn test_archive_stage_unknown_format_errors() {
     );
 }
 
-// -----------------------------------------------------------------------
 // Config parsing tests for parity features
-// -----------------------------------------------------------------------
 
 #[test]
 fn test_config_parse_archive_file_spec_glob() {
@@ -2930,9 +2894,7 @@ crates:
     }
 }
 
-// -----------------------------------------------------------------------
 // gz format tests
-// -----------------------------------------------------------------------
 
 #[test]
 fn test_create_gz() {
@@ -2964,11 +2926,9 @@ fn test_create_gz_nonexistent_fails() {
     assert!(result.is_err(), "gz with nonexistent file should fail");
 }
 
-// -----------------------------------------------------------------------
 // `xz` single-file format. A top-level xz container holds exactly
 // one file. The unit-level writer + the stage-level dispatch both pin
 // this contract.
-// -----------------------------------------------------------------------
 
 #[test]
 fn test_create_xz_single_file_roundtrip() {
@@ -3177,9 +3137,7 @@ fn test_archive_stage_gz_format() {
     );
 }
 
-// -----------------------------------------------------------------------
 // meta archive test
-// -----------------------------------------------------------------------
 
 #[test]
 fn test_archive_stage_meta_no_binaries() {
@@ -3243,9 +3201,7 @@ fn test_archive_stage_meta_no_binaries() {
     assert!(found.contains_key("LICENSE"));
 }
 
-// -----------------------------------------------------------------------
 // format_overrides.formats plural test
-// -----------------------------------------------------------------------
 
 #[test]
 fn test_format_override_formats_plural() {
@@ -3355,9 +3311,7 @@ fn test_format_override_empty_os_rejected() {
     );
 }
 
-// -----------------------------------------------------------------------
 // allow_different_binary_count test (warning only)
-// -----------------------------------------------------------------------
 
 #[test]
 fn test_allow_different_binary_count_default_errors_on_mismatch() {
@@ -3579,9 +3533,7 @@ fn a_global_format_override_to_binary_exempts_the_binary_count_check() {
     );
 }
 
-// -----------------------------------------------------------------------
 // strip_binary_directory metadata test
-// -----------------------------------------------------------------------
 
 #[test]
 fn test_strip_binary_directory_metadata() {
@@ -3630,9 +3582,7 @@ fn test_strip_binary_directory_metadata() {
     );
 }
 
-// -----------------------------------------------------------------------
 // resolve_file_specs tests
-// -----------------------------------------------------------------------
 
 #[test]
 fn test_resolve_file_specs_glob() {
@@ -3714,9 +3664,7 @@ fn test_resolve_file_specs_missing_glob_never_errors_under_strict() {
     assert!(strict.is_empty());
 }
 
-// -----------------------------------------------------------------------
 // longest_common_prefix tests
-// -----------------------------------------------------------------------
 
 #[test]
 fn test_lcp_empty() {
@@ -3766,9 +3714,7 @@ fn test_lcp_identical_strings() {
     );
 }
 
-// -----------------------------------------------------------------------
 // resolve_file_specs with dst — directory preservation via LCP
-// -----------------------------------------------------------------------
 
 #[test]
 fn test_resolve_file_specs_dst_preserves_directory_structure() {
@@ -3899,9 +3845,7 @@ fn test_resolve_file_specs_dst_partial_filename_lcp_fallback() {
     assert_eq!(resolved[1].dst.as_deref(), Some("output/file_beta.txt"));
 }
 
-// -----------------------------------------------------------------------
 // builds_info: verify permissions apply to tar entries
-// -----------------------------------------------------------------------
 
 #[test]
 fn test_append_tar_entry_with_file_info_mode() {
@@ -3989,9 +3933,7 @@ fn test_write_tar_entries_with_file_info() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // deduplicate_entries
-// ---------------------------------------------------------------------------
 
 #[test]
 fn test_deduplicate_entries_keeps_first_skips_later() {
@@ -4020,9 +3962,7 @@ fn test_deduplicate_entries_keeps_first_skips_later() {
     assert_eq!(deduped[1].archive_name, PathBuf::from("LICENSE"));
 }
 
-// ---------------------------------------------------------------------------
 // sort_entries
-// ---------------------------------------------------------------------------
 
 #[test]
 fn test_sort_entries_by_archive_name() {
@@ -4052,9 +3992,7 @@ fn test_sort_entries_by_archive_name() {
     assert_eq!(names, vec!["a.txt", "b.txt", "c.txt"]);
 }
 
-// ---------------------------------------------------------------------------
 // render_file_info
-// ---------------------------------------------------------------------------
 
 #[test]
 fn test_render_file_info_templates() {
@@ -4205,7 +4143,7 @@ fn test_default_template_omits_amd64_v1_suffix() {
     assert_eq!(result, "myapp_1.0.0_linux_amd64");
 }
 
-// --- Windows binary-format archives get .exe suffix ---
+// Windows binary-format archives get .exe suffix
 
 #[test]
 fn test_archive_binary_format_windows_appends_exe() {
@@ -4503,9 +4441,7 @@ fn test_archive_single_crate_keeps_project_name_default() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // 2026-05-08 second-opinion parity audit regressions (C1, C2, Q-arch1)
-// ---------------------------------------------------------------------------
 
 /// Build stage writes the canonical `DynamicallyLinked` extra key
 /// (mirrors `artifact.ExtranDynLink`). The archive stage previously read a
@@ -4832,9 +4768,7 @@ fn test_multi_crate_archive_projectname_resolves_to_crate() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // SOURCE_DATE_EPOCH byte-stability regression
-// ---------------------------------------------------------------------------
 //
 // stage-archive's tar writer reads `mtime` from the SDE-derived value
 // resolved in `run.rs` (CommitTimestamp template var or SOURCE_DATE_EPOCH
@@ -4920,9 +4854,7 @@ fn archive_byte_differs_for_different_sde() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // archive before/after hooks
-// ---------------------------------------------------------------------------
 
 /// Drive ArchiveStage with a configured `hooks.before` + `hooks.after`
 /// pair that touches sentinel files, then return the sentinel paths so
@@ -5327,9 +5259,7 @@ fn test_archive_templated_files_per_format() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // completions / manpages generation (mode A run-binary, B harvest, C copy)
-// ---------------------------------------------------------------------------
 
 use anodizer_core::config::CompletionsConfig;
 // Manpage generation is exercised only on unix (the manpage fixtures and
@@ -5938,7 +5868,7 @@ mod no_binaries_skip_visibility {
 
     #[test]
     fn no_binaries_skip_stays_debug_at_verbose() {
-        // `-v` alone must NOT surface the skip — it is per-crate no-op noise,
+        // `-v` alone must NOT show the skip — it is per-crate no-op noise,
         // not subprocess detail; only `--show-skipped` promotes it.
         let lines = capture_archive_skip(false, Verbosity::Verbose);
         assert_eq!(lines.len(), 1, "{lines:?}");
@@ -6249,7 +6179,7 @@ mod archive_name_guard {
     fn dry_run_detects_intra_run_collision() {
         // A produced-path set works where the old filesystem probe could not:
         // nothing is written in a dry run, so the probe had to be disabled and
-        // a name-template collision only ever surfaced on a real release.
+        // a name-template collision only ever showed up on a real release.
         let tmp = TempDir::new().unwrap();
         let cfgs = [
             cfg("a", Some("{{ .ProjectName }}"), &["tar.gz"]),
@@ -6795,7 +6725,7 @@ mod archive_name_guard {
 
     #[test]
     fn missing_binary_bail_names_the_file_name() {
-        // The diagnostic must name the same thing every other surface names.
+        // The diagnostic must name the same thing every other message names.
         // Falling back to the crate name told the operator to look for
         // 'myapp' when the missing file is 'myhelper'.
         let tmp = TempDir::new().unwrap();
@@ -7235,9 +7165,7 @@ mod binary_name_read_policy {
     }
 }
 
-// -----------------------------------------------------------------------
 // Archive close: every writer flushes through `finish_archive_file`
-// -----------------------------------------------------------------------
 
 /// Decode one archive of `format` at `path` and return its entry names with
 /// their bytes. A truncated archive — the shape a dropped, unsynced `File`

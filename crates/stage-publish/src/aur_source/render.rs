@@ -288,7 +288,7 @@ pub(super) fn render_aur_source_inner(
 
     let pkgrel: u32 = cfg.rel.as_deref().and_then(|r| r.parse().ok()).unwrap_or(1);
 
-    // Surface the configured x86_64 micro-architecture variant as a template
+    // Expose the configured x86_64 micro-architecture variant as a template
     // var (default `v1`) so user-supplied `prepare` / `build` / `package`
     // scripts and the `url_template` / `directory` templates can branch on the
     // variant when the source builds need to pick CPU-feature-specific cargo

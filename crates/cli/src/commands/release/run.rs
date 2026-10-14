@@ -83,7 +83,7 @@ pub(crate) fn run(mut opts: ReleaseOpts) -> Result<()> {
         pipeline::find_config_with_logger(opts.config_override.as_deref(), Some(&log))?;
     // Load WITHOUT emitting advisories here: the submitter moderation-queue
     // advisories are deselection-aware and `Context` (which carries the
-    // `--skip` / `--publishers` surface) does not exist yet. They are emitted
+    // `--skip` / `--publishers` selection) does not exist yet. They are emitted
     // once below via `emit_config_advisories_filtered` after `ctx` is built,
     // so an advisory for a publisher the run deselected (e.g. chocolatey under
     // `--publishers npm`) is suppressed rather than printed as noise.
@@ -184,8 +184,8 @@ pub(crate) fn run(mut opts: ReleaseOpts) -> Result<()> {
         // disabled or out of scope, so this is unconditional rather than a
         // new config knob.
         install_verify_gate(&mut ctx);
-        // Surface the submitter moderation-queue advisories now that `ctx`
-        // carries the resolved `--skip` / `--publishers` selection surface,
+        // Report the submitter moderation-queue advisories now that `ctx`
+        // carries the resolved `--skip` / `--publishers` selection,
         // skipping any whose publisher this run deselected (a `--publishers npm`
         // run must not print chocolatey/winget advisories). Verbose-only, once
         // per command — matching `load_config_logged`'s register/cardinality.

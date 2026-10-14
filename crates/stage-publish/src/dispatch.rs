@@ -9,7 +9,7 @@
 //!
 //! Named for the immutable-registry Submitters it originally guarded, the
 //! gate protects **every one-way-door group — Manager AND Submitter** —
-//! not just Submitter. Both groups write to surfaces that cannot be
+//! not just Submitter. Both groups write to places that cannot be
 //! cleanly reclaimed: Manager pushes package-manager state a consumer may have
 //! already pulled (homebrew tap, scoop bucket, nix-pkgs, AUR, MCP
 //! registry); Submitter writes immutable registry slots / moderation
@@ -31,7 +31,7 @@
 //! Both conditions are folded into the single authoritative
 //! [`PublishReport::submitter_gate_closed`] predicate so the gate rule
 //! cannot drift between the in-dispatch loop and the snapcraft stage that
-//! runs as its own Submitter surface.
+//! runs as its own Submitter.
 //!
 //! When gated, the remaining Manager and Submitter publishers record
 //! `Skipped(SubmitterGated)` instead of running and
@@ -239,7 +239,7 @@ pub fn dispatch(
         for p in publishers.iter().filter(|p| p.group() == group) {
             // One-way-door gate, re-checked per publisher. It covers BOTH
             // the Manager and Submitter groups — every publisher that
-            // writes a surface that cannot be cleanly reclaimed — while leaving
+            // writes somewhere that cannot be cleanly reclaimed — while leaving
             // the reversible Assets group ungated. The gate closes when a
             // required publisher in ANY already-run group failed: a
             // required Assets failure (e.g. the blob mirror) that ran
@@ -850,7 +850,7 @@ mod tests {
     /// A publisher reporting `config_fully_inactive() == true` must be
     /// recorded as `Skipped(ConfigSkipped)` at the dispatch chokepoint
     /// BEFORE `run()` is ever invoked. The fake's `run()` returns `Err`
-    /// (would fail the test via a surfaced dispatch error) if reached,
+    /// (would fail the test via a reported dispatch error) if reached,
     /// proving the short-circuit itself rather than only its label.
     #[test]
     fn config_fully_inactive_chokepoint_skips_before_run() {
@@ -1553,7 +1553,7 @@ mod tests {
         // Mirrors chocolatey's in-moderation skip path: `run()` returns
         // `Ok(evidence)` but the publisher's actual terminal state is
         // `PendingModeration` because the push was skipped. Dispatch
-        // must surface that on the per-publisher row instead of the
+        // must report that on the per-publisher row instead of the
         // default `Succeeded` mapping, or the summary table silently
         // misreports the skip as success.
         let mut ctx = Context::test_fixture();
@@ -1587,7 +1587,7 @@ mod tests {
         // Mirrors winget/krew/homebrew-cask's PR-already-exists skip
         // path: `run()` returns `Ok(evidence)` but the actual terminal
         // state is `PendingValidation` because the PR could not be
-        // created or updated. Dispatch must surface that override.
+        // created or updated. Dispatch must report that override.
         let mut ctx = Context::test_fixture();
         let publishers = vec![fake_with_pending_outcome(
             "winget",
@@ -1612,7 +1612,7 @@ mod tests {
 
     #[test]
     fn dispatch_records_full_anyhow_chain_on_failure() {
-        // The user-visible failure message must surface every wrapped
+        // The user-visible failure message must report every wrapped
         // `anyhow::Context` layer, not just the outermost one. Using
         // `Display` (the default `err.to_string()`) drops every cause,
         // which was the root cause of the mcp publisher's HTTP-status-less
@@ -2456,9 +2456,7 @@ mod tests {
         );
     }
 
-    // -----------------------------------------------------------------------
     // M4 ledger fast-path
-    // -----------------------------------------------------------------------
 
     fn ledger_artifact(name: &str, digest: &str) -> anodizer_core::artifact::Artifact {
         anodizer_core::artifact::Artifact {
@@ -2839,7 +2837,7 @@ mod tests {
         assert_eq!(run_calls.load(Ordering::SeqCst), 1);
     }
 
-    // -- one retry budget per publisher invocation ----------------------
+    // one retry budget per publisher invocation
 
     /// A publisher that resolves `ctx.retry_deadline()` at several points of
     /// one `run` — an auth exchange, the request it authenticates, and a

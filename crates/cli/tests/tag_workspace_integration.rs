@@ -302,7 +302,6 @@ fn workspace_mode_skips_when_already_at_target() {
     assert!(git_tag_exists(tmp.path(), "v0.1.1"));
 }
 
-// ---------------------------------------------------------------------------
 // Subdirectory invocation: `tag --dry-run` must resolve the workspace root
 // from the config (not the cwd), so a run from `crates/<x>` previews the same
 // tag as a run from the repo root — across single, lockstep, and per-crate
@@ -310,7 +309,6 @@ fn workspace_mode_skips_when_already_at_target() {
 // fix, `discover_workspace_root` fell back to the cwd ancestor, so from a
 // member directory it resolved the member's own `Cargo.toml` as the root and
 // mis-detected the repo shape.
-// ---------------------------------------------------------------------------
 
 struct DryRunResult {
     stdout: String,
@@ -588,7 +586,7 @@ fn per_crate_bump_minor_pre_major_demotes_breaking_to_minor() {
     );
 }
 
-// --- `--version` explicit override -----------------------------------------
+// `--version` explicit override
 
 /// Read a member crate's own `[package].version`.
 fn read_member_version(root: &Path, member: &str) -> String {
@@ -738,7 +736,7 @@ fn version_override_invalid_errors() {
     );
 }
 
-// --- dependency-floor healing ----------------------------------------------
+// dependency-floor healing
 
 /// Read a member manifest's `[dependencies].<dep>.version`.
 fn read_dep_version(root: &Path, manifest_rel: &str, dep_name: &str) -> String {
@@ -1232,7 +1230,7 @@ fn tag_crate_path_emits_static_config_warnings_once() {
             "moderation-queue advisory must be hidden at the default level for {base:?}: {stderr}"
         );
 
-        // `--verbose`: the advisory surfaces exactly once (no per-load doubling).
+        // `--verbose`: the advisory appears exactly once (no per-load doubling).
         let mut verbose_args = base.clone();
         verbose_args.push("--verbose");
         let out = anodizer()
@@ -1288,9 +1286,7 @@ fn version_override_with_crate_in_per_crate_mode() {
     assert_eq!(read_member_version(root, "crates/cli"), "0.2.0");
 }
 
-// ---------------------------------------------------------------------------
 // Mixed configs: top-level `crates:` alongside `workspaces:`
-// ---------------------------------------------------------------------------
 
 /// Mixed shape, shared-prefix top-levels: `alpha` + `beta` (both
 /// `v{{ Version }}`) next to a workspace crate. A feat on alpha and a fix on
@@ -1471,7 +1467,7 @@ fn tag_unknown_crate_hard_errors_naming_known_crates() {
 /// A one-crate repo whose crate declares its own `tag_template` tags in that
 /// template's family even when `tag.tag_prefix` names another one: the prefix
 /// is the family only for a crate that declares no template, and every other
-/// surface reads the crate's own.
+/// command reads the crate's own.
 #[test]
 fn repo_level_tag_prefers_the_crate_template_over_the_tag_prefix() {
     let tmp = TempDir::new().unwrap();
@@ -1510,7 +1506,7 @@ fn repo_level_tag_prefers_the_crate_template_over_the_tag_prefix() {
 
 /// A one-crate `crates:` repo with no explicit `tag.tag_prefix` must tag in
 /// that crate's own family (`app-v0.1.1`), not in the `v` family the
-/// repo-level default would otherwise create — every other surface (bump,
+/// repo-level default would otherwise create — every other command (bump,
 /// changelog, `--crate app`, the release stage) resolves the crate's
 /// `tag_family_template()`.
 #[test]

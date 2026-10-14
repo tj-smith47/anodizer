@@ -7,7 +7,7 @@
 //! - `build` — per-crate build orchestration, dry-run, artifacts, and hooks.
 //!
 //! The [`MsiStage`] entry point and its [`Stage`] impl live here; the
-//! submodules' public surface is re-exported below so external callers and
+//! submodules' public API is re-exported below so external callers and
 //! the test module keep reaching items via `anodizer_stage_msi::<item>`.
 
 use std::path::PathBuf;
@@ -202,9 +202,7 @@ mod tests {
     use std::path::PathBuf;
     use tempfile::TempDir;
 
-    // -----------------------------------------------------------------------
     // WiX version detection tests
-    // -----------------------------------------------------------------------
 
     #[test]
     fn test_detect_wix_v3_from_wxs() {
@@ -243,9 +241,7 @@ mod tests {
         assert_eq!(WixVersion::detect_from_wxs(""), WixVersion::V4);
     }
 
-    // -----------------------------------------------------------------------
     // MSI command construction tests
-    // -----------------------------------------------------------------------
 
     #[test]
     fn test_msi_command_v4() {
@@ -390,9 +386,7 @@ mod tests {
         assert!(cmds.link.is_none());
     }
 
-    // -----------------------------------------------------------------------
     // Architecture mapping tests
-    // -----------------------------------------------------------------------
 
     #[test]
     fn test_map_arch_to_msi() {
@@ -414,9 +408,7 @@ mod tests {
         assert_eq!(map_arch_to_msi("riscv64"), "riscv64");
     }
 
-    // -----------------------------------------------------------------------
     // Stage behavior tests
-    // -----------------------------------------------------------------------
 
     #[test]
     fn test_stage_skips_when_no_msi_config() {
@@ -745,9 +737,7 @@ mod tests {
         );
     }
 
-    // -----------------------------------------------------------------------
     // Config parsing roundtrip tests
-    // -----------------------------------------------------------------------
 
     #[test]
     fn test_config_parse_msi() {
@@ -810,9 +800,7 @@ crates:
         );
     }
 
-    // -----------------------------------------------------------------------
     // WXS template rendering test
-    // -----------------------------------------------------------------------
 
     #[test]
     fn test_wxs_template_rendering() {
@@ -843,9 +831,7 @@ crates:
         assert!(!rendered.contains("{{ .Version }}"));
     }
 
-    // -----------------------------------------------------------------------
     // Invalid template error test
-    // -----------------------------------------------------------------------
 
     #[test]
     fn test_invalid_name_template_errors() {
@@ -908,9 +894,7 @@ crates:
         );
     }
 
-    // -----------------------------------------------------------------------
     // WiX version config string parsing
-    // -----------------------------------------------------------------------
 
     #[test]
     fn test_wix_version_from_config_str() {
@@ -959,9 +943,7 @@ crates:
         );
     }
 
-    // -----------------------------------------------------------------------
     // Replace option removes archives
-    // -----------------------------------------------------------------------
 
     #[test]
     fn test_replace_removes_archive_artifacts() {
@@ -1031,9 +1013,7 @@ crates:
         assert_eq!(ctx.artifacts.by_kind(ArtifactKind::Installer).len(), 1);
     }
 
-    // -----------------------------------------------------------------------
     // No binaries — warns and skips
-    // -----------------------------------------------------------------------
 
     #[test]
     fn test_stage_skips_with_warning_when_no_binaries() {
@@ -1083,9 +1063,7 @@ crates:
         );
     }
 
-    // -----------------------------------------------------------------------
     // ids filtering
-    // -----------------------------------------------------------------------
 
     #[test]
     fn test_ids_filtering_retains_matching_binaries() {
@@ -1216,9 +1194,7 @@ crates:
         );
     }
 
-    // -----------------------------------------------------------------------
     // id stored in artifact metadata
-    // -----------------------------------------------------------------------
 
     #[test]
     fn test_artifact_stores_config_id_in_metadata() {
@@ -1279,9 +1255,7 @@ crates:
         );
     }
 
-    // -----------------------------------------------------------------------
     // Multiple MSI configs per crate
-    // -----------------------------------------------------------------------
 
     #[test]
     fn test_stage_dry_run_multiple_configs() {
@@ -1367,9 +1341,7 @@ crates:
         assert!(filenames.contains(&"myapp-b-x64.msi".to_string()));
     }
 
-    // -----------------------------------------------------------------------
     // mod_timestamp adds -d BindTimestamp for V4
-    // -----------------------------------------------------------------------
 
     #[test]
     fn test_mod_timestamp_adds_bind_timestamp_v4() {
@@ -1431,9 +1403,7 @@ crates:
         );
     }
 
-    // -----------------------------------------------------------------------
     // Per-target template vars are cleared on stage exit
-    // -----------------------------------------------------------------------
 
     #[test]
     fn test_per_target_template_vars_cleared_after_stage() {
@@ -1533,9 +1503,7 @@ crates:
         );
     }
 
-    // -----------------------------------------------------------------------
     // extra_files config parsing
-    // -----------------------------------------------------------------------
 
     #[test]
     fn test_config_parse_extra_files() {
@@ -1561,9 +1529,7 @@ crates:
         assert_eq!(extras[2], "doc/guide.pdf");
     }
 
-    // -----------------------------------------------------------------------
     // extensions config parsing
-    // -----------------------------------------------------------------------
 
     #[test]
     fn test_config_parse_extensions() {
@@ -1587,9 +1553,7 @@ crates:
         assert_eq!(exts[1], "WixUtilExtension");
     }
 
-    // -----------------------------------------------------------------------
     // disable as StringOrBool
-    // -----------------------------------------------------------------------
 
     #[test]
     fn test_config_parse_disable_bool_true() {
@@ -1708,9 +1672,7 @@ crates:
         assert!(ctx.artifacts.by_kind(ArtifactKind::Installer).is_empty());
     }
 
-    // -----------------------------------------------------------------------
     // extensions passed to WiX commands
-    // -----------------------------------------------------------------------
 
     #[test]
     fn test_msi_command_v4_with_extensions() {
@@ -1794,9 +1756,7 @@ crates:
         );
     }
 
-    // -----------------------------------------------------------------------
     // extra_files copied to build context (live mode)
-    // -----------------------------------------------------------------------
 
     #[test]
     fn test_extra_files_copied_to_build_context() {
@@ -1867,9 +1827,7 @@ crates:
         );
     }
 
-    // -----------------------------------------------------------------------
     // extensions dry-run with template rendering
-    // -----------------------------------------------------------------------
 
     #[test]
     fn test_extensions_in_dry_run() {
@@ -1929,9 +1887,7 @@ crates:
         assert_eq!(installers.len(), 1);
     }
 
-    // -----------------------------------------------------------------------
     // Full config roundtrip with new fields
-    // -----------------------------------------------------------------------
 
     #[test]
     fn test_config_parse_msi_full_with_new_fields() {
@@ -1987,7 +1943,7 @@ crates:
         );
     }
 
-    // --- `msi.if` + `msi.hooks` ---
+    // `msi.if` + `msi.hooks`
 
     fn msi_test_ctx_with_if(if_expr: Option<&str>) -> anodizer_core::context::Context {
         use anodizer_core::config::{Config, CrateConfig, MsiConfig};
@@ -2080,9 +2036,7 @@ crates:
         assert_eq!(post[0], "echo post-msi-build");
     }
 
-    // -------------------------------------------------------------------
     // `msi.amd64_variant` filter
-    // -------------------------------------------------------------------
 
     /// Build a context with three windows/amd64 binaries (variants v1/v2/v3)
     /// plus one windows/arm64 binary. The `amd64_variant` field on the config
@@ -2202,9 +2156,7 @@ crates:
         );
     }
 
-    // -----------------------------------------------------------------------
     // post-hook artifact var injection
-    // -----------------------------------------------------------------------
 
     #[test]
     fn test_post_hook_artifact_vars_are_set() {
@@ -2346,9 +2298,7 @@ crates:
         .unwrap();
     }
 
-    // -----------------------------------------------------------------------
     // mod_timestamp template rendering
-    // -----------------------------------------------------------------------
 
     #[test]
     fn test_mod_timestamp_template_renders() {
@@ -2467,9 +2417,7 @@ crates:
         );
     }
 
-    // -----------------------------------------------------------------------
     // wxs path template rendering
-    // -----------------------------------------------------------------------
 
     #[test]
     fn test_wxs_path_template_renders() {
@@ -2525,9 +2473,7 @@ crates:
         assert_eq!(ctx.artifacts.by_kind(ArtifactKind::Installer).len(), 1);
     }
 
-    // -----------------------------------------------------------------------
     // default name shape
-    // -----------------------------------------------------------------------
 
     #[test]
     fn test_default_name_template_contains_amd64_variant_suffix() {
@@ -2840,10 +2786,8 @@ crates:
         );
     }
 
-    // -----------------------------------------------------------------------
     // required_msi_tools — the determinism gate's single source of truth for
     // the WiX tool requirement (same resolution preflight uses).
-    // -----------------------------------------------------------------------
 
     #[test]
     fn test_wix_version_tools_maps_each_version() {
@@ -2888,7 +2832,7 @@ crates:
             vec!["wixl".to_string()]
         } else {
             // Neither candle+light nor wixl installed: V3 stays V3 (the build
-            // would then surface a real candle/light-missing error).
+            // would then report a real candle/light-missing error).
             vec!["candle".to_string(), "light".to_string()]
         };
         assert_eq!(required_msi_tools(&ctx), expected);

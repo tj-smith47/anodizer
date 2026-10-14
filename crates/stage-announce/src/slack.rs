@@ -4,9 +4,7 @@ use serde_json::json;
 
 use crate::http::post_json;
 
-// ---------------------------------------------------------------------------
 // Slack options
-// ---------------------------------------------------------------------------
 
 /// Optional overrides for a Slack incoming-webhook payload.
 #[derive(Default)]
@@ -19,9 +17,7 @@ pub struct SlackOptions<'a> {
     pub attachments: Option<&'a serde_json::Value>,
 }
 
-// ---------------------------------------------------------------------------
 // Payload builder
-// ---------------------------------------------------------------------------
 
 pub(crate) fn slack_payload(message: &str, opts: &SlackOptions<'_>) -> String {
     let mut obj = serde_json::Map::new();
@@ -47,9 +43,7 @@ pub(crate) fn slack_payload(message: &str, opts: &SlackOptions<'_>) -> String {
     serde_json::Value::Object(obj).to_string()
 }
 
-// ---------------------------------------------------------------------------
 // Send
-// ---------------------------------------------------------------------------
 
 /// POST a Slack incoming-webhook payload with optional overrides.
 ///
@@ -65,9 +59,7 @@ pub fn send_slack(
     post_json(webhook_url, &payload, "slack", policy, log)
 }
 
-// ---------------------------------------------------------------------------
 // Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {

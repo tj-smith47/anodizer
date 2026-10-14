@@ -23,9 +23,7 @@ use tempfile::TempDir;
 
 use anodizer_core::test_helpers::{create_config, create_test_project, init_git_repo};
 
-// ---------------------------------------------------------------------------
 // Helpers
-// ---------------------------------------------------------------------------
 
 fn host_target() -> String {
     anodizer_cli::detect_host_target().expect("rustc -vV must succeed in test env")
@@ -137,9 +135,7 @@ fn assert_skip_matrix(stderr: &str, must_skip: &[&str], must_not_skip: &[&str], 
     }
 }
 
-// ---------------------------------------------------------------------------
 // `anodizer release --snapshot` — local stages only
-// ---------------------------------------------------------------------------
 
 /// Row: `anodizer release --snapshot` runs local stages, skips
 /// publish/snapcraft-publish/blob/announce.
@@ -153,7 +149,7 @@ fn release_snapshot_skips_publish_chain() {
             "release",
             "--snapshot",
             "--dry-run",
-            // Surface the consolidated pipeline skip row at default
+            // Show the consolidated pipeline skip row at default
             // verbosity; without it the `• skipped  …` line routes to
             // debug and `extract_skipped_stages` sees nothing.
             "--show-skipped",
@@ -180,15 +176,13 @@ fn release_snapshot_skips_publish_chain() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // `anodizer release --prepare` — local prep, no publish
-// ---------------------------------------------------------------------------
 
 /// Row: `anodizer release --prepare` adds release/publish/announce to
 /// the skip list. The integration test
 /// `test_release_prepare_matches_explicit_skip` already pins skip-set
 /// equality vs explicit `--skip=release,publish,announce`; this test
-/// pins the docs-row contract directly so a docs/binary drift surfaces
+/// pins the docs-row contract directly so a docs/binary drift shows up
 /// here even if the equality test is later refactored.
 #[test]
 fn release_prepare_skips_publish_release_announce() {
@@ -201,7 +195,7 @@ fn release_prepare_skips_publish_release_announce() {
             "--prepare",
             "--snapshot",
             "--dry-run",
-            // Surface the consolidated pipeline skip row at default verbosity.
+            // Show the consolidated pipeline skip row at default verbosity.
             "--show-skipped",
             "--skip=build,archive,checksum,docker,sign,nfpm,changelog,sbom",
             "--timeout",
@@ -243,7 +237,7 @@ fn release_prepare_only_alias_matches_prepare() {
             "--prepare-only",
             "--snapshot",
             "--dry-run",
-            // Surface the consolidated pipeline skip row at default verbosity.
+            // Show the consolidated pipeline skip row at default verbosity.
             "--show-skipped",
             "--skip=build,archive,checksum,docker,sign,nfpm,changelog,sbom",
             "--timeout",
@@ -270,9 +264,7 @@ fn release_prepare_only_alias_matches_prepare() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // `anodizer release --announce-only` — re-fire announcers only
-// ---------------------------------------------------------------------------
 
 /// Row: `anodizer release --announce-only` requires a prior
 /// `<dist>/run-<id>/report.json`. Without one, it must bail with a
@@ -341,9 +333,7 @@ fn release_announce_only_conflicts_with_prepare() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // `anodizer publish` — publish-only subcommand
-// ---------------------------------------------------------------------------
 
 /// Row: `anodizer publish` runs the release/publish/blob chain and
 /// skips every other stage. Asserted indirectly: the subcommand
@@ -374,9 +364,7 @@ fn publish_subcommand_dispatches_to_publish_only_pipeline() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // `anodizer announce` — announce-only subcommand
-// ---------------------------------------------------------------------------
 
 /// Row: `anodizer announce` runs only the announce stage. With no
 /// configured announce providers the stage emits "no announce config
@@ -392,7 +380,7 @@ fn announce_subcommand_dispatches_to_announce_pipeline() {
     let stdout = String::from_utf8_lossy(&out.stdout);
     let merged = format!("{stdout}\n{stderr}");
     // Failure modes are expected (no dist artifacts, no git tag); the
-    // dispatch surface check is the ABSENCE of the heavy stage
+    // dispatch check is the ABSENCE of the heavy stage
     // banners that the full release pipeline would emit.
     for forbidden in &["building binaries", "archiving", "building nfpm"] {
         assert!(
@@ -403,12 +391,10 @@ fn announce_subcommand_dispatches_to_announce_pipeline() {
     }
 }
 
-// ---------------------------------------------------------------------------
 // `anodizer continue` — single-host stage-resume
-// ---------------------------------------------------------------------------
 
 /// Row: `anodizer continue` (no `--merge`) loads dist + runs the
-/// publish chain. Pin the dispatch surface by asserting the build
+/// publish chain. Check the dispatch by asserting the build
 /// stage banners do NOT appear in stderr (continue must consume the
 /// preserved dist, never recompile).
 #[test]
@@ -429,9 +415,7 @@ fn continue_no_merge_does_not_recompile() {
     }
 }
 
-// ---------------------------------------------------------------------------
 // `--merge` is accepted on publish and announce subcommands
-// ---------------------------------------------------------------------------
 
 /// Pin the `--merge` flag on `anodizer publish`. Clap-only check — the merge
 /// branch's body needs a real dist tree, which is covered by
@@ -458,10 +442,8 @@ fn announce_merge_flag_parses() {
     assert!(cli, "announce --merge must parse at the clap level");
 }
 
-// ---------------------------------------------------------------------------
 // Additional rows covering `release` (snapshot mode's release stage),
 // `release --publish-only`, and `continue --merge`.
-// ---------------------------------------------------------------------------
 
 /// Snapshot mode auto-skips the publish/blob/announce chain but the
 /// `release` (GitHub release creation) stage itself stays in the pipeline.
@@ -545,9 +527,7 @@ fn continue_merge_does_not_trigger_build_pipeline() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // `--host-targets` — host-scoped real build subset (used by `task prepush`)
-// ---------------------------------------------------------------------------
 
 /// Single-crate config with an explicit `targets:` list. Used to drive the
 /// `--host-targets` partition through the binary's startup path: the safety

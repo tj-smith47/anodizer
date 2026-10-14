@@ -634,7 +634,7 @@ mod tests {
         assert_eq!(recorded_tag(&report, "acme", "other"), None);
     }
 
-    // --- shared builders for the resolve_github_repos branch tests ---
+    // shared builders for the resolve_github_repos branch tests
 
     fn github_crate_cfg(
         name: &str,
@@ -869,7 +869,7 @@ mod tests {
         assert_eq!(recorded_tag(&report, "acme", "nomatch"), None);
     }
 
-    // --- preflight: a `release.github` block + a resolvable token per target ---
+    // preflight: a `release.github` block + a resolvable token per target
 
     #[test]
     fn preflight_ok_when_every_target_is_tokened() {
@@ -978,7 +978,7 @@ mod tests {
         assert!(!msg.contains("ghp_literal"), "{msg}");
     }
 
-    // --- promote (dry-run): the plan resolves without credentials or network ---
+    // promote (dry-run): the plan resolves without credentials or network
 
     #[test]
     fn promote_dry_run_yields_dry_run_outcome_naming_the_version() {
@@ -1066,8 +1066,8 @@ mod tests {
         );
     }
 
-    // --- promote (live): the full flip drives locate + PATCH through the
-    //     production octocrab middleware stack against a loopback GitHub API ---
+    // promote (live): the full flip drives locate + PATCH through the
+    //     production octocrab middleware stack against a loopback GitHub API
 
     use anodizer_core::test_helpers::responder::spawn_oneshot_http_responder;
     use std::sync::atomic::Ordering;

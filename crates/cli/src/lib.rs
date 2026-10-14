@@ -652,7 +652,7 @@ pub enum Commands {
     /// milestone closure. `continue` is the recommended alias when
     /// resuming a stalled single-host release (the
     /// `continue` command); it additionally invokes the announce
-    /// stage and treats the dist as a paused-release surface. Prefer
+    /// stage and treats the dist as a paused release. Prefer
     /// `continue` unless you specifically want the unframed publish
     /// chain. `--dist` overrides the configured dist directory;
     /// `release` has no `--dist` because it produces dist.

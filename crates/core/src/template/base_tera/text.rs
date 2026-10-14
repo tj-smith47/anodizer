@@ -116,7 +116,7 @@ pub(super) fn register(tera: &mut tera::Tera) {
         Ok(Value::String(escaped))
     });
 
-    // --- Go-style compatibility functions ---
+    // Go-style compatibility functions
 
     // contains(s="haystack", substr="needle") — check string containment
     tera.register_json_function(
@@ -195,7 +195,7 @@ pub(super) fn register(tera: &mut tera::Tera) {
         },
     );
 
-    // --- replace function ---
+    // replace function
     // Function form: replace(s="input", old="x", new="y")
     tera.register_json_function(
         "replace",
@@ -231,7 +231,7 @@ pub(super) fn register(tera: &mut tera::Tera) {
         Ok(Value::String(s.replace(from, to)))
     });
 
-    // --- split function ---
+    // split function
     // split(s="a,b,c", sep=",") → ["a", "b", "c"]
     tera.register_json_function(
         "split",
@@ -271,7 +271,7 @@ pub(super) fn register(tera: &mut tera::Tera) {
         },
     );
 
-    // --- trim function ---
+    // trim function
     // Function form: trim(s="  hello  ") → "hello"
     // Tera already has a built-in `trim` filter, so only the function form is added.
     tera.register_json_function(
@@ -285,7 +285,7 @@ pub(super) fn register(tera: &mut tera::Tera) {
         },
     );
 
-    // --- title function ---
+    // title function
     // Function form: title(s="hello world") → "Hello World"
     // Tera already has a built-in `title` filter, so only the function form is added.
     tera.register_json_function(
@@ -314,7 +314,7 @@ pub(super) fn register(tera: &mut tera::Tera) {
         },
     );
 
-    // --- Dual registration: existing filters also as functions ---
+    // Dual registration: existing filters also as functions
 
     // tolower(s="...") — function form of tolower filter
     tera.register_json_function(

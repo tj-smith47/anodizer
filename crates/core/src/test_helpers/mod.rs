@@ -67,9 +67,7 @@ use crate::retry::RetryLog;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-// ---------------------------------------------------------------------------
 // CwdGuard — panic-safe cwd restore
-// ---------------------------------------------------------------------------
 
 /// RAII guard that captures the current working directory on construction,
 /// switches to `target`, and restores the original cwd on Drop.
@@ -134,9 +132,7 @@ impl Drop for CwdGuard {
     }
 }
 
-// ---------------------------------------------------------------------------
 // TestContextBuilder
-// ---------------------------------------------------------------------------
 
 /// Fluent builder for [`Context`] with sensible defaults suitable for tests.
 ///
@@ -343,7 +339,7 @@ impl TestContextBuilder {
         self
     }
 
-    /// Force per-crate "no `<publisher>` config block" skip lines to surface
+    /// Force per-crate "no `<publisher>` config block" skip lines to show
     /// at default verbosity (`--show-skipped`). Sets
     /// [`ContextOptions::show_skipped`].
     pub fn show_skipped(mut self, show_skipped: bool) -> Self {
@@ -662,9 +658,7 @@ fn private_dist_dir() -> tempfile::TempDir {
         .expect("test context: create a private dist directory")
 }
 
-// ---------------------------------------------------------------------------
 // Context::test_fixture — stable entry point for downstream unit tests
-// ---------------------------------------------------------------------------
 
 impl Context {
     /// Return a minimally-populated [`Context`] suitable for unit tests in
@@ -687,9 +681,7 @@ impl Context {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Filesystem helpers
-// ---------------------------------------------------------------------------
 
 /// Create a minimal Cargo project in the given directory.
 ///
@@ -797,9 +789,7 @@ pub fn create_fake_binary(dir: &Path, name: &str) -> std::path::PathBuf {
     path
 }
 
-// ---------------------------------------------------------------------------
 // Git helpers
-// ---------------------------------------------------------------------------
 
 /// Initialize a git repository with a config, initial commit, and `v0.1.0` tag.
 ///
@@ -833,9 +823,7 @@ pub fn init_git_repo_with_commits(dir: &Path, commits: &[&str]) {
     }
 }
 
-// ---------------------------------------------------------------------------
 // GitInfo helper
-// ---------------------------------------------------------------------------
 
 /// Create a [`GitInfo`] with sensible defaults for testing.
 ///
@@ -872,9 +860,7 @@ pub fn make_git_info(dirty: bool, prerelease: Option<&str>) -> GitInfo {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Module-level tests
-// ---------------------------------------------------------------------------
 
 /// A per-process path that is never created, for a test context that names no
 /// project root: git and file lookups under it fail closed instead of reading

@@ -6,9 +6,7 @@ use super::{
     deserialize_string_or_bool_opt,
 };
 
-// ---------------------------------------------------------------------------
 // ReleaseConfig
-// ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
@@ -488,9 +486,7 @@ pub struct ScmRepoConfig {
 /// Backward-compatible alias — existing code can continue to use `GitHubConfig`.
 pub type GitHubConfig = ScmRepoConfig;
 
-// ---------------------------------------------------------------------------
 // ForceTokenKind
-// ---------------------------------------------------------------------------
 
 /// Which SCM token to force for authentication, overriding automatic detection.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
@@ -501,9 +497,7 @@ pub enum ForceTokenKind {
     Gitea,
 }
 
-// ---------------------------------------------------------------------------
 // Platform URL configs (GitHub Enterprise, GitLab self-hosted, Gitea)
-// ---------------------------------------------------------------------------
 
 /// Custom GitHub API/upload/download URLs for GitHub Enterprise installations.
 /// GitHub API/download URL overrides.
@@ -553,9 +547,7 @@ pub struct GiteaUrlsConfig {
     pub skip_tls_verify: Option<bool>,
 }
 
-// ---------------------------------------------------------------------------
 // "auto" | bool enum — shared serde implementation
-// ---------------------------------------------------------------------------
 
 /// Generates `Serialize` and `Deserialize` impls for enums with `Auto` and
 /// `Bool(bool)` variants that accept the string `"auto"`, a boolean, an

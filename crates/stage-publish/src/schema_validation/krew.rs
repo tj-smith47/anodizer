@@ -9,7 +9,7 @@
 //! validator renders the exact YAML the live publish would submit — via the
 //! same render path — and checks it against the vendored schema, so a
 //! structural defect (a non-semver version, a malformed sha256, a missing
-//! selector) surfaces in the emission-validate pass rather than after a
+//! selector) shows up in the emission-validate pass rather than after a
 //! krew-index PR has already been opened.
 
 use anodizer_core::context::Context;
@@ -466,7 +466,7 @@ mod tests {
 
     /// The counterpart: on a FULL build (no `partial_target`) a krew-configured
     /// crate that produced NO archive is a genuine misconfiguration — the same
-    /// "no archive artifacts" bail the live publish hits must surface at
+    /// "no archive artifacts" bail the live publish hits must show up at
     /// `check`/`--snapshot` rather than being silently skipped (the
     /// failure-hiding class this closes).
     #[test]

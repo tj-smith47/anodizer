@@ -499,7 +499,7 @@ fn hash_verify_preserved_dist_accepts_when_any_shard_matches_disk() {
 }
 
 /// Counterpart: if NO shard's recorded hash matches disk, the
-/// verifier must still bail and surface every shard's expected hash
+/// verifier must still bail and report every shard's expected hash
 /// in the error so the operator can audit which shards diverged.
 #[test]
 fn hash_verify_preserved_dist_bails_when_no_shard_matches_disk() {
@@ -1068,7 +1068,7 @@ fn run_per_crate_pipeline_marks_publish_attempted() {
 /// too. Publish-only's per-crate loop runs the post-pipeline once per
 /// crate, and the root block used to fire from inside it — a workspace's
 /// root `after:` hook ran N times for N crates, which nothing in the config
-/// surface announces.
+/// fields announce.
 ///
 /// Pinned in all three config modes, each through its real dispatch path:
 /// single-crate takes the flat-dist `run`, and both workspace modes take
@@ -1219,7 +1219,7 @@ fn run_per_crate_metadata_carries_per_crate_release_url() {
     };
     let mut ctx = preserved_dist_ctx(&config);
     // The changelog stage shells to git in the process cwd; skip it so
-    // the test stays hermetic — the surface under test is the release
+    // the test stays hermetic — the code under test is the release
     // stage's URL derivation and the per-crate metadata write it feeds.
     ctx.options.skip_stages = vec!["changelog".to_string()];
     let capture = anodizer_core::log::LogCapture::new();
@@ -2068,7 +2068,7 @@ fn per_crate_lifecycle_hooks_fire_scoped() {
 }
 
 /// `--skip=before` suppresses the per-crate before: hook (parity with the
-/// top-level surface); a crate with no block is a no-op.
+/// top-level hooks); a crate with no block is a no-op.
 #[test]
 fn per_crate_lifecycle_hooks_honor_skip_and_absent_block() {
     let opts = ContextOptions {

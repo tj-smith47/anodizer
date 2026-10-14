@@ -61,7 +61,7 @@ pub(crate) fn stage_cloudsmith_file(
     deadline: Option<std::time::Instant>,
     log: &StageLogger,
 ) -> Result<String> {
-    // --- Step 1/3: request a files/create slot ---
+    // Step 1/3: request a files/create slot
     //
     // POST /v1/files/{org}/{repo}/ with the filename + md5 returns a
     // short-lived S3 presigned upload URL plus the fields the upload POST
@@ -118,7 +118,7 @@ pub(crate) fn stage_cloudsmith_file(
         .cloned()
         .unwrap_or_default();
 
-    // --- Step 2/3: upload bytes to the presigned S3 URL ---
+    // Step 2/3: upload bytes to the presigned S3 URL
     //
     // The presigned URL is AWS S3 POST form — no Cloudsmith auth header is
     // added here. The fields returned in step 1 (policy, signature, key, ...)
@@ -154,9 +154,7 @@ pub(crate) fn stage_cloudsmith_file(
     Ok(identifier)
 }
 
-// ---------------------------------------------------------------------------
 // publish_to_cloudsmith
-// ---------------------------------------------------------------------------
 
 /// Format the single default-verbosity summary line for one cloudsmith entry,
 /// collapsing the per-file `uploading …` / `uploaded …` / `skipping …`

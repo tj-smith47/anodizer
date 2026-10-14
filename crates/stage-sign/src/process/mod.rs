@@ -249,7 +249,7 @@ fn execute_sign_job(job: &SignJob, log: &StageLogger) -> Result<()> {
 
     // Raw subprocess stdio is verbose-only detail per
     // .claude/rules/log-status-vs-verbose.md; an explicit `output:` opts the
-    // tee back in but it stays below default. A non-zero exit still surfaces
+    // tee back in but it stays below default. A non-zero exit is still reported
     // via `check_output` below.
     if job.output_flag {
         if !stdout_str.is_empty() {
@@ -418,7 +418,7 @@ pub(crate) fn sign_retry_delay(
 /// (`resource temporarily unavailable`, `creating cached local store`,
 /// timeouts) — the retry ladder exists precisely for those, and the
 /// unmatched default is retry, so new transient phrasings stay safe.
-/// `no such file or directory` is also NOT matched: cosign surfaces the
+/// `no such file or directory` is also NOT matched: cosign prints the
 /// same ENOENT phrasing for a cold or racing `~/.sigstore` TUF-cache read
 /// (`open ~/.sigstore/...: no such file or directory`), which heals on
 /// retry — a substring match would fast-fail the exact race the ladder

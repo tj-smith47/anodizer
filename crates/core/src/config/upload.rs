@@ -5,9 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use super::{ExtraFileSpec, StringOrBool, deserialize_string_or_bool_opt};
 
-// ---------------------------------------------------------------------------
 // UploadConfig (generic HTTP upload)
-// ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default, deny_unknown_fields)]

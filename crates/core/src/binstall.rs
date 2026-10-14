@@ -270,9 +270,7 @@ fn render_overrides_map(
     Ok(Some(overrides_table))
 }
 
-// ---------------------------------------------------------------------------
 // Auto-derivation
-// ---------------------------------------------------------------------------
 
 /// Auto-derive a per-target `overrides` map for `crate_cfg` when binstall is
 /// enabled but the user supplied no `pkg_url`/`overrides`.
@@ -1042,9 +1040,7 @@ metadata.binstall = { pkg-url = "https://old.example.com/stale", disabled-strate
         assert_eq!(strategies.get(0).unwrap().as_str().unwrap(), "compile");
     }
 
-    // -----------------------------------------------------------------------
     // Auto-derivation
-    // -----------------------------------------------------------------------
 
     /// All six anodizer triples, the matrix the auto-derivation must cover.
     fn six_targets() -> Vec<String> {
@@ -1467,7 +1463,7 @@ metadata.binstall = { pkg-url = "https://old.example.com/stale", disabled-strate
         );
     }
 
-    // --- normalize_binstall_to_table --------------------------------------
+    // normalize_binstall_to_table
 
     #[test]
     fn normalize_inserts_empty_table_when_binstall_absent() {
@@ -1526,7 +1522,7 @@ binstall = { pkg-url = "https://example/x", custom = "keep" }
         );
     }
 
-    // --- set_or_remove_str ------------------------------------------------
+    // set_or_remove_str
 
     #[test]
     fn set_or_remove_str_sets_and_removes() {
@@ -1544,7 +1540,7 @@ binstall = { pkg-url = "https://example/x", custom = "keep" }
         );
     }
 
-    // --- render_overrides / render_overrides_map --------------------------
+    // render_overrides / render_overrides_map
 
     #[test]
     fn render_overrides_none_when_unset_or_empty() {
@@ -1577,7 +1573,7 @@ binstall = { pkg-url = "https://example/x", custom = "keep" }
         );
     }
 
-    // --- variant-aware config-time derivation ------------------------------
+    // variant-aware config-time derivation
 
     /// A crate whose builds carry per-target env, against the DEFAULT archive
     /// name template, so the derived names exercise the `Amd64` suffix clause.

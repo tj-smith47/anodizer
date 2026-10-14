@@ -14,7 +14,7 @@
 //! does not call Gitea's `repos/{owner}/{repo}/contents/{path}` create-file
 //! endpoint — every publisher (homebrew, scoop, krew, nix, aur, …) targets
 //! Gitea via `git clone` + `git push` over SSH/HTTPS, not via the REST
-//! contents API. The `branch`-defaulting bug therefore has no surface in
+//! contents API. The `branch`-defaulting bug therefore cannot occur in
 //! anodizer (n/a-by-construction).
 
 use std::path::Path;

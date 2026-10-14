@@ -1,29 +1,19 @@
-// ---------------------------------------------------------------------------
 // levenshtein_distance / find_image_digest
-// ---------------------------------------------------------------------------
 mod spelling;
 
-// ---------------------------------------------------------------------------
 // is_retriable_error / docker_supports_provenance / check_buildx_driver
-// ---------------------------------------------------------------------------
 mod detect;
 pub use detect::{is_retriable_build, is_retriable_error};
 
-// ---------------------------------------------------------------------------
 // platform_to_arch / tag_suffix
-// ---------------------------------------------------------------------------
 mod platform;
 pub use platform::{platform_to_arch, staging_platform_dir};
 
-// ---------------------------------------------------------------------------
 // parse_duration_string / resolve_retry_params
-// ---------------------------------------------------------------------------
 mod retry;
 pub use retry::{parse_duration_string, resolve_retry_params};
 
-// ---------------------------------------------------------------------------
 // build_docker_command / build_docker_v2_command / V2 resolve helpers / skip_push
-// ---------------------------------------------------------------------------
 mod command;
 pub use command::{
     BUILDX_ONLY_FLAGS, DockerV1Spec, DockerV2Spec, apply_docker_v2_defaults, build_docker_command,
@@ -32,30 +22,22 @@ pub use command::{
     podman_push_digest_file, resolve_backend, resolve_skip_push, validate_podman_flag_compat,
 };
 
-// ---------------------------------------------------------------------------
 // parse_base_image / get_base_image — Dockerfile FROM resolver feeding
-// the `{{ .BaseImage }}` / `{{ .BaseImageDigest }}` template surface.
-// ---------------------------------------------------------------------------
+// the `{{ .BaseImage }}` / `{{ .BaseImageDigest }}` template variables.
 mod baseimage;
 pub use baseimage::{BaseImage, get_base_image, parse_base_image};
 
 mod promote;
 pub use promote::{DockerPromoter, preflight as docker_promote_preflight};
 
-// ---------------------------------------------------------------------------
 // DockerBuildJob / DockerBuildResult / execute_docker_build
-// ---------------------------------------------------------------------------
 mod build;
 
-// ---------------------------------------------------------------------------
 // stage_artifacts_v2 / copy_dockerfile / warn_project_markers / stage_extra_files
-// ---------------------------------------------------------------------------
 mod staging;
 pub use staging::{PROJECT_MARKERS, copy_dockerfile, stage_extra_files};
 
-// ---------------------------------------------------------------------------
 // DockerStage
-// ---------------------------------------------------------------------------
 mod run;
 pub use run::render_v2_kv_map;
 

@@ -16,7 +16,7 @@ use std::process::Command;
 ///   failure, locked-flag conflict). The lockfile may be unchanged.
 /// `Err(_)` — `cargo` could not be spawned (missing binary, permission
 ///   denied, ...). Distinct from `Ok(false)` so callers can log the
-///   underlying `io::Error` at trace level if they want to surface why
+///   underlying `io::Error` at trace level if they want to report why
 ///   the probe itself failed.
 pub fn cargo_update_workspace(dir: Option<&Path>) -> io::Result<bool> {
     let mut cmd = Command::new("cargo");

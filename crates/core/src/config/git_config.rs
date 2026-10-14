@@ -1,9 +1,7 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-// ---------------------------------------------------------------------------
 // GitConfig
-// ---------------------------------------------------------------------------
 
 /// Git-level tag discovery and sorting settings.
 ///

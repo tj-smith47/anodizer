@@ -80,7 +80,7 @@ pub struct ContextOptions {
     /// paths deterministically without monkey-patching production
     /// publisher code.
     pub simulate_failure_publishers: Vec<String>,
-    /// `--show-skipped`: surface the per-crate "no `<publisher>` config
+    /// `--show-skipped`: show the per-crate "no `<publisher>` config
     /// block" skip lines at default verbosity. In workspace mode every
     /// PR-based publisher (homebrew / nix / scoop / aur / winget / krew /
     /// chocolatey) visits every selected crate and skips the ones whose

@@ -51,7 +51,7 @@ pub(super) fn check_docker_tooling(config: &Config, warnings: &mut Vec<String>) 
         warnings.push("docker is not installed but docker sections are configured".to_string());
         return;
     }
-    // The buildx probe surfaces three states:
+    // The buildx probe reports three states:
     //   Ok(true)  → buildx subcommand exists.
     //   Ok(false) → docker present but buildx subcommand missing.
     //   Err(_)    → spawn failed (typically: docker disappeared between

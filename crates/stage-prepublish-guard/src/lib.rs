@@ -80,7 +80,7 @@ fn run_guard(
 }
 
 /// Run BOTH checks independently and accumulate every failure, so one run
-/// surfaces the operator's full breakage list (publishers AND announcers)
+/// reports the operator's full breakage list (publishers AND announcers)
 /// rather than only the first.
 fn guard_checks(
     ctx: &mut Context,
@@ -459,7 +459,7 @@ mod tests {
         let mut cfg = scoop_cfg("widget");
         // `homepage` is template-rendered into the manifest with `?`
         // propagation; an undefined var makes the render fn return Err, which
-        // the publisher schema validator surfaces.
+        // the publisher schema validator reports.
         cfg.homepage = Some("https://acme.example/{{ NoSuchVar }}".to_string());
         let krate = crate_with(
             "widget",

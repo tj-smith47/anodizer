@@ -17,7 +17,7 @@ enum VersionPart {
 /// error when the input isn't valid semver.
 ///
 /// Version-increment behavior, which calls
-/// `semver.MustParse(v)` and surfaces a hard template error on non-semver
+/// `semver.MustParse(v)` and returns a hard template error on non-semver
 /// input. Previously every component was best-effort `unwrap_or(0)`, so
 /// `{{ "garbage" | incpatch }}` silently returned `"0.0.1"`.
 fn increment_version(v: &str, part: VersionPart) -> Result<String, tera::Error> {
@@ -56,7 +56,7 @@ fn increment_version(v: &str, part: VersionPart) -> Result<String, tera::Error> 
 }
 
 pub(super) fn register(tera: &mut tera::Tera) {
-    // --- Version increment functions ---
+    // Version increment functions
 
     // incpatch(v="1.2.3") → "1.2.4"
     tera.register_json_function(
@@ -94,7 +94,7 @@ pub(super) fn register(tera: &mut tera::Tera) {
         },
     );
 
-    // --- Dual registration: existing functions also as filters ---
+    // Dual registration: existing functions also as filters
 
     // incpatch — filter form: {{ "1.2.3" | incpatch }}
     tera.register_json_filter("incpatch", |value: &Value, _: &HashMap<String, Value>| {

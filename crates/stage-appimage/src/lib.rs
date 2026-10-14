@@ -57,9 +57,7 @@ fn appimage_arch(target: &str) -> String {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Validation
-// ---------------------------------------------------------------------------
 
 /// Reject duplicate AppImage config IDs (per-id `default` collapses unkeyed
 /// entries onto one slot — same shape as makeself/nfpm validation).
@@ -85,9 +83,7 @@ fn validate_config_fields(cfg: &anodizer_core::config::AppImageConfig, id: &str)
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
 // Binary selection (mirrors makeself's collect_matching_binaries)
-// ---------------------------------------------------------------------------
 
 /// Filter and clone the binary artifacts that match an AppImage config's
 /// id-filter + os/arch selectors. AppImage is Linux-only, so the os filter
@@ -158,9 +154,7 @@ fn host_missing_error(id: &str) -> anyhow::Error {
     )
 }
 
-// ---------------------------------------------------------------------------
 // Per-target template vars (mirrors makeself)
-// ---------------------------------------------------------------------------
 
 /// Group binary artifacts by `(platform, amd64_variant)` — e.g.
 /// `("linux_amd64", Some("v3"))` — so each (os, arch) AND micro-architecture
@@ -279,9 +273,7 @@ fn resolve_appimage_filename(
     Ok((composed.clone(), composed))
 }
 
-// ---------------------------------------------------------------------------
 // Runtime harvest (host-once)
-// ---------------------------------------------------------------------------
 
 /// Render the harvest command for a config, binding `{{ .ArtifactPath }}` to
 /// the host binary's path and `{{ .HarvestDir }}` to the absolute harvest
@@ -325,9 +317,7 @@ fn run_harvest(cmd: &str, harvest_dir: &Path, log: &anodizer_core::log::StageLog
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
 // AppImageStage
-// ---------------------------------------------------------------------------
 
 pub struct AppImageStage;
 

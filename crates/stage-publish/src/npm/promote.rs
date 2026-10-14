@@ -128,7 +128,7 @@ impl Promotable for NpmPromoter {
 
         // Best-effort across the family: one package's (or one `npms[]` entry's)
         // failure does not abort the rest — every target is attempted and the
-        // applied-vs-failed split is surfaced at the end.
+        // applied-vs-failed split is reported at the end.
         match req.selector {
             PromoteSelector::FromRun { report, .. } => {
                 retag.retag_recorded(report);

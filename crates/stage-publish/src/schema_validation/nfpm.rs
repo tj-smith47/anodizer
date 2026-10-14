@@ -10,7 +10,7 @@
 //!    against nfpm's own draft-2020-12 config schema. The schema is
 //!    `additionalProperties: false` and requires `name` / `arch` / `version`,
 //!    so a misnamed key, a wrong-typed value, or a missing required field
-//!    surfaces in the emission-validate pass — not after a release uploads a
+//!    shows up in the emission-validate pass — not after a release uploads a
 //!    broken package.
 //! 2. **Secondary (gated):** when the nfpm stage already built a package in
 //!    this run and the inspection tool is present (`dpkg-deb` for `.deb`,
@@ -486,7 +486,7 @@ fn version_matches(actual: &str, expected: &str) -> bool {
 }
 
 /// Build the finding emitted when an inspection tool exits non-zero — a real
-/// failure must always surface rather than silently passing.
+/// failure must always be reported rather than silently passing.
 fn tool_failure_finding(tool: &str, path: &Path, stderr: &str) -> SchemaFinding {
     let trimmed = stderr.trim();
     let detail = if trimmed.is_empty() {
@@ -564,7 +564,7 @@ mod tests {
     use super::*;
 
     /// Probe an inspection tool for a gated test: `true` when present. A probe
-    /// ERROR is surfaced through `reason` (never silently collapsed into a bare
+    /// ERROR is reported through `reason` (never silently collapsed into a bare
     /// "absent"), so a skipped test records why the tool was unusable.
     fn test_tool_probe(tool: &str) -> (bool, String) {
         match anodizer_core::tool_detect::runs(tool) {

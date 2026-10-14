@@ -8,7 +8,7 @@
 //! `Worktree::add` constructs the worktree (detached HEAD at the supplied
 //! commit). `Drop` is best-effort: it runs `git worktree remove --force`
 //! against the parent repo so the temporary tree is cleaned up even on
-//! panic. Failure to remove is surfaced via `tracing::warn!` with the
+//! panic. Failure to remove is reported via `tracing::warn!` with the
 //! captured stderr — `Drop` never panics, but silent swallowing
 //! left operators with no signal when the cleanup raced an I/O error.
 //! Operators can still run `git worktree prune` to reap the stale
@@ -87,7 +87,7 @@ impl Drop for Worktree {
     fn drop(&mut self) {
         // Best-effort: never panic in Drop. If `git worktree remove`
         // fails (e.g. the worktree was already removed manually, or the
-        // path was deleted externally), surface the failure via
+        // path was deleted externally), report the failure via
         // `tracing::warn!` with the captured stderr so the operator can
         // run `git worktree prune` in the parent repo to reap the
         // stale administrative entry; without the warning a leaked
@@ -294,7 +294,7 @@ mod tests {
     fn worktree_drop_does_not_panic_when_path_already_removed() {
         // Simulate an external actor (operator, racing CI cleanup)
         // removing the worktree directory underneath. Drop must
-        // not panic; the failure is surfaced via tracing::warn! which
+        // not panic; the failure is reported via tracing::warn! which
         // the test harness does not assert on directly, so the only
         // assertion is the absence of a panic.
         let repo = init_repo();

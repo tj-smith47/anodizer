@@ -3,9 +3,7 @@ use anyhow::{Context, Result};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
-// ---------------------------------------------------------------------------
 // Data types for reading Cargo.toml files
-// ---------------------------------------------------------------------------
 
 #[derive(Debug, serde::Deserialize, Default)]
 struct CargoToml {
@@ -29,9 +27,7 @@ struct CargoPackage {
 #[derive(Debug, serde::Deserialize)]
 struct CargoBin {}
 
-// ---------------------------------------------------------------------------
 // CrateInfo — intermediate representation
-// ---------------------------------------------------------------------------
 
 #[derive(Debug)]
 struct CrateInfo {
@@ -41,9 +37,7 @@ struct CrateInfo {
     depends_on: Vec<String>, // workspace member deps
 }
 
-// ---------------------------------------------------------------------------
 // Main run() implementation
-// ---------------------------------------------------------------------------
 
 /// Run `anodizer init`: scaffold an `.anodizer.yaml` from what the repository
 /// already declares.
@@ -247,9 +241,7 @@ fn expand_glob(root: &str, pattern: &str) -> Vec<String> {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Topological sort (Kahn's algorithm)
-// ---------------------------------------------------------------------------
 
 fn topological_sort(crates: &[CrateInfo]) -> Vec<&CrateInfo> {
     let items: Vec<(String, Vec<String>)> = crates
@@ -267,9 +259,7 @@ fn topological_sort(crates: &[CrateInfo]) -> Vec<&CrateInfo> {
         .collect()
 }
 
-// ---------------------------------------------------------------------------
 // YAML rendering
-// ---------------------------------------------------------------------------
 
 const COMMON_TARGETS: &[&str] = &[
     "x86_64-unknown-linux-gnu",
@@ -342,9 +332,7 @@ fn non_empty_deps(deps: &[String]) -> Option<&[String]> {
     if deps.is_empty() { None } else { Some(deps) }
 }
 
-// ---------------------------------------------------------------------------
 // `init --version-files` — enrollment discovery + write-back
-// ---------------------------------------------------------------------------
 
 /// Repo-relative directory prefixes whose contents anodizer already version-syncs
 /// or treats as build output, so enrolling them under `version_files` would
@@ -823,9 +811,7 @@ fn validate_enrolled_yaml(config_path: &Path, new_text: &str, added: &[String]) 
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
 // Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
@@ -1056,9 +1042,7 @@ path = "src/main.rs"
         assert!(yaml.contains("binary: beta"));
     }
 
-    // -----------------------------------------------------------------------
     // version_files enrollment write-back
-    // -----------------------------------------------------------------------
 
     /// The config text under test is not on disk; the path only names the
     /// format and anchors a relative `includes:`.
@@ -1241,9 +1225,7 @@ path = "src/main.rs"
         assert!(validate_enrolled_yaml(cfg_file(), bad, &[]).is_err());
     }
 
-    // -----------------------------------------------------------------------
     // .gitignore dist/ entry detection
-    // -----------------------------------------------------------------------
 
     #[test]
     fn gitignore_append_ignores_a_commented_mention_of_dist() {

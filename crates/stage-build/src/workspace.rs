@@ -10,9 +10,7 @@ use anodizer_core::context::Context;
 
 use crate::validation::strip_glibc_suffix;
 
-// ---------------------------------------------------------------------------
 // check_workspace_package — validate --package flag for workspace crates
-// ---------------------------------------------------------------------------
 
 /// If the Cargo.toml at `crate_path` has a `[workspace]` section with `members`,
 /// verify that the build flags contain `--package` or `-p`. Returns an error
@@ -50,9 +48,7 @@ pub(crate) fn check_workspace_package(crate_path: &str, flags: &[String]) -> Res
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
 // find_workspace_root — walk up from crate path to find workspace Cargo.toml
-// ---------------------------------------------------------------------------
 
 /// Walk up from `crate_path` looking for a `Cargo.toml` that contains a
 /// `[workspace]` section.  Returns the directory containing the workspace
@@ -76,9 +72,7 @@ pub(crate) fn find_workspace_root(crate_path: &str) -> Option<PathBuf> {
     None
 }
 
-// ---------------------------------------------------------------------------
 // resolve_binary_path — check both relative target/ and workspace root target/
-// ---------------------------------------------------------------------------
 
 /// Resolve the actual binary path after a build.
 ///
@@ -100,9 +94,7 @@ pub(crate) fn resolve_binary_path(expected: &Path, crate_path: &str) -> PathBuf 
     expected.to_path_buf()
 }
 
-// ---------------------------------------------------------------------------
 // cargo_target_dir_with_env — respect CARGO_TARGET_DIR / CARGO_BUILD_TARGET_DIR
-// ---------------------------------------------------------------------------
 
 /// Return the Cargo target directory, honoring per-build env config
 /// (`build.env`) first and then falling back to `CARGO_TARGET_DIR` /
@@ -144,9 +136,7 @@ pub(crate) fn cargo_target_dir_with_env<E: EnvSource + ?Sized>(
     PathBuf::from("target")
 }
 
-// ---------------------------------------------------------------------------
 // copy_from resolution helper
-// ---------------------------------------------------------------------------
 
 /// Resolve a copy_from job: look up the source binary from registered artifacts
 /// (filtering by target **and** crate_name to avoid cross-crate collisions),
@@ -178,9 +168,7 @@ pub(crate) fn resolve_copy_from(
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
 // ensure_targets_installed — run `rustup target add` for cross-compilation targets
-// ---------------------------------------------------------------------------
 
 /// One target that must exist before a build job can compile, together with
 /// the directory and environment that job compiles in.

@@ -6,9 +6,7 @@ use anyhow::Result;
 
 use super::*;
 
-// ---------------------------------------------------------------------------
 // crates.io publish-simulation preflight
-// ---------------------------------------------------------------------------
 
 /// Outcome of simulating the publish set's `cargo publish --dry-run`.
 #[derive(Debug, PartialEq, Eq)]
@@ -92,7 +90,7 @@ pub(super) fn run_cargo_publish_simulation(
 /// [`run_cargo_publish_simulation`] with the index query and dry-run runner
 /// injected so tests can drive both checks without a network round-trip or a
 /// real `cargo` (beyond a PATH-injected stub). Does NOT re-apply the
-/// snapshot/nightly/dry-run or cargo-publisher-surface gates — the production
+/// snapshot/nightly/dry-run or cargo-publisher-selection gates — the production
 /// wrapper owns those so tests can exercise the logic directly.
 pub(super) fn run_cargo_publish_simulation_with(
     ctx: &mut Context,
@@ -109,7 +107,7 @@ pub(super) fn run_cargo_publish_simulation_with(
         Ok(p) => p,
         Err(e) => {
             // A render failure in `skip:`/`if:` would also break the real
-            // publish; surface it as a blocker rather than silently skipping.
+            // publish; report it as a blocker rather than silently skipping.
             report
                 .blockers
                 .push(format!("cargo publish-simulation: {e:#}"));
@@ -134,7 +132,7 @@ pub(super) fn run_cargo_publish_simulation_with(
         })
         .collect();
 
-    // ---- (1) partial-publish probe (cheap, HTTP-only) --------------------
+    // (1) partial-publish probe (cheap, HTTP-only)
     if check_partial_publish(&to_publish, index_query, log, report) {
         // Only an Unknown transport error stops here — the registry state
         // couldn't be determined, so a resume can't be reasoned about safely.
@@ -143,7 +141,7 @@ pub(super) fn run_cargo_publish_simulation_with(
         return;
     }
 
-    // ---- (1b) dep-completeness guard -------------------------------------
+    // (1b) dep-completeness guard
     // Refuse a release where a publishing crate depends on a workspace crate
     // that is neither in the publish set nor on crates.io. `cargo publish
     // --dry-run` (step 2) does NOT catch this — dry-run resolves the dep via
@@ -155,7 +153,7 @@ pub(super) fn run_cargo_publish_simulation_with(
         return;
     }
 
-    // ---- (2) cargo publish --dry-run, dependency order -------------------
+    // (2) cargo publish --dry-run, dependency order
     simulate_dry_run_publishes(&to_publish, index_query, dry_run_runner, log, report);
 }
 
@@ -205,7 +203,7 @@ fn check_publish_set_completeness(
 ///   publish: push a warning and return `false` (proceed). The Clean crates are
 ///   the ones this release publishes; the dep-completeness guard (1b) and the
 ///   dry-run (2) verify the resume actually completes, blocking only on a
-///   genuine content conflict (a stale published dep surfaces as a dry-run
+///   genuine content conflict (a stale published dep shows up as a dry-run
 ///   CompileError). Aborting here would strand every recoverable resume behind
 ///   a spurious version bump.
 /// - any Unknown (transport error) → push a blocker (don't silently pass) and
@@ -540,11 +538,9 @@ pub(super) fn first_nonempty_line(stderr: &str) -> String {
         .to_string()
 }
 
-// ---------------------------------------------------------------------------
 // Rollback-scope + publisher-preflight extension
-// ---------------------------------------------------------------------------
 
-/// Walk the trait-based publisher registry and surface two classes of
+/// Walk the trait-based publisher registry and report two classes of
 /// resilience concerns into the report:
 ///
 /// 1. Rollback scope availability — every publisher whose
@@ -586,7 +582,7 @@ pub(super) fn run_publisher_preflight_extension(
             continue;
         }
 
-        // ---- rollback scope check ------------------------------------
+        // rollback scope check
         if let Some(label) = p.missing_rollback_scope(ctx) {
             let msg = crate::scope::warn_scope_unavailable_msg("preflight", p.name(), label);
             if ctx.options.strict {
@@ -596,7 +592,7 @@ pub(super) fn run_publisher_preflight_extension(
             }
         }
 
-        // ---- publisher self-check ------------------------------------
+        // publisher self-check
         if !live_publisher_preflight {
             continue;
         }

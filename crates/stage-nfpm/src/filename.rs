@@ -84,9 +84,7 @@ pub fn conventional_filename(format: &str, info: &FileNameInfo<'_>) -> Option<St
     }
 }
 
-// ---------------------------------------------------------------------------
 // deb
-// ---------------------------------------------------------------------------
 
 /// Translate anodizer's composite 32-bit ARM token (`armv5`/`armv6`/`armv7`)
 /// into the `armN` spelling nfpm keys its per-packager arch tables on.
@@ -137,9 +135,7 @@ fn deb_filename(info: &FileNameInfo<'_>) -> String {
     format!("{}_{}_{}.deb", info.name, version, arch)
 }
 
-// ---------------------------------------------------------------------------
 // termux.deb
-// ---------------------------------------------------------------------------
 
 /// Termux arch translation, keyed on Go-style arch (`386→i686`, `amd64→x86_64`, `arm64→aarch64`,
 /// `arm5`/`arm6`/`arm7`→`arm`), plus anodizer's `armvN` aliases for the
@@ -172,9 +168,7 @@ fn termux_deb_filename(info: &FileNameInfo<'_>) -> String {
     deb_filename(&termuxed)
 }
 
-// ---------------------------------------------------------------------------
 // rpm
-// ---------------------------------------------------------------------------
 
 /// RPM arch translation, keyed on Go-style arch (matching nfpm
 /// v2.46.3's `archToRPM`).
@@ -219,9 +213,7 @@ fn rpm_filename(info: &FileNameInfo<'_>) -> String {
     format!("{}-{}-{}.{}.rpm", info.name, version, release, arch)
 }
 
-// ---------------------------------------------------------------------------
 // apk
-// ---------------------------------------------------------------------------
 
 /// Alpine arch translation, keyed on Go-style arch (matching nfpm
 /// v2.46.3's `archToAlpine`).
@@ -293,9 +285,7 @@ fn apk_pkgver(info: &FileNameInfo<'_>) -> String {
     version
 }
 
-// ---------------------------------------------------------------------------
 // archlinux
-// ---------------------------------------------------------------------------
 
 /// Arch Linux arch translation, keyed on Go-style arch (matching nfpm
 /// v2.46.3's `archToArchLinux`).
@@ -346,9 +336,7 @@ fn valid_pkg_name(s: &str) -> String {
     filtered.trim_start_matches(['-', '.']).to_string()
 }
 
-// ---------------------------------------------------------------------------
 // ipk
-// ---------------------------------------------------------------------------
 
 /// Translate a generic nfpm architecture (`amd64`, `arm64`, …) into the
 /// control-field nomenclature a given packager stamps into the built package
@@ -418,9 +406,7 @@ fn ipk_filename(info: &FileNameInfo<'_>) -> String {
     format!("{}_{}_{}.ipk", info.name, version, arch)
 }
 
-// ---------------------------------------------------------------------------
 // msix
-// ---------------------------------------------------------------------------
 
 /// MSIX arch translation, keyed on Go-style arch (matching nfpm's
 /// `archToMSIX`).
@@ -473,9 +459,7 @@ fn msix_filename(info: &FileNameInfo<'_>) -> String {
     format!("{}_{}_{}.msix", info.name, msix_version(info.version), arch)
 }
 
-// ---------------------------------------------------------------------------
 // Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
@@ -791,7 +775,7 @@ mod tests {
         assert_eq!(deb_filename(&base("386")), "myapp_1.2.3_i386.deb");
     }
 
-    /// The control-file `Architecture` cross-check surface must agree with the
+    /// The control-file `Architecture` cross-check must agree with the
     /// termux filename nomenclature for termux.deb while deb keeps Debian's.
     #[test]
     fn control_arch_termux_vs_deb() {
@@ -910,7 +894,7 @@ mod tests {
         // An arch-independent apk must be named `..._noarch.apk`, not
         // `..._all.apk`. The `all` token reaches apk via the synthetic
         // `darwin-universal` arch and the `control_arch` / arch-override
-        // surfaces; before nfpm v2.46.3 parity it leaked through as `all`.
+        // values; before nfpm v2.46.3 parity it leaked through as `all`.
         assert_eq!(apk_arch("all"), "noarch");
         assert_eq!(apk_filename(&base("all")), "myapp_1.2.3_noarch.apk");
         assert_eq!(control_arch("apk", "all"), "noarch");
@@ -1041,7 +1025,7 @@ mod tests {
         }
     }
 
-    /// `control_arch` is the surface the post-build cross-check uses to compare
+    /// `control_arch` is the function the post-build cross-check uses to compare
     /// a built package's `Architecture` control field against the resolved arch.
     /// A built `.deb` keeps the generic `amd64`/`arm64` names, while the same
     /// generic arch renders as `x86_64`/`aarch64` in a `.rpm` header — so the

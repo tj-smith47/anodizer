@@ -4,9 +4,7 @@ use serde::Serialize;
 
 use crate::util::OsArtifact;
 
-// ---------------------------------------------------------------------------
 // KrewManifestParams
-// ---------------------------------------------------------------------------
 
 /// Parameters for generating a Krew plugin manifest YAML.
 pub(crate) struct KrewManifestParams<'a> {
@@ -48,9 +46,7 @@ pub(crate) struct KrewFileEntry {
     pub(crate) to: String,
 }
 
-// ---------------------------------------------------------------------------
 // Serde structs for Krew YAML manifest
-// ---------------------------------------------------------------------------
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -109,9 +105,7 @@ struct KrewMatchLabels {
     arch: String,
 }
 
-// ---------------------------------------------------------------------------
 // generate_manifest
-// ---------------------------------------------------------------------------
 
 /// Generate a Krew plugin manifest YAML string.
 ///

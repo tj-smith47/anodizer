@@ -34,7 +34,7 @@
 //!   harness modes must pass `--tlog-upload=false` to opt out of
 //!   transparency for byte-stable signatures.
 //!
-//! Any residual drift after these workarounds surfaces as
+//! Any residual drift after these workarounds is reported as
 //! `drift_count > 0` and the test fails with the report content
 //! attached. "Known broken" tolerance is not encoded — it would defeat
 //! the regression detector.

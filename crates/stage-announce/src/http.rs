@@ -56,7 +56,7 @@ pub(crate) fn blocking_client_accept_invalid_certs(
 ///
 /// Routed through the shared `retry_http` helper so all chat-webhook
 /// announcers (`discord`, `slack`, `mattermost`, `teams`) share one
-/// retry-classification surface.
+/// retry classification.
 pub(crate) fn post_json(
     url: &str,
     payload: &str,

@@ -98,7 +98,7 @@ fn local_package_reproduces_published_crates_io_cksum() {
 
     // Sanity: the index's recorded cksum equals the hand-proved anchor.
     // A drift here means crates.io changed an immutable version (impossible) or
-    // the URL path math is wrong — surface it before blaming the packaging.
+    // the URL path math is wrong — report it before blaming the packaging.
     let index_cksum = fetch_index_cksum(PROOF_VERSION);
     assert_eq!(
         index_cksum, PROOF_CKSUM,
@@ -176,10 +176,8 @@ fn local_package_reproduces_published_crates_io_cksum() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // Live binstall proof: the guard must package the SAME on-disk tree state
 // `cargo publish` uploads, INCLUDING anodizer's own pre-publish binstall write.
-// ---------------------------------------------------------------------------
 
 /// The binstall proof anchor: the `anodizer` *cli* crate at tag `v0.11.2`,
 /// which carries `binstall.enabled: true` in `.anodizer.yaml`. Its published

@@ -170,7 +170,7 @@ pub fn poll(
                 if ever_found {
                     // Regression: a matching PR was visible earlier in
                     // this run and has now disappeared from search.
-                    // Surfaces as Error so the operator sees the
+                    // Shows up as Error so the operator sees the
                     // takedown / withdrawal.
                     let reason = format!(
                         "winget PR for '{} {}' was previously located but has now disappeared \
@@ -204,7 +204,7 @@ pub fn poll(
             // running at budget exhaustion — moderator review and
             // pipeline retries can stretch beyond a typical 30min
             // budget. Log verbose only; the Timeout return variant
-            // still surfaces to the release summary for follow-up.
+            // still goes to the release summary for follow-up.
             log.verbose(&format!(
                 "winget PR poll budget for {} {} elapsed after {:?} (last state: {})",
                 package_identifier, version, total_budget, last_state

@@ -203,9 +203,7 @@ pub(crate) fn submit_winget_manifests(
     Ok(pr_outcome.url)
 }
 
-// ---------------------------------------------------------------------------
 // WingetPublisher — Publisher trait wrapper (Submitter group)
-// ---------------------------------------------------------------------------
 //
 // WinGet is structurally a Submitter publisher: each successful per-crate
 // publish opens a PR against `microsoft/winget-pkgs` (or the upstream the
@@ -692,7 +690,7 @@ impl anodizer_core::Publisher for WingetPublisher {
             return Ok(());
         }
         // WinGet PRs go through automated validation; auto-close
-        // mid-validation is unreliable. Surface a warn per recorded
+        // mid-validation is unreliable. Report a warn per recorded
         // target with the fork-branch query so the operator can find
         // and close the PR manually.
         for t in &targets {

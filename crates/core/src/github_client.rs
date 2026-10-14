@@ -31,9 +31,7 @@ use std::path::PathBuf;
 #[cfg(feature = "test-helpers")]
 use std::sync::Mutex;
 
-// ---------------------------------------------------------------------------
 // Data types
-// ---------------------------------------------------------------------------
 
 /// Minimal release metadata returned by GitHub API operations.
 #[derive(Debug, Clone)]
@@ -121,9 +119,7 @@ pub struct DeleteTagParams {
     pub tag: String,
 }
 
-// ---------------------------------------------------------------------------
 // Trait
-// ---------------------------------------------------------------------------
 
 /// Abstraction over GitHub API operations used by the release stage.
 ///
@@ -163,9 +159,7 @@ pub trait GitHubClient {
     fn delete_tag(&self, params: &DeleteTagParams) -> anyhow::Result<()>;
 }
 
-// ---------------------------------------------------------------------------
 // MockGitHubClient (test-only)
-// ---------------------------------------------------------------------------
 
 /// A mock GitHub client that records calls and returns configurable responses.
 ///
@@ -214,7 +208,7 @@ impl MockGitHubClient {
         }
     }
 
-    // -- Response setters --
+    // Response setters
 
     /// Configure the response for `create_release` calls.
     pub fn set_create_release_response(&self, response: Result<ReleaseInfo, String>) {
@@ -268,7 +262,7 @@ impl MockGitHubClient {
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(response);
     }
 
-    // -- Call counters / accessors --
+    // Call counters / accessors
 
     /// Number of times `create_release` was called.
     pub fn create_release_call_count(&self) -> usize {
@@ -500,9 +494,7 @@ impl GitHubClient for MockGitHubClient {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(all(test, feature = "test-helpers"))]
 mod tests {

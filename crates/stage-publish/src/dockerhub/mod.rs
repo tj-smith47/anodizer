@@ -259,7 +259,7 @@ fn publish_to_dockerhub_into(
                 .is_none()
         {
             log.warn(&format!(
-                "dockerhub secret env '{}' is not set; live mode will fail authentication",
+                "dockerhub secret env '{}' is unset or blank; live mode will fail authentication",
                 secret_name
             ));
         }

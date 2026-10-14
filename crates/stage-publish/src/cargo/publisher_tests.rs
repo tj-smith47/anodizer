@@ -1,8 +1,6 @@
-//! Tests for the [`CargoPublisher`] adapter surface.
+//! Tests for the [`CargoPublisher`] adapter.
 
-// ---------------------------------------------------------------------------
 // Tests
-// ---------------------------------------------------------------------------
 
 use super::*;
 use anodizer_core::test_helpers::TestContextBuilder;

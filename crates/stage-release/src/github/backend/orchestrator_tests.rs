@@ -8,7 +8,7 @@
 //!
 //! ## Fixture wiring
 //!
-//! Every test points two URL surfaces at the loopback responder:
+//! Every test points two base URLs at the loopback responder:
 //!
 //! - `ctx.config.github_urls.api` / `.upload` — the octocrab
 //!   builder honors these, so every API call (list / create /
@@ -308,9 +308,7 @@ fn run_backend_capturing(
     (result, capture)
 }
 
-// ---------------------------------------------------------------------
 // 1. Happy path — create new release, upload one asset.
-// ---------------------------------------------------------------------
 #[test]
 fn create_release_and_upload_one_asset_succeeds() {
     let tmp = TempDir::new().expect("tempdir");
@@ -404,10 +402,8 @@ fn create_release_and_upload_one_asset_succeeds() {
     );
 }
 
-// ---------------------------------------------------------------------
 // 2. replace_existing_draft = true — find existing draft, delete it,
 // then create a new release.
-// ---------------------------------------------------------------------
 #[test]
 fn replace_existing_draft_deletes_then_creates() {
     let tmp = TempDir::new().expect("tempdir");
@@ -492,11 +488,9 @@ fn replace_existing_draft_deletes_then_creates() {
     );
 }
 
-// ---------------------------------------------------------------------
 // nightly publish_repo: the release create, asset upload, AND the
 // composed html_url all target the OVERRIDE repo (nushell/nightly),
 // not the source repo (o/r) resolved from release.github.
-// ---------------------------------------------------------------------
 #[test]
 fn publish_repo_override_redirects_create_and_upload() {
     let tmp = TempDir::new().expect("tempdir");
@@ -584,11 +578,9 @@ fn publish_repo_override_redirects_create_and_upload() {
     );
 }
 
-// ---------------------------------------------------------------------
 // nightly retention keep_last=2: list nightly releases by name, keep the
 // newest 1 existing (the new one becomes the 2nd), DELETE the older
 // release AND its distinct git tag.
-// ---------------------------------------------------------------------
 #[test]
 fn retention_keep_last_prunes_old_release_and_tag() {
     let tmp = TempDir::new().expect("tempdir");
@@ -723,13 +715,11 @@ fn retention_keep_last_prunes_old_release_and_tag() {
     );
 }
 
-// ---------------------------------------------------------------------
 // replace_existing_draft = true with the NEW release published
 // (`draft: false`): the leftover draft must still be deleted. This pins
 // the self-heal path: publishes while replacing a stale
 // draft from a prior failed run; gating the delete on the new release's
 // draft flag would skip cleanup and the stale id later 404s on upload.
-// ---------------------------------------------------------------------
 #[test]
 fn replace_existing_draft_deletes_when_publishing() {
     let tmp = TempDir::new().expect("tempdir");
@@ -811,9 +801,7 @@ fn replace_existing_draft_deletes_when_publishing() {
     );
 }
 
-// ---------------------------------------------------------------------
 // 3. use_existing_draft = true — find existing draft, PATCH it (no POST).
-// ---------------------------------------------------------------------
 #[test]
 fn use_existing_draft_patches_instead_of_posting() {
     let tmp = TempDir::new().expect("tempdir");
@@ -890,11 +878,9 @@ fn use_existing_draft_patches_instead_of_posting() {
     );
 }
 
-// ---------------------------------------------------------------------
 // 3a. use_existing_draft matches the draft by its rendered TITLE, not by
 //     the tag: a draft named after the tag is passed over, the one named
 //     as the release will be named is PATCHed.
-// ---------------------------------------------------------------------
 #[test]
 fn use_existing_draft_matches_the_rendered_title_not_the_tag() {
     let tmp = TempDir::new().expect("tempdir");
@@ -974,12 +960,10 @@ fn use_existing_draft_matches_the_rendered_title_not_the_tag() {
     );
 }
 
-// ---------------------------------------------------------------------
 // 3b. keep-existing re-touch of an already-live release — the publish
 //     pipeline pass that runs after the release stage already created and
 //     published the release. The PATCH stays idempotent, but the
 //     create/publish log lines collapse to a single `release already live`.
-// ---------------------------------------------------------------------
 #[test]
 fn keep_existing_retouch_of_live_release_logs_already_live_only() {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
@@ -1283,9 +1267,7 @@ fn publish_only_retouch_live_with_replace_reuploads() {
     );
 }
 
-// ---------------------------------------------------------------------
 // 4. No artifacts — release is created but upload loop runs zero times.
-// ---------------------------------------------------------------------
 #[test]
 fn empty_artifacts_creates_release_but_uploads_nothing() {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
@@ -1331,10 +1313,8 @@ fn empty_artifacts_creates_release_but_uploads_nothing() {
     );
 }
 
-// ---------------------------------------------------------------------
 // 5. 422 already_exists + matching remote size → SkipIdempotent (no
 // delete, no error, success).
-// ---------------------------------------------------------------------
 #[test]
 fn upload_422_with_matching_remote_size_is_idempotent_skip() {
     let tmp = TempDir::new().expect("tempdir");
@@ -1402,10 +1382,8 @@ fn upload_422_with_matching_remote_size_is_idempotent_skip() {
     );
 }
 
-// ---------------------------------------------------------------------
 // 6. 422 already_exists + size mismatch + replace_existing_artifacts=false
-// → BailReplaceForbidden surfaces an error.
-// ---------------------------------------------------------------------
+// → BailReplaceForbidden returns an error.
 #[test]
 fn upload_422_size_mismatch_without_replace_forbidden_bails() {
     let tmp = TempDir::new().expect("tempdir");
@@ -1474,10 +1452,8 @@ fn upload_422_size_mismatch_without_replace_forbidden_bails() {
     );
 }
 
-// ---------------------------------------------------------------------
 // 7. 422 already_exists + size mismatch + replace_existing_artifacts=true
 // → DeleteAndRetry succeeds on the second attempt.
-// ---------------------------------------------------------------------
 #[test]
 fn upload_422_size_mismatch_with_replace_allowed_deletes_and_retries() {
     let tmp = TempDir::new().expect("tempdir");
@@ -1582,7 +1558,6 @@ fn upload_422_size_mismatch_with_replace_allowed_deletes_and_retries() {
     );
 }
 
-// ---------------------------------------------------------------------
 // 7b. A DRAFT release found by tag with leftover assets auto-resumes:
 // replace_existing_artifacts AND resume_release both false, yet the stale
 // asset is overwritten (DELETE + re-upload) and the backend succeeds — no
@@ -1590,7 +1565,6 @@ fn upload_422_size_mismatch_with_replace_allowed_deletes_and_retries() {
 // downloadable (draft-then-publish invariant), so it is debris from an
 // incomplete prior attempt and a CI retry must self-heal without an
 // operator passing --resume-release / --replace-existing.
-// ---------------------------------------------------------------------
 #[test]
 fn draft_found_by_tag_auto_resumes_overwriting_leftover_assets() {
     let tmp = TempDir::new().expect("tempdir");
@@ -1721,9 +1695,7 @@ fn draft_found_by_tag_auto_resumes_overwriting_leftover_assets() {
     );
 }
 
-// ---------------------------------------------------------------------
-// 8. Missing token surfaces a clear error without any HTTP traffic.
-// ---------------------------------------------------------------------
+// 8. Missing token returns a clear error without any HTTP traffic.
 #[test]
 fn missing_token_errs_before_any_http_call() {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
@@ -1762,9 +1734,7 @@ fn missing_token_errs_before_any_http_call() {
     );
 }
 
-// ---------------------------------------------------------------------
-// 9. Missing artifact file surfaces a clear error after release create.
-// ---------------------------------------------------------------------
+// 9. Missing artifact file returns a clear error after release create.
 #[test]
 fn missing_artifact_file_errs_with_path_in_message() {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
@@ -1804,9 +1774,7 @@ fn missing_artifact_file_errs_with_path_in_message() {
     );
 }
 
-// ---------------------------------------------------------------------
 // 10. skip_upload = true creates the release but skips every upload POST.
-// ---------------------------------------------------------------------
 #[test]
 fn skip_upload_creates_release_but_skips_uploads() {
     let tmp = TempDir::new().expect("tempdir");
@@ -1884,12 +1852,10 @@ fn build_ctx_attempts_one(addr: SocketAddr) -> Context {
     ctx
 }
 
-// ---------------------------------------------------------------------
 // Post-create read-after-write lag: the readiness guard must absorb a
 // transient 404 on `GET /releases/{id}` before uploads start, even when
 // the resolved policy caps attempts at 1 (stateful `--publish-only`).
 // Without the guard the first `upload_asset` GET 404s and the run dies.
-// ---------------------------------------------------------------------
 #[test]
 fn readiness_guard_absorbs_transient_404_before_upload() {
     let tmp = TempDir::new().expect("tempdir");
@@ -1960,12 +1926,10 @@ fn readiness_guard_absorbs_transient_404_before_upload() {
     );
 }
 
-// ---------------------------------------------------------------------
 // Backstop: even past the readiness guard, a parallel replica can lag
 // independently and 404 the `GET` inside `upload_asset(...).send()`. With
 // the stateful policy (attempts=1) that single 404 used to be fatal; the
 // per-upload bounded-404 floor must retry it instead.
-// ---------------------------------------------------------------------
 #[test]
 fn per_upload_404_retries_under_stateful_attempts_one() {
     let tmp = TempDir::new().expect("tempdir");
@@ -2043,9 +2007,7 @@ fn per_upload_404_retries_under_stateful_attempts_one() {
     );
 }
 
-// ---------------------------------------------------------------------
 // Proactive upload pace — the minimum interval between upload STARTS.
-// ---------------------------------------------------------------------
 
 /// Build a [`Context`] like [`build_ctx`] but also seed the
 /// `ANODIZER_GITHUB_UPLOAD_PACE_MS` override so the pace timing tests can
@@ -2163,9 +2125,7 @@ fn upload_pace_spaces_successive_upload_starts() {
 // by comparing two wall-clock runs here — that comparison was load-flaky
 // under concurrent test hosts and false-reds the release gate.
 
-// ---------------------------------------------------------------------
 // An immutable release for the tag: fail fast, upload nothing.
-// ---------------------------------------------------------------------
 #[test]
 fn immutable_release_for_the_tag_fails_before_any_upload() {
     let tmp = TempDir::new().expect("tempdir");

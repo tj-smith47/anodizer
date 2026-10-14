@@ -26,7 +26,7 @@ pub(crate) struct PublishOpts {
     /// publishes).
     pub merge: bool,
     /// Force re-publish even when a prior `dist/run-<id>/report.json` exists.
-    /// Surface per-crate "no `<publisher>` config block" skip lines at default
+    /// Show per-crate "no `<publisher>` config block" skip lines at default
     /// verbosity (`--show-skipped`); otherwise they route to debug.
     pub show_skipped: bool,
     /// `--skip`: unified stage/publisher denylist. Flows to
@@ -158,7 +158,7 @@ crates:
     }
 
     /// `publish --merge` reaches `find_config` first; an absent config must
-    /// surface as the find-config error, identical to the no-merge path.
+    /// are reported as the find-config error, identical to the no-merge path.
     #[test]
     fn merge_missing_config_bails() {
         let tmp = tempfile::tempdir().unwrap();

@@ -466,7 +466,7 @@ fn test_failing_before_hook_stderr_surfaces_once_when_verbose() {
     //
     // The token is produced at runtime (`printf` building the string from
     // fragments) so it never appears in the literal hook command text — only
-    // genuine *stderr surfacing* of the token is counted, isolating the
+    // genuine *stderr appearance* of the token is counted, isolating the
     // double-emit guard from the command-echo lines.
     let tmp = TempDir::new().unwrap();
     create_test_project(tmp.path());
@@ -524,10 +524,10 @@ crates:
         "release with a failing before-hook must exit non-zero"
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
-    // The assembled token "HOOKFAILTOKEN42" surfaces once from the live tee.
+    // The assembled token "HOOKFAILTOKEN42" appears once from the live tee.
     // The bail! embed at the end of the run carries it a second time inside
     // the propagated error chain (defense-in-depth, not the log re-emit the
-    // streaming guard suppresses), so the live-stream surfacing is bounded at
+    // streaming guard suppresses), so the live-stream output is bounded at
     // one and the total stays at the documented two.
     let hits = stderr.matches("HOOKFAILTOKEN42").count();
     assert!(
@@ -713,9 +713,7 @@ crates:
     );
 }
 
-// ============================================================================
 // E2E Test Helpers
-// ============================================================================
 
 /// Detect the host target triple (e.g., "x86_64-unknown-linux-gnu").
 fn detect_host_target() -> String {
@@ -807,9 +805,7 @@ helper-lib = { path = "../helper-lib" }
     .unwrap();
 }
 
-// ============================================================================
 // E2E Config Helpers
-// ============================================================================
 
 /// Create the standard single-crate snapshot config string used by multiple tests.
 fn create_single_crate_snapshot_config(host: &str) -> String {
@@ -870,9 +866,7 @@ crates:
     )
 }
 
-// ============================================================================
 // E2E Tests
-// ============================================================================
 
 /// E2E: `anodizer release --snapshot` produces correct artifacts in dist/.
 ///
@@ -1085,7 +1079,7 @@ fn test_release_prepare_matches_explicit_skip() {
             "release",
             "--snapshot",
             "--dry-run",
-            // Surface the consolidated pipeline skip row at default
+            // Show the consolidated pipeline skip row at default
             // verbosity so `extract_skipped_stages` can read it; both
             // invocations share these base args, so the comparison stays
             // symmetric.
@@ -1505,7 +1499,7 @@ fn test_e2e_workspace_all_force_detects_crates() {
             "--dry-run",
             "--all",
             "--force",
-            // Surface the per-crate skip detail at default verbosity so the
+            // Show the per-crate skip detail at default verbosity so the
             // crate-name assertions below can read it.
             "--show-skipped",
             "--skip=release,publish,docker,sign,announce,changelog,nfpm",
@@ -1811,7 +1805,7 @@ crates:
             "--snapshot",
             "--all",
             "--single-target",
-            // Surface the per-crate skip detail at default verbosity so the
+            // Show the per-crate skip detail at default verbosity so the
             // crate-name assertions below can read it.
             "--show-skipped",
             "--skip=release,publish,docker,sign,announce,changelog,nfpm",
@@ -1969,7 +1963,7 @@ crates:
             "--snapshot",
             "--all",
             "--single-target",
-            // Surface the per-crate build-skip detail (these libs have no
+            // Show the per-crate build-skip detail (these libs have no
             // binary target) at default verbosity so the `crate '<name>'`
             // selection assertions below can read it.
             "--show-skipped",
@@ -2007,9 +2001,7 @@ crates:
     }
 }
 
-// ============================================================================
 // Error Path Tests
-// ============================================================================
 
 /// Error path: `anodizer check` with malformed YAML should fail with a clear error.
 #[test]
@@ -2127,9 +2119,7 @@ crates:
     );
 }
 
-// ============================================================================
 // Publisher skip-name acceptance / rejection tests
-// ============================================================================
 
 /// `--skip=brew` is REJECTED — the short alias is gone; the canonical
 /// publisher skip token is the GoReleaser-aligned `homebrew`.
@@ -2957,9 +2947,7 @@ crates:
     );
 }
 
-// ============================================================================
 // Error Path Tests
-// ============================================================================
 
 /// Check command should reject a config with an empty crate name.
 #[test]
@@ -3255,9 +3243,7 @@ crates:
     );
 }
 
-// ============================================================================
 // E2E Pipeline Tests
-// ============================================================================
 
 /// E2E #1: Multi-format archive — config with tar.gz, tar.xz, zip, and binary
 /// format produces all four artifact types correctly.
@@ -3783,7 +3769,7 @@ fn run_changelog_release_notes(dir: &std::path::Path, range: &str) -> String {
 /// `fetch_git_commits_in_paths`, whose `is_bad_revision` check bails naming the full
 /// `<from>..<to>` range. (The release-notes path validates only the range START
 /// up-front via `rev_verify_commit_in`; keep-a-changelog is used here because it
-/// surfaces the engine-level bad-ref error for either endpoint.)
+/// reports the engine-level bad-ref error for either endpoint.)
 #[test]
 fn changelog_nonexistent_range_ref_errors() {
     let tmp = TempDir::new().unwrap();
@@ -3975,7 +3961,7 @@ fn test_e2e_workspace_dependency_ordering() {
             "--dry-run",
             "--all",
             "--force",
-            // Surface the per-crate skip detail at default verbosity so the
+            // Show the per-crate skip detail at default verbosity so the
             // crate-ordering assertions below can read it.
             "--show-skipped",
             "--skip=release,publish,docker,sign,announce,changelog,nfpm",
@@ -4036,7 +4022,7 @@ fn test_e2e_skip_archive_and_checksum() {
         .args([
             "release",
             "--snapshot",
-            // Surface the consolidated pipeline skip row at default verbosity
+            // Show the consolidated pipeline skip row at default verbosity
             // so the archive/checksum skip assertions below can read it.
             "--show-skipped",
             "--skip=archive,checksum,release,publish,docker,sign,announce,changelog,nfpm",
@@ -4465,7 +4451,7 @@ crates:
             "release",
             "--dry-run",
             "--snapshot",
-            // Surface the changelog skip detail at default verbosity so the
+            // Show the changelog skip detail at default verbosity so the
             // changelog-stage assertion below can read it.
             "--show-skipped",
             "--skip=release,publish,docker,announce,nfpm",
@@ -5687,11 +5673,11 @@ crates:
     );
 }
 
-// ---- Release-resilience CLI flag runtime behaviour ----
+// Release-resilience CLI flag runtime behaviour
 
 /// `promote --from-run=<id>` joins into a filesystem path, so its clap
 /// `value_parser` must reject
-/// path-traversal at the binary surface too. Guards against a regression
+/// path-traversal at the binary too. Guards against a regression
 /// where the promote arg lacked the `parse_run_id` guard the release arg
 /// already carried.
 #[test]
@@ -5729,7 +5715,7 @@ crates:
         "promote --from-run=../../etc/passwd must exit non-zero"
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
-    // The clap value_parser must reject the traversal at the ARG surface —
+    // The clap value_parser must reject the traversal at the ARG level —
     // its rejection names the run-id character rule. Without the guard the
     // run merely fails later with "no prior report found", so assert on the
     // parser-specific wording to prove the guard, not just a non-zero exit.
@@ -5777,7 +5763,7 @@ crates:
 }
 
 /// E2E regression: a required-publisher failure in real-release mode
-/// (not snapshot, not dry-run) must surface as a non-zero exit. Two
+/// (not snapshot, not dry-run) must show up as a non-zero exit. Two
 /// gates defend this, in layers:
 ///
 /// 1. The publish stage itself errors (`bail_on_required_failures` in
@@ -6103,7 +6089,7 @@ crates:
 
 /// E2E: `anodizer release --skip=announce --summary-json=<path>` writes
 /// the per-publisher summary even when the announce stage is operator-
-/// skipped. Binary-surface coverage for B6 finding I1; the unit-level
+/// skipped. Binary-level coverage for B6 finding I1; the unit-level
 /// equivalent lives at `pipeline/builders.rs::tests::pipeline_emits_summary_when_announce_is_skipped_via_skip_flag`.
 ///
 /// Snapshot + dry-run mode keep the test self-contained (no network,
@@ -6190,9 +6176,7 @@ fn test_release_allow_rerun_flag_is_rejected_as_unknown() {
     );
 }
 
-// ============================================================================
 // --workspace scoping: the overlay must scope the crate universe
-// ============================================================================
 
 /// Two-workspace fixture: each workspace holds one tiny binary crate, so a
 /// scoped run's stage output names exactly one of them.
@@ -6411,9 +6395,7 @@ workspaces:
     }
 }
 
-// ---------------------------------------------------------------------------
 // build --crate: unknown-name validation + workspace inference
-// ---------------------------------------------------------------------------
 
 /// One-member `workspaces:` fixture with a buildable bin crate and a
 /// workspace-level `env:` sentinel only the overlay can inject.

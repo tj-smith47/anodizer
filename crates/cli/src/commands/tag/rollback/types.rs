@@ -102,7 +102,7 @@ pub struct RollbackOpts {
     pub mode: Mode,
     /// Branch to push the revert commit to. `None` triggers
     /// auto-resolution via `git::get_current_branch_in`; a hard
-    /// failure surfaces when HEAD is detached and no local branch
+    /// failure is reported when HEAD is detached and no local branch
     /// points at it (the operator must pass `--branch` explicitly).
     pub branch: Option<String>,
     pub verbose: bool,

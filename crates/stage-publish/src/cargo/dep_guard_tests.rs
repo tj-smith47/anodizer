@@ -1,8 +1,6 @@
 //! Workspace dependency-guard tests.
 
-// ---------------------------------------------------------------------------
 // dep-completeness guard tests
-// ---------------------------------------------------------------------------
 
 use super::*;
 use anodizer_core::log::{StageLogger, Verbosity};
@@ -400,9 +398,7 @@ fn guard_resolves_workspace_inherited_renamed_dep() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // Trusted-Publishing new-crate guard tests
-// ---------------------------------------------------------------------------
 
 fn order(names: &[&str]) -> Vec<String> {
     names.iter().map(|s| s.to_string()).collect()

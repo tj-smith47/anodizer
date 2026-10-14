@@ -26,9 +26,7 @@ use common::{bootstrap_minimal_cargo_repo, run_git, tool_on_path};
 
 const FIXTURE_CRATE_NAME: &str = "anodizer-publish-only-fixture";
 
-// ---------------------------------------------------------------------------
 // Fixture helpers
-// ---------------------------------------------------------------------------
 
 /// Synthesize a `dist/` whose contents look like what
 /// `anodizer check determinism --preserve-dist=<dist>` would have
@@ -236,9 +234,7 @@ fn tag_head(repo: &Path, version: &str) -> String {
     tag
 }
 
-// ---------------------------------------------------------------------------
 // Test 3: --publish-only dry-run consumes context.json
-// ---------------------------------------------------------------------------
 
 /// Spec Test 3: `--publish-only --dry-run` loads context.json +
 /// artifacts.json, starts the publish pipeline (SignStage / ReleaseStage
@@ -342,7 +338,7 @@ fn publish_only_dry_run_consumes_context_json_and_runs_publish_pipeline() {
     // Tag presence: release stage's dry-run path mentions the
     // resolved Git.Tag (e.g. "would create GitHub Release ... tag=v0.1.0").
     // A hard assertion pins that publish-only resolves the tag and
-    // surfaces it in the dry-run summary — silent absence would mask
+    // reports it in the dry-run summary — silent absence would mask
     // a regression where the tag resolver short-circuits before
     // ReleaseStage.
     assert!(
@@ -352,9 +348,7 @@ fn publish_only_dry_run_consumes_context_json_and_runs_publish_pipeline() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // Test 3a-bis: publish-only must NOT re-render the preserved config.yaml
-// ---------------------------------------------------------------------------
 
 /// Regression: `--publish-only` must leave the preserved
 /// `dist/config.yaml` byte-identical. The release setup block calls
@@ -431,12 +425,10 @@ fn publish_only_does_not_overwrite_preserved_config_yaml() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // Test 3b: missing context.json gives a clear error
-// ---------------------------------------------------------------------------
 
 /// Negative test: `--publish-only` against a `dist/` that lacks
-/// `context.json` must surface a clear error pointing at the
+/// `context.json` must return a clear error pointing at the
 /// `--preserve-dist` flag (so the operator knows where to look).
 #[test]
 fn publish_only_missing_context_json_errors_clearly() {
@@ -477,9 +469,7 @@ fn publish_only_missing_context_json_errors_clearly() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // Test 3c: --publish-only conflicts with --split / --merge at clap level
-// ---------------------------------------------------------------------------
 
 /// Verifies the clap-level mutual exclusion. The flag was added with
 /// `conflicts_with_all = ["split", "merge"]`; passing both must trip
@@ -521,16 +511,14 @@ fn publish_only_conflicts_with_merge_at_clap_level() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // Test 3d: pre-flight credential check fires before mutation
-// ---------------------------------------------------------------------------
 
 /// Without `--dry-run`, `--publish-only` must bail on missing
 /// credentials BEFORE any state mutation (load, strip, sign). The
 /// config-derived environment preflight in `commands/release/mod.rs`
 /// is the sole gate: it collects the github-release token ladder from
 /// the fixture's `release:` block and aborts citing the missing env
-/// var NAMES plus the surfaces that demand them.
+/// var NAMES plus the stages that demand them.
 ///
 /// The assertions pin its exact output — the var list, the needed-by
 /// attribution, and the abort bail.
@@ -725,9 +713,7 @@ fn release_skip_preflight_skips_the_whole_engine() {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Test 3e: commit mismatch is a hard error
-// ---------------------------------------------------------------------------
 
 /// Safety property: shipping signatures over bytes from a different
 /// commit must be blocked. The Phase-2 loader asserts
@@ -771,9 +757,7 @@ fn publish_only_rejects_commit_mismatch() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // Test 4: re-sign with production keys
-// ---------------------------------------------------------------------------
 
 /// Spec Test 4: `--publish-only` re-signs the preserved archives with
 /// production keys and a verifier accepts the resulting signature.
@@ -983,15 +967,13 @@ Expire-Date: 0
         .ok();
 }
 
-// ---------------------------------------------------------------------------
-// Shard-merge union: publish-only must surface BOTH shards' artifacts
-// ---------------------------------------------------------------------------
+// Shard-merge union: publish-only must include BOTH shards' artifacts
 
 /// Pinned sha256 hex of `SHARD_A_PAYLOAD` (22 bytes). Computed
 /// out-of-band — verifying the literal here would only re-derive the
 /// value via the same hash function that the production code uses to
 /// satisfy `hash_verify_preserved_dist`, making the test tautological.
-/// Hand-pinned values force a real mismatch surface if the planted
+/// Hand-pinned values force a real mismatch if the planted
 /// bytes ever drift.
 const SHARD_A_SHA256: &str = "77831ad6a6f50f547137457e01f5013db8ab0850f1e7ac3377cf79531973e2ec";
 const SHARD_B_SHA256: &str = "a67a65f266ffc9cd4acd19945642328a831e1076fe2c30772c881a1f3b6bb974";
@@ -1149,7 +1131,7 @@ fn publish_only_unions_sha256_across_sharded_manifests() {
     // Post-pipeline-rewritten artifacts.json is the essential
     // assertion: it's what the next consumer of `dist/` (a re-run, a
     // downstream `anodizer publish` invocation, or operator inspection)
-    // sees, and a regression that dropped a shard would surface here
+    // sees, and a regression that dropped a shard would show up here
     // as a missing entry.
     // The union is asserted on the dry-run's own output rather than on a
     // rewritten `dist/artifacts.json`: a dry-run leaves dist exactly as it
@@ -1204,9 +1186,7 @@ fn publish_only_unions_sha256_across_sharded_manifests() {
     }
 }
 
-// ---------------------------------------------------------------------------
 // --workspace scoping: a dist holding only SIBLING crates must fail closed
-// ---------------------------------------------------------------------------
 
 /// `release --workspace ws-a --publish-only` against a preserved dist whose
 /// per-crate subdirs all belong to a SIBLING workspace must error before any

@@ -1,8 +1,6 @@
 use super::*;
 
-// ---------------------------------------------------------------------------
 // Per-crate publish visitor
-// ---------------------------------------------------------------------------
 
 /// Identifies which of the three publish-config axes a visited block came from.
 ///

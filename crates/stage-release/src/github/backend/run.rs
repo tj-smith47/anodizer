@@ -201,7 +201,7 @@ pub(crate) fn run_github_backend(
                 // Look up an existing release by tag through the shared retry
                 // helper so a transient 5xx / 429 / transport failure retries
                 // instead of mis-classifying as "no existing release", which
-                // would fall through to the create-release POST and surface
+                // would fall through to the create-release POST and return
                 // GitHub's confusing "tag already exists" 422.
                 //
                 // Error handling: a real 404 means "no release for that tag"
@@ -242,7 +242,7 @@ pub(crate) fn run_github_backend(
         // An immutable release can neither be updated nor have its assets
         // replaced, so every PATCH and every upload this run would attempt is
         // already refused. Fail fast naming the tag instead of uploading the
-        // whole artifact set and surfacing GitHub's error at the end.
+        // whole artifact set and reporting GitHub's error at the end.
         if let Some(ref existing) = existing_by_tag
             && existing.immutable == Some(true)
         {
@@ -523,7 +523,7 @@ pub(crate) fn run_github_backend(
             // Run the publish PATCH through the same `policy` used by every
             // other retriable octocrab call site. GitHub occasionally 502s
             // during un-draft when the release has many assets attached, and
-            // the user-configurable `retry:` block is the surface that
+            // the user-configurable `retry:` block is the setting that
             // controls how aggressively to retry. Defaults (10 attempts, 10s
             // base, 5m cap) are the retry defaults.
             let _published: octocrab::models::repos::Release =

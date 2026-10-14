@@ -2,14 +2,12 @@
 
 // path-stubs: cargo — the EnvGuard swaps below put a hand-built `cargo` on PATH
 
-// ---------------------------------------------------------------------------
 // Partial-publish rollback: a multi-crate publish that succeeds on crate A
 // then fails on crate B must record A (and only A) so rollback yanks the
 // crate that actually went live — even when the local `.crate` files are
 // gone. These tests stub `cargo` on PATH so the publish loop and the
-// rollback yank loop exercise the real spawn surface without a network
+// rollback yank loop exercise the real spawn path without a network
 // round-trip.
-// ---------------------------------------------------------------------------
 
 use super::*;
 use anodizer_core::Publisher;
@@ -736,7 +734,7 @@ fn index_check_error_fails_closed() {
 /// a literal-pinned workspace dep, the loop polls the sparse index for that
 /// dep. The index base is pointed at a local responder for the duration, so
 /// the poll stays on this host; a tiny max_wait then makes the gate's TIMEOUT
-/// error surface through the publish loop's context, proving the wiring fires.
+/// error come through the publish loop's context, proving the wiring fires.
 #[test]
 #[serial(cargo_stub_path, path_env)]
 fn wait_for_workspace_deps_gate_is_wired_into_publish_loop() {
@@ -963,7 +961,7 @@ fn manifest_read_failure_does_not_skip_publish() {
     );
 }
 
-// ----- content-vs-version poison guard --------------------------------
+// content-vs-version poison guard
 //
 // These drive `publish_to_cargo_with_guard`, injecting BOTH the crates.io
 // already-published index check AND the local `.crate` checksum computer,
@@ -1616,7 +1614,7 @@ fn tp_token_existing_crate_publishes_normally() {
 /// The token/ambient-env path (`registry_token = None`) must never consult
 /// the existence probe: without a TP token there is no TP-cannot-create
 /// hazard, and a probing guard there would be pure new false-positive
-/// surface.
+/// risk.
 #[test]
 #[serial(cargo_stub_path, path_env)]
 fn token_path_never_consults_existence_probe() {

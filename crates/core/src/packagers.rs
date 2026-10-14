@@ -18,9 +18,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::BTreeMap;
 
-// ---------------------------------------------------------------------------
 // MakeselfConfig
-// ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
@@ -136,9 +134,7 @@ pub(crate) fn makeselfs_schema(generator: &mut schemars::SchemaGenerator) -> sch
     schema
 }
 
-// ---------------------------------------------------------------------------
 // InstallScriptConfig
-// ---------------------------------------------------------------------------
 
 /// `curl | sh` installer-script configuration.
 ///
@@ -259,9 +255,7 @@ pub(crate) fn install_scripts_schema(
     schema
 }
 
-// ---------------------------------------------------------------------------
 // AppImageConfig
-// ---------------------------------------------------------------------------
 
 /// AppImage packaging configuration.
 ///
@@ -422,9 +416,7 @@ pub(crate) fn appimages_schema(generator: &mut schemars::SchemaGenerator) -> sch
     schema
 }
 
-// ---------------------------------------------------------------------------
 // SrpmConfig
-// ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default, deny_unknown_fields)]

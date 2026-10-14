@@ -2,9 +2,7 @@
 
 use super::*;
 
-// ---------------------------------------------------------------------------
 // publish_command
-// ---------------------------------------------------------------------------
 
 /// Build the argument list for `cargo publish` with the given config flags.
 ///

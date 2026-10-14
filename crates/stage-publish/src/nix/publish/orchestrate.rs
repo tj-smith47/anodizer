@@ -210,7 +210,7 @@ pub(crate) fn render_nix_for_validation(
 /// `util::artifacts::artifact_to_os_artifact`'s empty-sha256 guard (reached via
 /// `find_all_platform_artifacts_with_variant`), the same metadata defect that
 /// would otherwise embed an empty `sha256 = "";` the fixed-output derivation
-/// cannot verify. That `Err` flows through here so the caller surfaces a
+/// cannot verify. That `Err` flows through here so the caller reports a
 /// present-but-broken artifact rather than silently skipping it; only a clean
 /// `Ok(empty)` (true absence) skips.
 pub(crate) fn crate_has_nix_archive(
@@ -291,9 +291,7 @@ pub(super) fn render_nix_derivation_inner(
     })
 }
 
-// ---------------------------------------------------------------------------
 // Skip / repo / metadata helpers
-// ---------------------------------------------------------------------------
 
 /// Carrier for the two repo coordinates after template rendering.
 #[derive(Debug)]

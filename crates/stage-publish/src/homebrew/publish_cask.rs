@@ -108,7 +108,7 @@ pub(super) fn cask_skip_gates_trip(
     }
 
     // Cask-level `if:` wins; if unset, fall back to the parent formula's `if:`
-    // so a per-crate gate on homebrew covers both surfaces in one declaration.
+    // so a per-crate gate on homebrew covers formula and cask in one declaration.
     // An `if: ""` on the cask imposes nothing, so it must not shadow the
     // formula's real gate — `active_if_gate` folds it to absent on both sides.
     use anodizer_core::config::active_if_gate;
@@ -370,7 +370,7 @@ pub fn publish_cask(ctx: &mut Context, crate_name: &str, log: &StageLogger) -> R
     )?;
 
     super::publisher::record_tap_pr_url(ctx, outcome.commit(), pr_outcome.url);
-    // Surface PR-already-exists skips to the dispatch summary table.
+    // Report PR-already-exists skips to the dispatch summary table.
     if let Some(outcome) = pr_outcome.outcome {
         ctx.record_publisher_outcome(outcome);
     }

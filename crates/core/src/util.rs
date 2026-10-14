@@ -834,7 +834,7 @@ mod tests {
     #[test]
     fn test_free_cargo_build_intermediates_non_profile_dir_is_noop() {
         let tmp = tempfile::tempdir().unwrap();
-        // A workspace-root-shaped dir whose basename is `target` and is no profile.
+        // A workspace-root-shaped dir named `target`, which is not a profile dir.
         let not_profile = tmp.path().join("target");
         std::fs::create_dir_all(not_profile.join("deps")).unwrap();
         std::fs::create_dir_all(not_profile.join("build")).unwrap();

@@ -3,7 +3,7 @@
 //! Carved out of `publish_stage.rs` to keep the upload-flow file focused on
 //! the `Stage` impl. The serde shape here is wire-stable: it is the value
 //! carried in `PublishEvidence::extra.snapcraft_targets` and consumed by
-//! `anodizer tag rollback`'s publisher unwind to surface per-target
+//! `anodizer tag rollback`'s publisher unwind to report per-target
 //! channel-management pointers. Byte-shape changes here are breaking for
 //! replay consumers.
 
@@ -246,7 +246,7 @@ mod tests {
 
     #[test]
     fn snapcraft_collect_targets_sees_workspace_only_crate() {
-        // A crate declared only under `workspaces[].crates` must surface
+        // A crate declared only under `workspaces[].crates` must expose
         // its opted-in snap configs: the walk resolves through the crate
         // universe, so a pure-workspace config records the same evidence a
         // top-level `crates:` entry would.
@@ -271,7 +271,7 @@ mod tests {
     #[test]
     fn snapcraft_collect_targets_skips_non_publish_configs() {
         // A snapcrafts entry with `publish: false` (or unset) must NOT
-        // surface as an evidence target — the publish path also skips
+        // appear as an evidence target — the publish path also skips
         // it, and recording a target that was never pushed would mislead
         // operators reading any replay consumer.
         let krate = CrateConfig {

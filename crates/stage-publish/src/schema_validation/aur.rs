@@ -14,7 +14,7 @@
 //! always-on structural floor (pure-Rust line scanning) and, when `bash` is on
 //! `PATH`, a real `bash -n` syntax check of the PKGBUILD. A structural defect (a
 //! missing required variable, an unbalanced template that produced broken Bash)
-//! surfaces in the emission-validate pass rather than after a pushed PKGBUILD
+//! shows up in the emission-validate pass rather than after a pushed PKGBUILD
 //! fails `makepkg` for every installer.
 
 use anodizer_core::context::Context;
@@ -1066,7 +1066,7 @@ mod tests {
     /// A binary-AUR crate WITH a matched Linux archive that is MISSING its
     /// sha256 must NOT be silently skipped as if the artifact were absent: the
     /// probe distinguishes absence (`Ok(false)`) from a broken-artifact ERROR,
-    /// so `validate()` surfaces the same defect the live publish path bails on.
+    /// so `validate()` reports the same defect the live publish path bails on.
     #[test]
     fn binary_crate_with_matched_archive_missing_sha256_is_not_skipped() {
         let cfg = every_option_aur_cfg();
@@ -1183,7 +1183,7 @@ mod tests {
     /// var for the source entry's per-entry renders: a `url_template`
     /// referencing it must resolve to the configured variant (here `v3`), not a
     /// stale/empty global value. This proves the scoped-vars refactor keeps
-    /// `Amd64` in scope for the same template surface the global-mutation
+    /// `Amd64` in scope for the same templates the global-mutation
     /// version did.
     #[test]
     fn source_amd64_variant_is_scoped_for_url_template() {

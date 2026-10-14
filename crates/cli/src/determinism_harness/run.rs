@@ -10,7 +10,7 @@ impl Harness {
     /// `upx`'s binary — see [`Self::config_tools`]). The pipeline would
     /// otherwise fail mid-run at `Command::new("wix")` /
     /// `Command::new("rpmbuild")`, or — for `upx` — silently warn-skip the
-    /// stage at runtime, surfacing a confusing error or false coverage
+    /// stage at runtime, reporting a confusing error or false coverage
     /// instead of an honest "tool absent". A stage the operator EXPLICITLY
     /// typed into `--stages` (tracked in [`Self::explicit_stages`]) whose
     /// tool is missing is a HARD ERROR (a silent skip would be false
@@ -98,9 +98,16 @@ impl Harness {
         // SDE-based key derivation (cosign-keygen + GPG `--faked-system-
         // time`) so the deterministic-keys property has direct coverage,
         // and the production sign stage is exercised by every release.
-        let skip_sign_for_preserve = self.preserve_dist.is_some()
-            && (std::env::var_os("COSIGN_KEY").is_some()
-                || std::env::var_os("GPG_PRIVATE_KEY").is_some());
+        // A blank key counts as unset, the same way the sign stage reads it.
+        let key_set = |name: &str| {
+            std::env::var(name)
+                .ok()
+                .as_deref()
+                .and_then(anodizer_core::git::non_blank_token)
+                .is_some()
+        };
+        let skip_sign_for_preserve =
+            self.preserve_dist.is_some() && (key_set("COSIGN_KEY") || key_set("GPG_PRIVATE_KEY"));
         let effective_stages: Vec<StageId> = if skip_sign_for_preserve {
             self.stages
                 .iter()
@@ -286,7 +293,7 @@ impl Harness {
             // peak = free-before − min-free-observed; fold it into
             // `max_prior_peak` so run-(idx+1)'s guard is gated on the
             // largest real peak seen so far. Emitted at verbose so the
-            // first CI run surfaces run-0's true number (B1.3 / W1).
+            // first CI run reports run-0's true number (B1.3 / W1).
             let min_free_during = sampler.stop();
             if let (Some(before), Some(min_free)) = (free_before, min_free_during) {
                 let peak = anodizer_core::disk::RunPeak {
@@ -489,7 +496,7 @@ impl Harness {
     /// `None` thereafter only if the probe was unavailable).
     ///
     /// Routine readings go to `verbose` (per the log-status-vs-verbose
-    /// rule); a shortfall is the one default-visible disk event — surfaced
+    /// rule); a shortfall is the one default-visible disk event — reported
     /// as an `error` line and then returned as an `Err` that aborts the
     /// harness BEFORE the opaque `hdiutil` ENOSPC can fire. Probe gaps
     /// (`free == None`) degrade to a no-op: the guard never manufactures a
@@ -607,7 +614,7 @@ impl Harness {
     /// emitted `<cargo_target>/package/*.crate` into
     /// `<worktree>/dist/cargo-package/` so the existing
     /// [`discover_artifacts`] walker picks them up under the normal
-    /// `dist/` surface.
+    /// `dist/` tree.
     ///
     /// `SOURCE_DATE_EPOCH` is already in `env` — the harness exports it
     /// from [`Harness::sde`] via [`super::env::build_subprocess_env`].

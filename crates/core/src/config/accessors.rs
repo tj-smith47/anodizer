@@ -180,7 +180,7 @@ impl Config {
             .unwrap_or(CrossStrategy::Auto)
     }
 
-    // --- Project metadata defaulting helpers ---
+    // Project metadata defaulting helpers
     //
     // Publishers that expose homepage/license/description/maintainer fields
     // fall back to these when their own field is unset, so a project only

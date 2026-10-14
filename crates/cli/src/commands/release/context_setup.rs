@@ -361,7 +361,7 @@ pub(crate) fn read_release_notes_template(opts: &ReleaseOpts) -> Result<Option<(
 
 /// Resolve the `--simulate-failure` list. The flag is test-only and gated by
 /// `ANODIZE_TEST_HARNESS=1`; production releases that accidentally set the
-/// flag get a hard error rather than silent pass-through so the surface
+/// flag get a hard error rather than silent pass-through so the flag
 /// cannot be weaponized.
 pub(crate) fn resolve_simulate_failure(simulate: &mut Vec<String>) -> Result<Vec<String>> {
     if std::env::var("ANODIZE_TEST_HARNESS").as_deref() == Ok("1") {
@@ -407,7 +407,7 @@ pub(crate) fn parse_allow_nondeterministic(entries: &[String]) -> Result<Vec<(St
 /// the real tree even when called from a symlinked checkout.
 ///
 /// When the CWD fallback fires (bare-filename `--config=anodizer.yaml`)
-/// and `log` is `Some`, a warn surfaces because the resulting CWD
+/// and `log` is `Some`, a warn is emitted because the resulting CWD
 /// anchor is almost certainly NOT what the operator meant when they
 /// passed a bare filename: repo-relative file lookups (snapcraft icon
 /// resolution, extra-file globs, etc.) will all hit the process CWD

@@ -328,7 +328,7 @@ fn recorded_revisions(report: &PublishReport, snap_name: &str) -> Vec<String> {
 /// registered or holding no revisions — which promotion treats as "nothing to
 /// promote" (a skip). `Err` is reserved for a genuine probe/auth error (the
 /// probe could not run, or the store answered with an authentication /
-/// connectivity fault), which must surface honestly rather than masquerade as
+/// connectivity fault), which must be reported honestly rather than masquerade as
 /// an empty promote.
 fn list_revisions(snap_name: &str, log: &StageLogger) -> Result<Option<String>> {
     let args = snapcraft_list_revisions_command(snap_name);
@@ -374,7 +374,7 @@ fn list_revisions(snap_name: &str, log: &StageLogger) -> Result<Option<String>> 
 /// probe; otherwise `snapcraft whoami` is consulted. A clear not-logged-in
 /// verdict bails with remediation; a probe that cannot run (spawn/timeout)
 /// passes rather than block promotion on an unreliable check — the bounded
-/// release itself surfaces a genuine auth fault.
+/// release itself reports a genuine auth fault.
 pub fn preflight() -> Result<()> {
     if !anodizer_core::tool_detect::on_path("snapcraft") {
         bail!(
@@ -397,7 +397,7 @@ pub fn preflight() -> Result<()> {
              or deselect snapcraft with --publishers"
         ),
         // The credential probe itself could not run; do not block on an
-        // unreliable check — the bounded `snapcraft release` surfaces a real
+        // unreliable check — the bounded `snapcraft release` reports a real
         // auth fault honestly.
         Err(e) => {
             log.debug(&format!(
@@ -1064,7 +1064,7 @@ Rev    Uploaded              Arches  Version  Channels
         anodizer_core::test_helpers::env::EnvGuard::remove("SNAPCRAFT_STORE_CREDENTIALS")
     }
 
-    // A missing Snap Store session must surface an actionable message
+    // A missing Snap Store session must report an actionable message
     // BEFORE dispatch, not conflate with "snap unregistered" mid-promote.
     // The stubbed snapcraft uses FakeToolDir::script, which is unix-only.
     #[cfg(unix)]
@@ -1187,7 +1187,7 @@ Rev    Uploaded              Arches  Version  Channels
     }
 
     // A genuine probe/auth error (non-zero exit with NO absent marker)
-    // must surface honestly as a failure, never masquerade as an empty skip.
+    // must be reported honestly as a failure, never masquerade as an empty skip.
     #[cfg(unix)]
     #[test]
     #[serial_test::serial(path_env)]

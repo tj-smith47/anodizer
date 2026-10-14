@@ -280,9 +280,7 @@ fn in_scope_crates(ctx: &Context) -> Vec<CrateConfig> {
         .collect()
 }
 
-// ---------------------------------------------------------------------------
 // version-sync
-// ---------------------------------------------------------------------------
 
 /// Assert the in-scope crate resolved a valid, non-empty, parseable per-crate
 /// version. The `with_crate_scope` wrapper already errors on a no-tag /
@@ -313,9 +311,7 @@ fn validate_version_sync(ctx: &Context, crate_cfg: &CrateConfig) -> Result<()> {
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
 // binstall
-// ---------------------------------------------------------------------------
 
 /// Render the crate's `[package.metadata.binstall]` table in-memory and
 /// cross-check every resolved `pkg_url` (top-level and per-override) against
@@ -486,7 +482,7 @@ fn derived_names_consumed(ctx: &mut Context, crate_cfg: &CrateConfig) -> bool {
 /// downloads AND at least one `template_files:` entry actually reads an
 /// installer case var (probed through the real entry render — a config whose
 /// template files bind none of the `Installer*` vars ships no derived name
-/// through this surface, so it must not trip the cross-check).
+/// through this path, so it must not trip the cross-check).
 fn installer_consumes_derived(ctx: &mut Context, crate_cfg: &CrateConfig) -> bool {
     anodizer_core::installer::installer_crate(&ctx.config).is_some_and(|c| c.name == crate_cfg.name)
         && anodizer_core::installer::template_files_consume_installer_vars(ctx)
@@ -799,9 +795,7 @@ fn binstall_mismatch_msg(
     )
 }
 
-// ---------------------------------------------------------------------------
 // nix
-// ---------------------------------------------------------------------------
 
 /// Render the crate's nix derivation + the merged root flake in-memory and
 /// assert: (a) the flake is well-formed (braces balance + overlay lines
@@ -842,7 +836,7 @@ fn validate_nix(ctx: &mut Context, crate_cfg: &CrateConfig, log: &StageLogger) -
     // `--single-target`, via `is_target_restricted_build`) because
     // `crate_has_nix_archive` reports absence the SAME way on a full build, where
     // the absence is instead a genuine misconfiguration (nix configured with no
-    // nix-eligible artifact) that MUST still surface — the homebrew presence
+    // nix-eligible artifact) that MUST still be reported — the homebrew presence
     // probe it mirrors does not itself distinguish the two cases, so a FULL build
     // falls through to `render_nix_for_validation` below and keeps erroring.
     // `crate_has_nix_archive` returns `Err` (not `Ok(false)`) for a
@@ -1039,7 +1033,7 @@ mod tests {
         }
     }
 
-    // -- binstall -----------------------------------------------------------
+    // binstall
 
     /// The 404 class: the produced archive uses the Rust target triple in its
     /// name (`cfgd-1.0.0-x86_64-unknown-linux-gnu.tar.gz`) but the binstall
@@ -1938,7 +1932,7 @@ mod tests {
         );
     }
 
-    // -- version-sync -------------------------------------------------------
+    // version-sync
 
     fn version_sync_crate() -> CrateConfig {
         CrateConfig {
@@ -1985,7 +1979,7 @@ mod tests {
         validate_version_sync(&ctx, &cfg).expect("valid version passes");
     }
 
-    // -- nix ----------------------------------------------------------------
+    // nix
 
     fn nix_crate() -> CrateConfig {
         nix_crate_named("cfgd")
@@ -2323,7 +2317,7 @@ mod tests {
         );
     }
 
-    // -- entry point --------------------------------------------------------
+    // entry point
 
     /// A REAL release (not snapshot, not dry-run) runs the validation too: a
     /// broken emission must abort the release before any publisher ships it.
@@ -2427,7 +2421,7 @@ mod tests {
             .expect("a dual-libc release must still cross-check clean");
     }
 
-    // -- version-dimension fix (snapshot false-positive) --------------------
+    // version-dimension fix (snapshot false-positive)
 
     /// Build a snapshot context whose produced archives carry the synthesized
     /// snapshot version (`<base>-SNAPSHOT-<sha>`) while the global `Version`
@@ -2505,7 +2499,7 @@ mod tests {
             .expect("correct override must pass once the cross-check uses the snapshot version");
     }
 
-    // -- derived download-URL seeding ------------------------------------------
+    // derived download-URL seeding
 
     /// A crate with a `release:` repo config whose `tag_template` renders.
     fn releasable_crate(name: &str) -> CrateConfig {
@@ -2619,7 +2613,7 @@ mod tests {
         );
     }
 
-    // -- aggregate RESULT line ------------------------------------------------
+    // aggregate RESULT line
 
     /// Snapshot of every status-level message a capture recorded.
     fn status_messages(cap: &anodizer_core::log::LogCapture) -> Vec<String> {

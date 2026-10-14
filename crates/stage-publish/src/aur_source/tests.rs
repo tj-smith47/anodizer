@@ -320,7 +320,7 @@ crates:
 #[test]
 fn test_aur_source_amd64_variant_field_parses() {
     // amd64_variant reaches AurSourceConfig as a typed Amd64Variant enum
-    // (PKGBUILD `prepare:` / `build:` / `package:` template surface uses
+    // (PKGBUILD `prepare:` / `build:` / `package:` templates use
     // it as the `Amd64` var; AUR source pkgs don't filter binaries).
     use anodizer_core::config::{Amd64Variant, Config};
 
@@ -478,14 +478,12 @@ fn resolve_aur_source_package_name_strip_bin_honors_explicit_name() {
     );
 }
 
-// -----------------------------------------------------------------------
 // render_aur_source_inner — the skip-unaware render the live publish path
 // and the offline validator share. Pure (reads ctx, no git): covers source
 // URL derivation (GitURL owner extraction for both `://` and `git@host:`
 // remotes), the empty-owner warn, the `url_template` override + `Amd64`
 // scoping, and the dependency/field defaults ending up in the rendered
 // PKGBUILD/.SRCINFO.
-// -----------------------------------------------------------------------
 
 use anodizer_core::artifact::{Artifact, ArtifactKind};
 use anodizer_core::config::{Config, CrateConfig, PublishConfig, StringOrBool};
@@ -988,7 +986,7 @@ fn render_inner_url_template_overrides_with_amd64_scope() {
     );
 }
 
-/// A configured `amd64_variant` surfaces as the `Amd64` template var the
+/// A configured `amd64_variant` shows up as the `Amd64` template var the
 /// `url_template` (and hook bodies) branch on.
 #[test]
 fn render_inner_amd64_variant_threads_into_template() {
@@ -1171,10 +1169,8 @@ fn render_inner_per_crate_metadata_no_cross_crate_leakage() {
     );
 }
 
-// -----------------------------------------------------------------------
 // render_aur_source_pkgbuild_and_srcinfo_for_crate / render_top_level_aur_source
 // — the skip-aware entry points the offline validator drives. Pure (no git).
-// -----------------------------------------------------------------------
 
 fn crate_with_aur_source(name: &str, cfg: AurSourceConfig) -> CrateConfig {
     CrateConfig {
@@ -1345,10 +1341,8 @@ fn render_top_level_handles_empty_populated_and_skip() {
     assert_eq!(out[0].1.package_name, "first");
 }
 
-// -----------------------------------------------------------------------
 // Dry-run publish — exercises the `is_dry_run` early-exit in
 // `publish_aur_source_entry` without touching git.
-// -----------------------------------------------------------------------
 
 /// In dry-run, `publish_aur_source_entry` (via `publish_to_aur_source`)
 /// returns `Ok(false)` (nothing pushed) before any clone/write.
@@ -1401,12 +1395,10 @@ fn publish_to_aur_source_missing_block_errors() {
     );
 }
 
-// -----------------------------------------------------------------------
 // Live git-over-ssh source publish — clone a local bare repo, write
 // PKGBUILD/.SRCINFO/.install, commit, push to `master`. `#[cfg(unix)]`-gated:
 // spawns git, sets commit-identity env, asserts pushed bytes on the bare
 // ref. Precedent: aur.rs `make_bare_aur_repo`.
-// -----------------------------------------------------------------------
 
 #[cfg(unix)]
 fn git_ok(dir: &std::path::Path, args: &[&str]) {

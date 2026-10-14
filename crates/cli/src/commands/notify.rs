@@ -133,7 +133,7 @@ pub(crate) fn run_with_ctx(
 /// Resolve the outbound message body, honoring `raw`.
 ///
 /// Non-raw: render `message` through Tera so standard vars (`{{ Tag }}`, …)
-/// expand, surfacing a broken template before any network call. Raw: return
+/// expand, reporting a broken template before any network call. Raw: return
 /// `message` verbatim — no template is validated.
 ///
 /// This is the FIRST half of the untrusted-text defense: skipping this render

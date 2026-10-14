@@ -7,7 +7,7 @@ use anyhow::{Context as _, Result};
 /// Write `dist/config.yaml` with the fully-resolved (effective) config.
 ///
 /// This is always written, including in dry-run mode.
-/// Shared by `release` and `build` pipelines so both surface the same artifact.
+/// Shared by `release` and `build` pipelines so both report the same artifact.
 ///
 /// Two runs of the determinism harness must emit a byte-identical
 /// `config.yaml`. The `Config` type carries many `HashMap<String, _>` fields
@@ -141,7 +141,7 @@ pub fn write_metadata_json(
     // Same source as the `{{ ReleaseURL }}` template var the announce /
     // webhook stages render: the release stage's authoritative `html_url`
     // (or its derived default). Reading the var — instead of re-composing
-    // the URL here — keeps the two surfaces from ever drifting.
+    // the URL here — keeps the two values from ever drifting.
     let release_url = ctx
         .template_vars()
         .get("ReleaseURL")

@@ -1,6 +1,4 @@
-// ---------------------------------------------------------------------------
 // Build ignore/override helpers
-// ---------------------------------------------------------------------------
 
 // The glob/env/override resolution semantics live in core
 // (`anodizer_core::build_env`) so this stage and the config-time asset-name
@@ -10,9 +8,7 @@ pub(crate) use anodizer_core::build_env::{
     find_matching_override, is_target_ignored, resolve_target_env,
 };
 
-// ---------------------------------------------------------------------------
 // Known Rust target triples (Tier 1 + Tier 2) for validation
-// ---------------------------------------------------------------------------
 
 pub(crate) const KNOWN_TARGETS: &[&str] = &[
     // Tier 1

@@ -139,7 +139,7 @@ pub fn guard_release_version(
 ///
 /// The global `Version` is checked first because it is what the snapshot
 /// template stamps (`<base>-SNAPSHOT-<sha>`) and what the `0.0.0` sentinel
-/// surfaces as — the exact accident class. Per-crate versions are then checked
+/// produces — the exact accident class. Per-crate versions are then checked
 /// so per-crate config mode (each crate rendering its own tag-derived version)
 /// is covered, not just a single global.
 fn first_non_release_version(ctx: &crate::context::Context) -> Option<(String, &'static str)> {

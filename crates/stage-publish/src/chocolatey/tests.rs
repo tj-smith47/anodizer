@@ -294,7 +294,7 @@ fn test_generate_install_script_dual_arch() {
     assert!(script.contains("-Checksum64 $checksum64 -ChecksumType64 'sha256'"));
 }
 
-// ----- fileType routing: msi -----
+// fileType routing: msi
 
 /// A 64-bit MSI artifact must be RUN (`Install-ChocolateyPackage` with
 /// `-FileType 'msi'` + `/qn /norestart` + MSI exit codes), not unpacked.
@@ -356,7 +356,7 @@ fn test_generate_install_script_msi_dual_arch() {
     assert!(script.contains("validExitCodes = @(0, 1641, 3010)"));
 }
 
-// ----- fileType routing: nsis exe -----
+// fileType routing: nsis exe
 
 /// An NSIS-generated `.exe` must be RUN via `Install-ChocolateyPackage` with
 /// `-FileType 'exe'` and the NSIS silent switch `/S`, and NO validExitCodes
@@ -803,9 +803,7 @@ fn test_create_nupkg_produces_valid_opc_zip() {
     assert!(ns.contains("<version>1.0.0</version>"));
 }
 
-// -----------------------------------------------------------------
 // OData feed parsing (FeedHashResult variant matrix)
-// -----------------------------------------------------------------
 
 /// OData skeleton mirroring community.chocolatey.org's
 /// `Packages(Id='X',Version='Y')` response. Only the parsed fields
@@ -895,9 +893,7 @@ fn test_parse_xml_element_returns_none_when_absent() {
     assert!(parse_xml_element(body, "IsApproved").is_none());
 }
 
-// ---------------------------------------------------------------------------
 // publish_to_chocolatey: additional branches.
-// ---------------------------------------------------------------------------
 
 use super::package::{FeedHashResult, classify_moderation, compute_nupkg_hash, package_feed_hash};
 use anodizer_core::retry::RetryPolicy;
@@ -1297,7 +1293,7 @@ fn chocolatey_sha256_empty_metadata_bails_with_actionable_error() {
 }
 
 /// Two Windows amd64 archives are ambiguous: the offline validator that
-/// `check` and `--snapshot` run surfaces the disqualification instead of
+/// `check` and `--snapshot` run reports the disqualification instead of
 /// letting a coin-flip payload reach a nupkg.
 ///
 /// The live publish path absorbs the same `entry_skip` through

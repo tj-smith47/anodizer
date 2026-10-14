@@ -4,9 +4,7 @@ use std::ops::ControlFlow;
 use anodizer_core::retry::{HttpError, RetryLog, RetryPolicy, is_retriable, retry_sync};
 use anyhow::{Context as _, Result};
 
-// ---------------------------------------------------------------------------
 // Status code helpers
-// ---------------------------------------------------------------------------
 
 /// Default HTTP status codes accepted as a successful webhook response.
 ///
@@ -32,9 +30,7 @@ pub(crate) fn format_unexpected_status_message(
     format!("webhook returned unexpected status {status} (expected one of {expected:?}): {body}")
 }
 
-// ---------------------------------------------------------------------------
 // Send
-// ---------------------------------------------------------------------------
 
 /// POST to an arbitrary HTTP endpoint with custom headers and content type.
 ///
@@ -120,7 +116,7 @@ pub fn send_webhook(
                 } else {
                     let body = anodizer_core::http::body_of_blocking(resp);
                     // Wrap the status-derived error with the response body
-                    // so users see it in the surfaced message.
+                    // so users see it in the reported message.
                     let inner = anyhow::anyhow!(
                         "{}",
                         format_unexpected_status_message(status, expected_status_codes, &body)
@@ -141,9 +137,7 @@ pub fn send_webhook(
     .context("webhook: POST exhausted retry attempts")
 }
 
-// ---------------------------------------------------------------------------
 // Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
@@ -167,7 +161,7 @@ mod tests {
 
     #[test]
     fn unexpected_status_message_includes_body_and_status() {
-        // Upstream commit bba909e: the error surfaced to the user must
+        // Upstream commit bba909e: the error shown to the user must
         // include the response body so failures from misconfigured webhooks
         // (auth, validation, etc.) are debuggable without re-running.
         let msg = format_unexpected_status_message(503, &[200, 204], "service down");

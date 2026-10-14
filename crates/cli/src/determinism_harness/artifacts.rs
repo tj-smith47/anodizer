@@ -1,9 +1,9 @@
 //! Per-run artifact discovery, hashing, and drift-bin dump/prune.
 //!
-//! - [`discover_artifacts`] walks `<worktree>/dist` and surfaces the
+//! - [`discover_artifacts`] walks `<worktree>/dist` and returns the
 //!   shipped raw cargo binaries under `<worktree>/.det-tmp/target/`. The
-//!   per-triple `<triple>/release/<bin>` outputs are always surfaced; the
-//!   bare host `release/<bin>` is surfaced only when no per-triple build
+//!   per-triple `<triple>/release/<bin>` outputs are always included; the
+//!   bare host `release/<bin>` is included only when no per-triple build
 //!   is present (a host-native consumer with no `--target`). When any
 //!   `<triple>/release/` exists the bare host binary is a non-shipped
 //!   tooling byproduct (the man-page `before:` hook's `cargo run` output)
@@ -96,7 +96,7 @@ pub(super) const TAIL_SAMPLE_BYTES: usize = 16 * 1024;
 /// Walk `<worktree>/dist` and collect every regular file. Sorted by path
 /// for deterministic iteration order in tests.
 ///
-/// Also surfaces the **shipped raw cargo build outputs** under
+/// Also returns the **shipped raw cargo build outputs** under
 /// `<worktree>/.det-tmp/target/`. These are the SOURCE of any RUSTFLAGS /
 /// mtime / build-script drift that later propagates into every wrapped
 /// archive (`.tar.gz`, `.tar.xz`, `.zip`, ...). Hashing them directly
@@ -108,9 +108,9 @@ pub(super) const TAIL_SAMPLE_BYTES: usize = 16 * 1024;
 /// drift, the diagnostic chain starts here.
 ///
 /// Which binaries count as shipped depends on the build layout:
-///   - `<cargo_target>/<triple>/release/<bin>` — always surfaced; these
+///   - `<cargo_target>/<triple>/release/<bin>` — always included; these
 ///     are the pre-package binaries that end up in archives.
-///   - `<cargo_target>/release/<bin>` (bare host, no triple) — surfaced
+///   - `<cargo_target>/release/<bin>` (bare host, no triple) — included
 ///     ONLY when no `<triple>/release/` directory exists (a host-native
 ///     consumer building with no `--target`). When any per-triple build
 ///     is present, the bare host binary is a non-shipped tooling
@@ -123,7 +123,7 @@ pub(super) const TAIL_SAMPLE_BYTES: usize = 16 * 1024;
 /// The function only walks the immediate `release/` directory (not
 /// `deps/`, `build/`, `.fingerprint/`, etc.) and filters to files
 /// without an extension or with `.exe` — anodizer ships single-binary
-/// crates, so this surfaces the actual `anodizer` / `anodizer.exe`
+/// crates, so this returns the actual `anodizer` / `anodizer.exe`
 /// without dragging in cargo's incremental-build scratch.
 pub(super) fn discover_artifacts(worktree_path: &Path) -> Result<Vec<PathBuf>> {
     let mut out = Vec::new();
@@ -296,7 +296,7 @@ pub(super) fn hash_artifacts(
         let name = if let Ok(under_target) = p.strip_prefix(&target_root) {
             // Raw cargo binary: prefix with `target/` and the
             // <triple>/release/ (or release/) segments so the report
-            // surfaces it distinctly from any `dist/` artifact of the
+            // reports it distinctly from any `dist/` artifact of the
             // same basename. Forward slashes regardless of platform
             // (matches `Artifact::to_artifacts_json` normalization).
             let suffix = under_target.to_string_lossy().replace('\\', "/");
@@ -374,7 +374,7 @@ pub(super) fn hash_artifacts(
 /// Copy each artifact in `paths` to `dump_root/<artifact-name>`,
 /// preserving the relative directory structure under `worktree_path`.
 ///
-/// Best-effort: copy failures are logged but not surfaced, so the
+/// Best-effort: copy failures are logged but not returned, so the
 /// harness's primary determinism check is never broken by a side
 /// channel diagnostic.
 pub(super) fn copy_artifacts_to_dump(
@@ -501,7 +501,7 @@ pub(super) fn infer_stage_from_path(rel: &str) -> String {
     // beats extension matching because `.tar` / `.zip` / `.exe` are
     // ambiguous between the archive stage and several installer
     // stages (nsis emits a `.exe` installer; makeself emits a `.run`
-    // that may also surface as `.sh`). Anchor on the directory the
+    // that may also appear as `.sh`). Anchor on the directory the
     // stage owns and the attribution becomes unambiguous.
     for (prefix, stage) in [
         ("dist/nfpm/", "nfpm"),
@@ -540,7 +540,7 @@ pub(super) fn infer_stage_from_path(rel: &str) -> String {
         "srpm".into()
     } else if lower.ends_with(".rpm") || lower.ends_with(".deb") || lower.ends_with(".apk") {
         // Binary RPM / DEB / APK packages come from `stage-nfpm`.
-        // Surfaced via the `dist/nfpm/` prefix above for canonical
+        // Included via the `dist/nfpm/` prefix above for canonical
         // layouts; this branch catches paths that bypass that prefix.
         "nfpm".into()
     } else if lower.ends_with("-setup.exe") || lower.ends_with("_setup.exe") {
@@ -818,7 +818,7 @@ mod tests {
         );
     }
 
-    /// `discover_artifacts` MUST surface the per-triple raw cargo binaries
+    /// `discover_artifacts` MUST include the per-triple raw cargo binaries
     /// from `<worktree>/.det-tmp/target/<triple>/release/<bin>` alongside
     /// `dist/` artifacts, with the raw binaries getting a `target/...` map
     /// key prefix so the report distinguishes them from any same-basename
@@ -836,7 +836,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let wt = tmp.path();
 
-        // dist artifact (existing surface)
+        // dist artifact (existing coverage)
         let dist = wt.join("dist");
         std::fs::create_dir_all(&dist).unwrap();
         std::fs::write(dist.join("anodizer_0.3.0_linux_amd64.tar.gz"), b"archive").unwrap();
@@ -849,7 +849,7 @@ mod tests {
             .join("release");
         std::fs::create_dir_all(&triple_release).unwrap();
         std::fs::write(triple_release.join("anodizer"), b"raw-bin-linux").unwrap();
-        // depfile must NOT be surfaced (cargo scratch).
+        // depfile must NOT be included (cargo scratch).
         std::fs::write(triple_release.join("anodizer.d"), b"depfile").unwrap();
         // `deps/` subdirectory must NOT be recursed (cargo scratch).
         std::fs::create_dir_all(triple_release.join("deps")).unwrap();
@@ -863,7 +863,7 @@ mod tests {
             .join("release");
         std::fs::create_dir_all(&win_release).unwrap();
         std::fs::write(win_release.join("anodizer.exe"), b"raw-bin-windows").unwrap();
-        // .pdb debug symbols must NOT be surfaced.
+        // .pdb debug symbols must NOT be included.
         std::fs::write(win_release.join("anodizer.pdb"), b"pdb").unwrap();
 
         // Host build (no triple): target/release/anodizer. With per-triple
@@ -898,7 +898,7 @@ mod tests {
             "windows raw binary missing: {names:?}"
         );
 
-        // Scratch files must NOT be surfaced.
+        // Scratch files must NOT be included.
         for forbidden in ["anodizer.d", "anodizer.pdb", "libfoo.rlib"] {
             assert!(
                 !names.iter().any(|n| n == forbidden),
@@ -951,7 +951,7 @@ mod tests {
     /// When NO per-triple `<triple>/release/` directory exists, the bare
     /// host `target/release/<bin>` IS the shipped deliverable (a
     /// host-native consumer building with no `--target`) and MUST be
-    /// surfaced. Complements `discover_artifacts_includes_raw_cargo_binaries`,
+    /// included. Complements `discover_artifacts_includes_raw_cargo_binaries`,
     /// which proves the byproduct is excluded once any per-triple build
     /// is present.
     #[test]
@@ -959,7 +959,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let wt = tmp.path();
 
-        // dist artifact (existing surface)
+        // dist artifact (existing coverage)
         let dist = wt.join("dist");
         std::fs::create_dir_all(&dist).unwrap();
         std::fs::write(dist.join("anodizer_0.3.0_linux_amd64.tar.gz"), b"archive").unwrap();

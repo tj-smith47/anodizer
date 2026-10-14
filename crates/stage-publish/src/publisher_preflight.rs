@@ -18,7 +18,7 @@
 //!
 //! On an indeterminate outcome (5xx / rate-limit / unexpected status — the
 //! probe reached the host but got no verdict) every probe degrades to
-//! [`PreflightCheck::Warning`]: a transient network blip must surface but must
+//! [`PreflightCheck::Warning`]: a transient network blip must be reported but must
 //! not abort a release that would otherwise succeed. Under strict preflight
 //! (the global `--strict`, or `preflight.strict: true`) those indeterminate
 //! outcomes are promoted to [`PreflightCheck::Blocker`] (fail-closed);
@@ -222,8 +222,8 @@ pub(crate) enum ProbeAuth {
 /// Severity a *definitive* probe failure maps to. A REQUIRED publisher passes
 /// [`FailSeverity::Blocker`] (a proven-unpublishable endpoint must abort before
 /// the tag/one-way doors); an OPTIONAL publisher passes
-/// [`FailSeverity::Warning`] (surface loudly but don't fail the whole release
-/// for an optional surface).
+/// [`FailSeverity::Warning`] (report loudly but don't fail the whole release
+/// for an optional publisher).
 ///
 /// Only the *definitive* failures (credentials rejected, endpoint unreachable,
 /// resource missing) honour this severity; an *indeterminate* result (5xx or an
@@ -240,7 +240,7 @@ pub(crate) enum FailSeverity {
 
 impl FailSeverity {
     /// A REQUIRED publisher's probe failure must abort before the one-way doors
-    /// ([`FailSeverity::Blocker`]); an OPTIONAL one's must surface but not abort
+    /// ([`FailSeverity::Blocker`]); an OPTIONAL one's must be reported but not abort
     /// ([`FailSeverity::Warning`]). Derived from the publisher's own
     /// [`required()`](anodizer_core::Publisher::required) so preflight severity
     /// can never be stricter than the publish gate it precedes.
@@ -458,7 +458,7 @@ pub(crate) fn github_repo_check<E: anodizer_core::EnvSource + ?Sized>(
 /// Every `Warning` above is an *indeterminate* outcome; under strict
 /// preflight (`strict`) the shared mapper promotes them to
 /// [`PreflightCheck::Blocker`]. `push_denied` stays a Warning either way —
-/// it is this caller's definitive optional-surface severity.
+/// it is this caller's definitive optional-publisher severity.
 pub(crate) fn github_repo_check_at(
     url: &str,
     probe: &GithubRepoProbe<'_>,
@@ -699,7 +699,7 @@ mod tests {
     #[test]
     fn fold_active_checks_merges_active_entries_to_worst_severity() {
         // Two active entries; the second's check fails (Blocker). The merge
-        // must surface the worst severity across the active universe.
+        // must report the worst severity across the active universe.
         let entries = [
             (true, PreflightCheck::Warning("w".into())),
             (true, PreflightCheck::Blocker("missing repo".into())),
@@ -1137,7 +1137,7 @@ mod tests {
     fn github_repo_config_check_skips_probe_for_ssh_git_url() {
         // A `git.url` SSH/GHE override pushes elsewhere than api.github.com;
         // the probe must short-circuit to Pass WITHOUT a network round-trip
-        // (a bound-then-dropped port would surface as a Warning, not Pass, if
+        // (a bound-then-dropped port would show up as a Warning, not Pass, if
         // the probe ran).
         use anodizer_core::config::{GitRepoConfig, RepositoryConfig};
         let repo = RepositoryConfig {

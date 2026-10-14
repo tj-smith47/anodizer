@@ -449,7 +449,7 @@ pub fn assert_publisher_visible_work_contract(publisher: &dyn Publisher, ctx: &m
     let extra_is_empty = matches!(evidence.extra, anodizer_core::PublishEvidenceExtra::Empty);
     let has_evidence = evidence.primary_ref.is_some() || !extra_is_empty;
 
-    // The publisher's default surface is a stage header + a done summary
+    // The publisher's default output is a stage header + a done summary
     // (both at status); the per-crate-start line lives at verbose so the
     // per-crate × per-publisher loop stays quiet at default. Proof the
     // publisher actually visited a crate is the verbose per-crate-start
@@ -542,9 +542,7 @@ pub fn hermetic_repo_with_tags(tags: &[&str]) -> tempfile::TempDir {
     repo
 }
 
-// ---------------------------------------------------------------------------
 // Preflight doubles
-// ---------------------------------------------------------------------------
 
 /// Preflight checker that ignores its inputs and answers a canned state.
 /// The `name` field is the publisher label written into the report entry.

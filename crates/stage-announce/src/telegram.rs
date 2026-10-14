@@ -4,7 +4,7 @@ use anodizer_core::retry::{HttpError, RetryLog, RetryPolicy, is_retriable, retry
 use anyhow::{Context as _, Result};
 use serde_json::json;
 
-/// Replacement marker for the bot token in any error message surfaced
+/// Replacement marker for the bot token in any error message passed
 /// upstream. The Telegram URL is `…/bot<TOKEN>/sendMessage`, and the
 /// `reqwest::Error` Display chain echoes the full URL on transport
 /// failure — without redaction the token would leak via every error log.
@@ -22,7 +22,7 @@ fn telegram_api_base() -> String {
 }
 
 /// Strip occurrences of `bot_token` from any error string before it is
-/// surfaced upstream. Returns the message unchanged when the token is
+/// passed upstream. Returns the message unchanged when the token is
 /// empty (an empty `String::replace` needle would inject the marker
 /// between every byte).
 ///
@@ -39,9 +39,7 @@ fn redact_bot_token(message: &str, bot_token: &str) -> String {
     anodizer_core::redact::redact_url_credentials(&token_stripped)
 }
 
-// ---------------------------------------------------------------------------
 // Payload builder
-// ---------------------------------------------------------------------------
 
 pub(crate) fn telegram_payload(
     chat_id: &str,
@@ -62,15 +60,13 @@ pub(crate) fn telegram_payload(
     payload.to_string()
 }
 
-// ---------------------------------------------------------------------------
 // Send
-// ---------------------------------------------------------------------------
 
 /// POST to the Telegram Bot API `sendMessage` endpoint.
 ///
 /// Even on HTTP 200, the Telegram API returns `{"ok": false, ...}` for logical
 /// errors.  The response body is parsed and `error_code` + `description`
-/// surfaced when `ok` is false.
+/// reported when `ok` is false.
 pub fn send_telegram(
     bot_token: &str,
     chat_id: &str,
@@ -160,9 +156,7 @@ pub fn send_telegram(
     .context("telegram: POST exhausted retry attempts")
 }
 
-// ---------------------------------------------------------------------------
 // Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
@@ -215,7 +209,7 @@ mod tests {
         assert!(json.get("parse_mode").is_none());
     }
 
-    // ---- token redaction (I2 regression) ------------------------------
+    // token redaction (I2 regression)
 
     #[test]
     fn redact_bot_token_strips_token_from_message() {
@@ -256,7 +250,7 @@ mod tests {
         // Defense-in-depth: combined redaction also strips
         // `user:pass@host` userinfo from any URL in the message so the
         // (rare) case of a wrapped reqwest::Error carrying both a bot
-        // token AND inline URL credentials surfaces neither.
+        // token AND inline URL credentials shows neither.
         let msg = "error at https://admin:pw@proxy/bot123:ABC/sendMessage: refused";
         let out = redact_bot_token(msg, "123:ABC");
         assert!(!out.contains("123:ABC"), "token leaked: {out}");
@@ -267,7 +261,7 @@ mod tests {
         );
     }
 
-    // ---- live send over a mock HTTP server -----------------------------
+    // live send over a mock HTTP server
     //
     // These drive `send_telegram` (the real production POST path) against a
     // scripted responder via the `ANODIZE_TELEGRAM_API_BASE` override. Mutating

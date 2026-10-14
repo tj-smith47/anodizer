@@ -53,7 +53,7 @@ fn dedup_targets(targets: Vec<SchemastoreTargetSnapshot>) -> Vec<SchemastoreTarg
 /// Roll back a SchemaStore publish by closing the registration PRs it opened.
 ///
 /// Best-effort: closing a PR does not undo a merge, so an already-merged PR
-/// (which never appears in the open-PR query) surfaces as an actionable warn
+/// (which never appears in the open-PR query) shows up as an actionable warn
 /// telling the operator a manual revert PR is required. Per-target failures
 /// (no resolvable token, query error, close error) warn and continue.
 pub(crate) fn rollback_publish(
@@ -241,7 +241,6 @@ mod tests {
         assert_eq!(out[1].branch, "schemastore-v2.0.0");
     }
 
-    // -------------------------------------------------------------------------
     // Rollback HTTP path — driven through the scripted responder.
     //
     // The find-open-PR (GET …/pulls) and close-PR (PATCH …/pulls/<n>) calls
@@ -250,7 +249,6 @@ mod tests {
     // flow at an in-process responder WITHOUT mutating the process env — no
     // `#[serial]` / env_mutex needed (the override is per-`Context`, not global).
     // Credentials come from the same injected `MapEnvSource`.
-    // -------------------------------------------------------------------------
 
     use anodizer_core::log::LogCapture;
     use anodizer_core::test_helpers::TestContextBuilder;
@@ -477,7 +475,7 @@ mod tests {
     fn rollback_skips_target_when_no_token_resolvable() {
         let capture = LogCapture::new();
         // An address that refuses connections proves the skip arm makes no
-        // request (a connect would surface as a query-failure warn instead of
+        // request (a connect would show up as a query-failure warn instead of
         // the no-token warn).
         let dead_addr = anodizer_core::test_helpers::refusing_addr::refusing_addr();
 

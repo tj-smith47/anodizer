@@ -38,7 +38,7 @@ use strum::EnumIter;
 /// the prior error-message ordering.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, EnumIter)]
 pub enum PublisherKind {
-    // ----- Trait-dispatched publishers (instantiable in the registry) -----
+    // Trait-dispatched publishers (instantiable in the registry)
     /// `cargo publish` to crates.io.
     Cargo,
     /// Docker Hub image description / overview update.
@@ -79,7 +79,7 @@ pub enum PublisherKind {
     Winget,
     /// Upstream AUR `PKGBUILD` submission.
     UpstreamAur,
-    // ----- Out-of-dispatch publish stages (NOT trait-registered) -----
+    // Out-of-dispatch publish stages (NOT trait-registered)
     /// Object-store upload (`BlobStage`).
     Blob,
     /// Snap Store upload (`SnapcraftPublishStage`).

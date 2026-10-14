@@ -478,9 +478,7 @@ fn run_line(label: &str, artifact: &str, cmd: &str, dry_run: bool) -> String {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
@@ -558,7 +556,7 @@ mod tests {
         StageLogger::new("test", Verbosity::Normal)
     }
 
-    // --- Artifact filtering tests ---
+    // Artifact filtering tests
 
     #[test]
     fn test_filter_matches_default_curated_list() {
@@ -741,7 +739,7 @@ mod tests {
         assert!(!matches_publisher_filter(&wrong_type, &publisher));
     }
 
-    // --- Command construction tests ---
+    // Command construction tests
 
     #[test]
     fn test_build_command_renders_artifact_vars() {
@@ -812,7 +810,7 @@ mod tests {
         assert_eq!(cmd, "echo linux_package");
     }
 
-    // --- Dry-run behavior test ---
+    // Dry-run behavior test
 
     #[test]
     fn test_dry_run_does_not_execute() {
@@ -993,7 +991,7 @@ mod tests {
         );
     }
 
-    // --- Empty publishers is a no-op ---
+    // Empty publishers is a no-op
 
     #[test]
     fn test_empty_publishers_is_noop() {
@@ -1004,7 +1002,7 @@ mod tests {
         assert!(result.is_ok());
     }
 
-    // --- Empty cmd with matching artifacts is a config error ---
+    // Empty cmd with matching artifacts is a config error
 
     #[test]
     fn publisher_empty_cmd_with_matching_artifacts_errors() {
@@ -1172,7 +1170,7 @@ mod tests {
         assert_eq!(events[0].reason, "no matching artifacts");
     }
 
-    // --- format_command_line tests ---
+    // format_command_line tests
 
     #[test]
     fn test_format_command_line_no_args() {
@@ -1185,7 +1183,7 @@ mod tests {
         assert_eq!(format_command_line("cmd", &args), "cmd --flag value");
     }
 
-    // --- Config parsing test ---
+    // Config parsing test
 
     #[test]
     fn test_publisher_config_yaml_parsing() {
@@ -1280,9 +1278,7 @@ crates:
         assert!(config.publishers.is_none());
     }
 
-    // -----------------------------------------------------------------------
     // Tests for dir and disable config fields
-    // -----------------------------------------------------------------------
 
     #[test]
     fn test_publisher_config_parses_dir_and_disable() {
@@ -1390,7 +1386,7 @@ crates:
         );
     }
 
-    // ---- `if:` conditional gate ----
+    // `if:` conditional gate
 
     #[test]
     fn test_publisher_if_falsy_skips() {
@@ -1518,7 +1514,7 @@ crates:
         );
     }
 
-    // --- Meta field tests ---
+    // Meta field tests
 
     #[test]
     fn test_meta_false_excludes_metadata() {
@@ -1535,7 +1531,7 @@ crates:
         assert!(matches_publisher_filter(&metadata, &publisher));
     }
 
-    // --- Extra files config parsing ---
+    // Extra files config parsing
 
     #[test]
     fn test_publisher_config_parses_meta_and_extra_files() {
@@ -1571,7 +1567,7 @@ crates:
         assert_eq!(extra[1].name_template(), Some("LICENSE.txt"));
     }
 
-    // --- Parallel execution test ---
+    // Parallel execution test
 
     #[test]
     fn test_parallel_dry_run_is_sequential() {
@@ -1596,7 +1592,7 @@ crates:
         assert!(result.is_ok());
     }
 
-    // -- split_shellwords (Go shellwords.Parse parity) ---------------------
+    // split_shellwords (Go shellwords.Parse parity)
     // A custom publisher's `cmd` is a single string the user writes; a
     // mis-split here silently runs a DIFFERENT command than the one they
     // configured, with no error anywhere.

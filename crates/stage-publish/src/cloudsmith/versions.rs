@@ -17,7 +17,7 @@ pub(crate) enum CloudsmithPackageState {
     /// a checksum-less format). Presence-by-filename is NOT proof the remote
     /// bytes match the local ones, so the caller must upload rather than
     /// skip-and-claim-match — mirroring artifactory's `Unknown` and blob's
-    /// `None`. Any real duplicate surfaces from the upload (409) path itself.
+    /// `None`. Any real duplicate is reported by the upload (409) path itself.
     Unverifiable,
 }
 
@@ -74,9 +74,7 @@ pub(crate) fn classify_cloudsmith_package_response(
     Ok(CloudsmithPackageState::NotFound)
 }
 
-// ---------------------------------------------------------------------------
 // keep_versions pruning — pure selection
-// ---------------------------------------------------------------------------
 
 /// One CloudSmith package entry, as projected from a packages-list response,
 /// for `keep_versions` retention ranking. Each `(slug, version)` pair is a

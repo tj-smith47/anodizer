@@ -3,9 +3,7 @@ use std::fmt;
 use std::io;
 use std::time::Duration;
 
-// ---------------------------------------------------------------------------
 // Retriable-error classification
-// ---------------------------------------------------------------------------
 
 /// Carries an HTTP status code alongside the original error so
 /// [`is_retriable`] can route 5xx / 429 to retry and 4xx to fast-fail.
@@ -203,7 +201,7 @@ impl StdError for Retriable {
 ///     `ConnectionReset`, `ConnectionAborted`, and `BrokenPipe` as transient.
 ///     The OS-classified `ErrorKind` is robust where Display text is not:
 ///     Linux's connect-refused says `"Connection refused"` but Windows
-///     surfaces a transient connect failure as
+///     reports a transient connect failure as
 ///     `io::Error { kind: TimedOut, message: "operation timed out" }`, and
 ///     a Windows-reset reads `"An existing connection was forcibly closed"`.
 ///     Matching `kind()` catches all of them regardless of phrasing. Also
@@ -212,7 +210,7 @@ impl StdError for Retriable {
 ///     equivalent of Go's `io.EOF` sentinel).
 ///
 /// 1b. **Substring match on the lowercased Display form** against
-///     `NETWORK_ERROR_NEEDLES`. Covers the canonical surface plus the
+///     `NETWORK_ERROR_NEEDLES`. Covers the canonical phrasings plus the
 ///     Windows / Rust-stdlib phrasings that bypass the kind check when an
 ///     error has been wrapped (e.g. reqwest coercing the inner kind to
 ///     `Other` while preserving the OS message text).
@@ -256,7 +254,7 @@ pub fn is_network_error(err: &(dyn StdError + 'static)) -> bool {
 ///
 /// The first nine entries are the canonical network-error needles
 /// (matching is case-insensitive). The remaining entries cover Windows and
-/// Rust-stdlib phrasings of transient transport failures that surface when
+/// Rust-stdlib phrasings of transient transport failures that appear when
 /// an `io::Error` has been wrapped by a higher layer (reqwest, hyper,
 /// anyhow), losing the original `ErrorKind` classification but preserving
 /// the OS message text. Without these, every publisher running on Windows
@@ -278,7 +276,7 @@ const NETWORK_ERROR_NEEDLES: &[&str] = &[
     // Windows ErrorKind::ConnectionReset phrasing.
     "an existing connection was forcibly closed",
     // hyper-util / reqwest DNS-resolution failures wrapped through the
-    // connector. Surfaces as `client error (Connect): dns error: ...` with
+    // connector. Shows up as `client error (Connect): dns error: ...` with
     // a platform-specific resolver tail ("Name or service not known" on
     // Linux/glibc, "nodename nor servname provided, or not known" on macOS,
     // "No such host is known" on Windows). The leading "dns error" prefix

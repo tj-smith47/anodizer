@@ -66,9 +66,7 @@ fn snap_yamls_for_crate_resolves_workspace_only_crate() {
     assert!(yamls[0].contains("version: 1.0.0"), "{}", yamls[0]);
 }
 
-// -----------------------------------------------------------------------
 // generate_snap_yaml tests
-// -----------------------------------------------------------------------
 
 /// `assumes`, `hooks` and `plugs` are top-level snap.yaml keys, not
 /// app-scoped ones: a config that declares no `apps:` map still emits them.
@@ -440,7 +438,6 @@ fn test_generate_snapcraft_yaml_minimal_with_required_fields() {
     assert!(yaml.contains("description:"), "missing description");
 }
 
-// -----------------------------------------------------------------------
 // Snap Store schema parity — `icon:` must NOT leak into snap.yaml unless
 // the user explicitly configured it. The Store's `snap.json` validator
 // rejects the field with "Additional properties are not allowed
@@ -449,7 +446,6 @@ fn test_generate_snapcraft_yaml_minimal_with_required_fields() {
 // tests pin the omit-when-None behaviour so a future serde refactor
 // (e.g. dropping `skip_serializing_if`) can't silently regress this
 // behaviour back into emitting a Store-rejected `icon:` key.
-// -----------------------------------------------------------------------
 
 #[test]
 fn test_generate_snap_yaml_omits_icon_when_none() {
@@ -506,9 +502,7 @@ fn test_generate_snap_yaml_never_emits_icon_even_when_set() {
     );
 }
 
-// -----------------------------------------------------------------------
 // copy_snap_icon tests
-// -----------------------------------------------------------------------
 
 /// icon set + valid source file: copied to meta/gui/<name>.<ext> with correct bytes.
 #[test]
@@ -824,9 +818,7 @@ fn test_stage_icon_not_set_is_noop() {
     assert_eq!(snaps.len(), 1, "should register one snap artifact");
 }
 
-// -----------------------------------------------------------------------
 // snapcraft_command tests
-// -----------------------------------------------------------------------
 
 #[test]
 fn test_snapcraft_command_basic() {
@@ -1026,9 +1018,7 @@ Rev    Uploaded              Arches  Version  Channels
     assert!(missing_channels_for_version(output, "1.2.0", "amd64", &channels).is_some());
 }
 
-// -----------------------------------------------------------------------
 // Channel auto-population tests
-// -----------------------------------------------------------------------
 
 #[test]
 fn test_resolve_effective_channels_devel_grade() {
@@ -1077,9 +1067,7 @@ fn test_resolve_effective_channels_empty_explicit_falls_through() {
     );
 }
 
-// -----------------------------------------------------------------------
 // missing_channels_for_version — orphaned-revision detection
-// -----------------------------------------------------------------------
 
 #[test]
 fn test_missing_channels_for_version_no_matching_revision_is_none() {
@@ -1174,9 +1162,7 @@ fn missing_channels_for_version_dual_arch_does_not_cross_report() {
     );
 }
 
-// -----------------------------------------------------------------------
 // first_channel_rejected_for_prerelease_snap — devmode/devel preflight
-// -----------------------------------------------------------------------
 
 #[test]
 fn first_channel_rejected_for_prerelease_snap_detects_bare_restricted_risk() {
@@ -1227,9 +1213,7 @@ fn test_resolve_effective_channels_strict_confinement_stable_grade_gets_full_set
     );
 }
 
-// -----------------------------------------------------------------------
 // Stage integration tests
-// -----------------------------------------------------------------------
 
 #[test]
 fn test_stage_skips_when_no_snapcraft_config() {
@@ -2239,9 +2223,7 @@ fn test_no_linux_binaries_skips_snapcraft() {
     assert!(snaps.is_empty(), "should skip when no linux binaries exist");
 }
 
-// -----------------------------------------------------------------------
 // SnapcraftPublishStage tests
-// -----------------------------------------------------------------------
 
 #[test]
 fn test_publish_stage_skips_when_no_snapcraft_config() {
@@ -2402,9 +2384,7 @@ fn test_publish_stage_skips_disabled_config() {
     assert!(stage.run(&mut ctx).is_ok());
 }
 
-// -----------------------------------------------------------------------
 // New fields: all 24 missing SnapcraftApp fields + hooks + extra_files
-// -----------------------------------------------------------------------
 
 #[test]
 fn test_generate_yaml_all_new_app_fields() {
@@ -2939,9 +2919,7 @@ fn test_new_app_fields_omitted_when_empty() {
     assert!(!yaml.contains("hooks:"), "hooks should be omitted\n{yaml}");
 }
 
-// -----------------------------------------------------------------------
 // Q8.1 — snapcraft 5xx retry classifier
-// -----------------------------------------------------------------------
 
 #[test]
 fn snapcraft_5xx_classifies_retriable() {
@@ -3005,9 +2983,7 @@ fn snapcraft_5xx_classifier_is_case_insensitive() {
     }
 }
 
-// -----------------------------------------------------------------------
 // Content-dedup rejection classifier
-// -----------------------------------------------------------------------
 
 #[test]
 fn snapcraft_content_dedup_classifier_is_case_insensitive() {
@@ -3067,13 +3043,11 @@ fn snapcraft_content_dedup_does_not_match_unrelated_failures() {
     }
 }
 
-// -----------------------------------------------------------------------
 // Branches not exercised above: grade validation, riscv64 skip,
 // ARM Arch/Arm template split, multi-binary grouping per target,
 // ids-matches-none warn+skip, meta_description fallback,
 // project_root relative-icon resolution, and the staging-side error
 // paths (mode > 0o7777, extra_files copy, completer copy).
-// -----------------------------------------------------------------------
 
 /// Helper: build a one-crate Context with the given SnapcraftConfig and
 /// register the supplied binary artifacts. Common scaffolding extracted
@@ -3621,7 +3595,7 @@ fn test_apps_completer_existing_file_is_copied_to_prime() {
     ctx.options.project_root = Some(tmp.path().to_path_buf());
     // The contract pinned here: with a valid (relative) completer
     // source at `<project_root>/<completer>`, the staging branch
-    // completes without surfacing a `copy completer` error. The
+    // completes without reporting a `copy completer` error. The
     // subsequent snapcraft spawn may succeed (snapcraft installed)
     // or fail (snapcraft missing); either outcome proves the
     // completer branch ran clean.
@@ -3691,7 +3665,7 @@ fn test_apps_completer_absolute_path_is_rejected_with_actionable_error() {
 #[test]
 fn test_summary_template_render_failure_errors() {
     // summary goes through render_template (build_stage.rs:447-451). A
-    // malformed template surfaces as a render error before the spawn.
+    // malformed template is returned as a render error before the spawn.
     let tmp = TempDir::new().unwrap();
     let snap_cfg = SnapcraftConfig {
         name: Some("mysnap".to_string()),
@@ -3814,17 +3788,15 @@ fn test_name_template_with_explicit_snap_suffix_is_not_doubled() {
     );
 }
 
-// -----------------------------------------------------------------------
 // Additional uncovered branches: description/grade render errors,
 // absolute icon paths, icon copy in non-dry-run, mod_timestamp,
 // templated_extra_files, real replace removal, name_template
 // ending in .SNAP (case-insensitive suffix check).
-// -----------------------------------------------------------------------
 
 #[test]
 fn test_description_template_render_failure_errors() {
     // description goes through render_template (build_stage.rs:452-457).
-    // A malformed Tera template must surface as a render error before
+    // A malformed Tera template must be returned as a render error before
     // snapcraft pack spawns. Mirrors the summary-render test above.
     let tmp = TempDir::new().unwrap();
     let snap_cfg = SnapcraftConfig {
@@ -3931,7 +3903,7 @@ fn test_icon_resolution_falls_back_to_cwd_when_project_root_unset() {
 #[test]
 fn test_mod_timestamp_invalid_value_errors_during_staging() {
     // build_stage.rs:591-593: mod_timestamp is applied during the
-    // non-dry-run staging path. An unparseable value must surface as a
+    // non-dry-run staging path. An unparseable value must be returned as a
     // timestamp-parse error before the snapcraft spawn.
     let tmp = TempDir::new().unwrap();
     let bin_path = tmp.path().join("myapp");
@@ -3970,7 +3942,7 @@ fn test_mod_timestamp_invalid_value_errors_during_staging() {
 fn test_templated_extra_files_missing_source_errors() {
     // build_stage.rs:579-588: templated_extra_files invokes
     // anodizer_core::templated_files::process_templated_extra_files. A
-    // nonexistent source file surfaces as a "read templated file" error
+    // nonexistent source file is returned as a "read templated file" error
     // tagged "snapcraft" — proving the branch fires.
     let tmp = TempDir::new().unwrap();
     let bin_path = tmp.path().join("myapp");
@@ -4202,9 +4174,7 @@ fn test_binary_copy_missing_source_errors_with_path_context() {
     );
 }
 
-// -----------------------------------------------------------------------
 // Templated string fields render before emission (no literal `{{ }}` leak)
-// -----------------------------------------------------------------------
 
 /// Render one crate's snap.yaml through the offline renderer with `Tag` set,
 /// returning the single emitted document. Asserts exactly one was produced so

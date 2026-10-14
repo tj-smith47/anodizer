@@ -1,7 +1,7 @@
 //! Tests for the log register: the `status`/`verbose`/`warn`/`error` vocabulary
 //! and its gutter format, section nesting depth and the RAII guards that move
 //! it, deferred section headers that only print once their section produces
-//! output, secret redaction, and the `test-helpers` capture surface.
+//! output, secret redaction, and the `test-helpers` capture API.
 
 use std::sync::Mutex;
 use std::sync::atomic::Ordering;
@@ -291,7 +291,7 @@ fn test_header_paths_emit_identical_bytes() {
         }
         // The sentinel survived one swap but not the other — a real capture
         // anomaly (a flaky/half-redirected environment), not the documented
-        // all-or-nothing fallback. Surface it loudly instead of silently
+        // all-or-nothing fallback. Report it loudly instead of silently
         // running the weaker check.
         (flushed, stepped) => panic!(
             "inconsistent stderr capture: flush={} step={}",
@@ -603,9 +603,7 @@ fn test_default_verbosity_is_normal() {
     assert_eq!(Verbosity::default(), Verbosity::Normal);
 }
 
-// -----------------------------------------------------------------
 // Redaction inside check_output
-// -----------------------------------------------------------------
 
 #[cfg(unix)]
 fn fake_output(stdout: &[u8], stderr: &[u8], code: i32) -> std::process::Output {
@@ -657,7 +655,7 @@ fn test_redact_combines_env_and_url_credentials() {
 #[test]
 fn test_check_output_redacts_stderr_on_failure() {
     // Stderr from a failing subprocess must be redacted before
-    // the logger surfaces it, so secrets present in `output.stderr`
+    // the logger prints it, so secrets present in `output.stderr`
     // never reach the eprintln sink (or any future log appender).
     let log = StageLogger::new("test", Verbosity::Normal).with_env(vec![(
         "REGISTRY_PASSWORD".to_string(),
@@ -820,7 +818,7 @@ fn test_check_output_bail_truncates_long_stderr() {
         msg.ends_with('…'),
         "expected ellipsis on truncated stderr: {msg}"
     );
-    // Truncation must keep the surface manageable — well under
+    // Truncation must keep the output manageable — well under
     // 3 KiB of raw stderr should make it into the bail.
     assert!(
         msg.len() < 2500,
@@ -1001,7 +999,7 @@ fn test_retag_helpers_record_under_shared_capture() {
 #[test]
 fn skip_line_records_debug_when_not_shown() {
     // The default (show=false) routes a per-crate "no config block" skip to
-    // debug() so it stays invisible at Normal/Verbose and only surfaces at
+    // debug() so it stays invisible at Normal/Verbose and only shows at
     // --debug — the fix for the 300+-line workspace skip-noise problem.
     // skip_line emits a body line that drains the global PENDING stack;
     // serialize against the section-depth tests.

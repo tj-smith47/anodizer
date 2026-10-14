@@ -1123,8 +1123,6 @@ use: podman
     assert_eq!(cfg.use_backend.as_deref(), Some("podman"));
 }
 
-// docker manifest `use:` validation -----------------------------------
-
 #[test]
 fn test_resolve_manifester_docker_default() {
     use super::command::resolve_manifester;

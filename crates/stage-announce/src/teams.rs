@@ -4,9 +4,7 @@ use serde_json::json;
 
 use crate::http::post_json;
 
-// ---------------------------------------------------------------------------
 // Options
-// ---------------------------------------------------------------------------
 
 /// Optional fields for Microsoft Teams Adaptive Card payloads.
 pub struct TeamsOptions<'a> {
@@ -15,9 +13,7 @@ pub struct TeamsOptions<'a> {
     pub icon_url: Option<&'a str>,
 }
 
-// ---------------------------------------------------------------------------
 // Webhook URL classification
-// ---------------------------------------------------------------------------
 
 /// Microsoft Teams webhook URL category.
 ///
@@ -92,9 +88,7 @@ pub fn warn_legacy_teams_webhook() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // Payload builder
-// ---------------------------------------------------------------------------
 
 /// Build a Microsoft Teams Adaptive Card payload with optional title, color, and icon.
 ///
@@ -189,9 +183,7 @@ pub(crate) fn teams_payload(message: &str, opts: &TeamsOptions<'_>) -> String {
     .to_string()
 }
 
-// ---------------------------------------------------------------------------
 // Send
-// ---------------------------------------------------------------------------
 
 /// POST to a Microsoft Teams incoming webhook using an Adaptive Card.
 ///
@@ -216,9 +208,7 @@ pub fn send_teams(
     post_json(webhook_url, &payload, "teams", policy, log)
 }
 
-// ---------------------------------------------------------------------------
 // Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
@@ -333,7 +323,7 @@ mod tests {
         assert_eq!(columns[1]["items"][0]["text"], "Release");
     }
 
-    // ---- classify_teams_webhook ----
+    // classify_teams_webhook
     //
     // Microsoft is deprecating MessageCard webhooks served by
     // *.webhook.office.com (and the older outlook.office.com/webhook/...

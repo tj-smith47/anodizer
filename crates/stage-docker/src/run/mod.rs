@@ -118,12 +118,10 @@ impl Stage for super::DockerStage {
         // not try to re-create them from non-existent per-platform tags.
         let mut v2_multiplatform_tags: HashSet<String> = HashSet::new();
 
-        // ==================================================================
         // Prepare all docker build jobs sequentially.
         //
         // Needs &mut Context for template rendering and artifact lookups.
         // Each job is fully self-contained after preparation.
-        // ==================================================================
         let mut build_jobs: Vec<DockerBuildJob> = Vec::new();
         let mut config_post_hooks: Vec<PerConfigPostHook> = Vec::new();
         let mut config_first_digest: std::collections::BTreeMap<usize, String> =
@@ -131,7 +129,7 @@ impl Stage for super::DockerStage {
         // Pre-hook failures for individual docker_v2 configs are isolated:
         // parallel-per-config error semantic: a failed config
         // does not cancel sibling configs already in flight. anodizer collects
-        // the errors and surfaces them after all parallel jobs finish — an
+        // the errors and reports them after all parallel jobs finish — an
         // early-return past a failed pre-hook skips that config's build +
         // post-hook queueing.
         let mut pre_hook_errors: Vec<anyhow::Error> = Vec::new();
@@ -194,7 +192,7 @@ impl Stage for super::DockerStage {
             run_docker_post_hooks(ctx, &log, &config_post_hooks, &config_first_digest)?;
         }
 
-        // Surface accumulated pre-hook errors AFTER successful per-config
+        // Report accumulated pre-hook errors AFTER successful per-config
         // builds — the wait returns
         // the first error only after every parallel config has finished. The
         // first error is most informative; remaining errors were already
@@ -236,9 +234,7 @@ impl Stage for super::DockerStage {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Run helpers
-// ---------------------------------------------------------------------------
 
 /// Resolve the registry owner used for the per-crate `ghcr.io/{owner}/{crate}`
 /// `images` default. Resolution order (no new blocking network call):

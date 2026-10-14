@@ -23,7 +23,7 @@
 //!   regardless of `replace_existing_artifacts`.
 //! - `SecondaryRateLimited` sleeps the dedicated secondary-RL delay;
 //!   `PrimaryRateLimited` probes `/rate_limit` and waits for quota.
-//! - `Fatal` (remaining 4xx, unknown variants) surfaces immediately.
+//! - `Fatal` (remaining 4xx, unknown variants) returns immediately.
 
 use std::sync::Arc;
 
@@ -44,7 +44,7 @@ use crate::release_log;
 /// ([`crate::forge::run_upload_loop`]).
 ///
 /// GitHub reconciles same-named assets *reactively*: octocrab's upload POST
-/// surfaces a 422 `already_exists`, and [`upload_release_asset`] probes the
+/// returns a 422 `already_exists`, and [`upload_release_asset`] probes the
 /// size and partial-upload state to skip / bail / delete-and-retry. The probe hook
 /// therefore reports [`AssetPresence::Reactive`] so the driver issues no
 /// pre-upload HTTP of its own, keeping the historical request sequence
@@ -182,7 +182,7 @@ pub(crate) struct UploadAssetRequest<'a> {
 /// digest — every other case (`remote_digest_available == false`, or a size
 /// mismatch) falls back to the size-only rule and never looks at the
 /// digest. Hashing the artifact off disk in those cases is pure waste, and
-/// it needlessly widens the Fatal surface: a transient read/permission
+/// it needlessly widens the Fatal cases: a transient read/permission
 /// error while hashing would abort an upload that a size-only comparison
 /// would have resolved cleanly.
 fn hash_for_already_exists_comparison(
@@ -405,7 +405,7 @@ pub(crate) async fn upload_release_asset(
                             }
                             AlreadyExistsAction::BailReplaceForbidden => {
                                 // `replace_existing_artifacts: false` and the
-                                // bytes differ: surface the conflict rather than
+                                // bytes differ: report the conflict rather than
                                 // overwriting. Unrecoverable.
                                 return Step::Fail(UploadFailure::Fatal(
                                     anyhow::anyhow!(err).context(format!(
@@ -764,9 +764,7 @@ mod tests {
         .await
     }
 
-    // =======================================================================
     // hash_for_already_exists_comparison — the 422-branch hash gate
-    // =======================================================================
 
     #[test]
     fn hash_gate_skips_hashing_when_remote_digest_unavailable() {
@@ -820,7 +818,7 @@ mod tests {
     #[test]
     fn hash_gate_propagates_read_failure_when_hash_is_actually_needed() {
         // When the comparison genuinely depends on the digest (available +
-        // sizes match), a hash-read failure must still surface — the gate
+        // sizes match), a hash-read failure must still be returned — the gate
         // must not silently swallow a real need for the hash.
         let result = hash_for_already_exists_comparison(
             std::path::Path::new("/nonexistent/does-not-exist.tar.gz"),
@@ -1337,7 +1335,7 @@ mod tests {
     /// Secondary-rate-limit EXHAUSTION: every upload attempt's POST returns a
     /// 403 secondary-rate-limit response. The loop must back off between
     /// attempts (honoring the env-tuned delay), exhaust the bounded budget,
-    /// and surface an actionable error that BOTH reports the attempt budget
+    /// and return an actionable error that BOTH reports the attempt budget
     /// AND names the secondary rate limit (so an operator knows the cause is a
     /// burst guard, not a bare 403 auth failure or a transient 5xx).
     ///

@@ -457,7 +457,7 @@ fn setup_env_release_mode_skips_token_gate_with_determinism_skip_stages() {
 /// as NOT declared, so the harness routes to its quiet skip rather than the
 /// (now factually wrong) "declares dockers_v2 but all entries were skipped"
 /// warn. This is the LOW-1 invariant: an errored host-default resolve must
-/// not surface a misleading legit-skip message downstream.
+/// not show a misleading legit-skip message downstream.
 #[test]
 fn classify_docker_stage_state_host_default_error_forces_not_declared() {
     let log = StageLogger::new("test", Verbosity::Quiet);
@@ -554,7 +554,7 @@ fn parse_stages_subset_filters_to_named_set() {
 fn parse_stages_accepts_full_byte_stable_set() {
     // Every stage name reachable from anodizer-action's per-OS
     // determinism-stages default must parse cleanly. Drift between
-    // this parser and the action's expanded default surfaces as
+    // this parser and the action's expanded default shows up as
     // "unknown stage(s): makeself, snapcraft" in CI. This test pins
     // the parser to the action's current Linux default CSV.
     let stages = parse_stages(Some(
@@ -582,7 +582,7 @@ fn parse_stages_accepts_full_byte_stable_set() {
 fn parse_stages_errors_on_unknown_token() {
     // Typos like `--stages=archve,checksum` previously filtered to
     // just `checksum` and quietly under-verified. The unknown token
-    // must surface as an error naming the bad token and the legal
+    // must be reported as an error naming the bad token and the legal
     // vocabulary.
     let err =
         parse_stages(Some(" archive , bogus, checksum ")).expect_err("unknown token must error");
@@ -744,7 +744,7 @@ fn commit_short_keeps_short_commit_as_is() {
 /// behavior is covered by the unit tests above.
 #[test]
 fn dispatcher_args_are_consumed() {
-    // Sanity guard: if the CheckDeterminismArgs surface grows new
+    // Sanity guard: if the CheckDeterminismArgs struct grows new
     // required fields, this test fails to compile and forces the
     // dispatcher above to pick up the new field explicitly.
     let _args = CheckDeterminismArgs {
@@ -959,7 +959,7 @@ fn cfgd_v040_drift_set_is_fully_allowlisted() {
     use anodizer_core::DeterminismState;
     use anodizer_core::config::{Config, SignConfig};
 
-    // cfgd's signing surface: a cosign checksum signer emitting
+    // cfgd's signing config: a cosign checksum signer emitting
     // `.cosign.bundle`, plus default-`.sig` gpg/cosign entries.
     let cfg = Config {
         signs: vec![

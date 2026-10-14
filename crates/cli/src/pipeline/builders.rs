@@ -215,7 +215,7 @@ pub fn build_split_pipeline() -> Pipeline {
 /// publish` subcommand, which assumes the input dist was produced by
 /// a full `anodizer release` whose own SignStage already fired. Adding
 /// a head SignStage here would silently introduce a new credential
-/// requirement to the existing surface. The
+/// requirement to the existing path. The
 /// `anodizer release --publish-only` path uses
 /// [`build_publish_only_pipeline`] instead, which DOES prepend
 /// SignStage for the determinism-preserved-dist re-sign pass.
@@ -364,7 +364,6 @@ mod tests {
         tmp
     }
 
-    // -----------------------------------------------------------------------
     // Stage-order invariants
     //
     // BlobStage must run BEFORE SnapcraftPublishStage in every pipeline
@@ -372,7 +371,6 @@ mod tests {
     // (irreversible) snapcraft upload via the same
     // `any_failed(Assets, required_only=true)` gate that already
     // protects every other Submitter publisher.
-    // -----------------------------------------------------------------------
 
     fn assert_blob_before_snapcraft(names: &[&str], pipeline: &str) {
         let blob_idx = names
@@ -495,7 +493,6 @@ mod tests {
         );
     }
 
-    // -----------------------------------------------------------------------
     // EmissionValidateStage presence
     //
     // Both from-scratch builders re-validate the binstall / nix / version-sync
@@ -505,7 +502,6 @@ mod tests {
     // the stage lives in `push_artifact_stages`, so deleting it drops it from
     // BOTH sides of every comparison at once and they keep passing. Presence and
     // placement therefore need their own assertion.
-    // -----------------------------------------------------------------------
 
     #[test]
     fn from_scratch_pipelines_run_emission_validate_after_checksum_before_publish() {
@@ -533,7 +529,6 @@ mod tests {
         }
     }
 
-    // -----------------------------------------------------------------------
     // PrePublishGuardStage ordering
     //
     // The guard must sit BEFORE ReleaseStage, so an abort leaves no release
@@ -543,7 +538,6 @@ mod tests {
     // sha256 the sha256-consuming publishers' schema-validate needs. The
     // announce dry-render's `{{ ReleaseURL }}` comes from the guard's own
     // derivation (`derive_release_urls`), not from the release.
-    // -----------------------------------------------------------------------
 
     fn idx(names: &[&str], stage: &str, pipeline: &str) -> usize {
         names
@@ -858,9 +852,7 @@ mod tests {
         assert_announce_then_verify_release_terminal(&names, "build_merge_pipeline");
     }
 
-    // -----------------------------------------------------------------------
     // before_publish: hooks
-    // -----------------------------------------------------------------------
 
     /// Register a single sentinel archive artifact on the context. The
     /// before-publish stage runs once per matching artifact, so any test
@@ -937,7 +929,7 @@ mod tests {
         );
     }
 
-    /// A hook exiting non-zero must surface as Err from the pipeline so the
+    /// A hook exiting non-zero must come back as Err from the pipeline so the
     /// PublishStage never gets to dispatch. Verified by building a pipeline
     /// of `[BeforePublishStage, RecordingStage]` and asserting that
     /// RecordingStage never ran.
@@ -1230,9 +1222,7 @@ before_publish:
         }
     }
 
-    // -----------------------------------------------------------------------
     // before_publish per-artifact iteration
-    // -----------------------------------------------------------------------
 
     /// Register N archives, one hook with `artifacts: archive`, and verify
     /// the rendered cmd carried each artifact's `ArtifactPath` exactly once.
@@ -1635,7 +1625,6 @@ before_publish:
         );
     }
 
-    // -----------------------------------------------------------------------
     // Pipeline-level emit_summary contract.
     //
     // Pipeline::run must ALWAYS invoke `emit_summary` (regardless of
@@ -1643,7 +1632,6 @@ before_publish:
     // `stage-announce` pin the stage-side contract; this test pins the
     // pipeline-side contract — specifically that `--skip=announce`
     // doesn't drop `--summary-json`.
-    // -----------------------------------------------------------------------
 
     /// A `Stage` that always returns `Err`. Pins the "emit_summary
     /// fires even on inner-fn Err" half of `Pipeline::run`'s contract.
@@ -1883,7 +1871,6 @@ before_publish:
         );
     }
 
-    // -----------------------------------------------------------------------
     // Per-crate lifecycle (before / after) stage placement + no-double-fire
     //
     // `crates[].before` / `crates[].after` must fire per crate in a full
@@ -1891,7 +1878,6 @@ before_publish:
     // same hooks via its own per-crate loop (`run_per_crate_lifecycle_hooks`)
     // and must NOT also carry these stages, or a publish-only run would
     // double-fire. These tests pin that invariant structurally.
-    // -----------------------------------------------------------------------
 
     #[test]
     fn release_pipeline_has_before_crate_at_head_after_crate_at_tail() {

@@ -178,7 +178,7 @@ pub(super) fn run_status_with_retry(
         None,
         |attempt| -> RetryStep<std::process::ExitStatus, NotarizeTerminal<std::process::ExitStatus>> {
             // `run_capture` pipes both streams (rcodesign's chatter never leaks
-            // to the default log — surfaced only at `-v`), earns the liveness
+            // to the default log — shown only at `-v`), earns the liveness
             // heartbeat, and returns the raw Output; take just the exit status.
             match anodizer_core::run::run_capture(&mut build_command_from_args(args), log, label) {
                 Ok(output) if output.status.success() => RetryStep::Done(output.status),
@@ -205,9 +205,7 @@ pub(super) fn run_status_with_retry(
     }
 }
 
-// ---------------------------------------------------------------------------
 // Helper: parse notarize output for status differentiation
-// ---------------------------------------------------------------------------
 
 /// Check notarization subprocess output, differentiating between rejected,
 /// invalid, timeout, and accepted statuses (the
@@ -286,5 +284,4 @@ pub(super) fn check_notarize_output(
     );
 }
 
-// ---------------------------------------------------------------------------
 // NotarizeStage

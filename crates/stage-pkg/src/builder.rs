@@ -1,8 +1,6 @@
 use anyhow::Result;
 
-// ---------------------------------------------------------------------------
 // pkgbuild_command
-// ---------------------------------------------------------------------------
 
 /// Construct the `pkgbuild` CLI command arguments.
 ///
@@ -42,9 +40,7 @@ pub fn pkgbuild_command(
     args
 }
 
-// ---------------------------------------------------------------------------
 // Tool resolution
-// ---------------------------------------------------------------------------
 
 /// Which build path produces the flat `.pkg`.
 ///
@@ -118,7 +114,7 @@ pub fn env_requirements(
     }
     // `xar` is the sentinel for the Linux flat-package path: ToolAnyOf is
     // any-of and cannot express "all three of xar+mkbom+cpio together", so
-    // preflight surfaces "pkgbuild OR xar"; the build-time resolution in
+    // preflight reports "pkgbuild OR xar"; the build-time resolution in
     // `resolve_pkg_builder` still enforces the full three-tool group and bails
     // with the precise message when only a partial Linux toolchain is present.
     vec![anodizer_core::EnvRequirement::ToolAnyOf {

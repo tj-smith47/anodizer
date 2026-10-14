@@ -538,11 +538,11 @@ fn shard_identity_keys(
 ///   downstream stages can render templates without re-running git
 ///   probes;
 /// - cross-checks `matrix.json` (when present) against the loaded
-///   shards to surface a missing worker as a hard error;
+///   shards to report a missing worker as a hard error;
 /// - bails loudly on per-path collisions across shards (silent dedup
 ///   would mask `no_unique_dist_dir` / `split.subdir` config bugs);
 /// - cross-checks the loaded paths against the filesystem before
-///   returning so a missing-upload surfaces as a `dist/`-shaped
+///   returning so a missing upload is reported as a `dist/`-shaped
 ///   diagnostic instead of bubbling up from later stages
 ///   (cosign/gpg's less actionable "file not found").
 pub fn load_split_contexts_into(
@@ -577,7 +577,7 @@ pub fn load_split_contexts_into(
     // worker silently dropped its `dist/<target>/context.json` (transient
     // CI failure, runner cancellation, etc.), `--merge` would otherwise
     // sign / checksum / publish a strict subset of the intended artifact
-    // set without warning. Surface the gap as a hard error so an
+    // set without warning. Report the gap as a hard error so an
     // incomplete release is never accepted.
     //
     // The check is best-effort: if matrix.json is absent (e.g. the user is
@@ -672,7 +672,7 @@ pub fn load_split_contexts_into(
     // contexts reference must exist on disk under `dist/`; missing files
     // mean a split worker uploaded a context.json whose referenced binary
     // didn't make it into the dist tree (transient CI upload failure,
-    // partial restore, etc.). Surface as a manifest-shaped diagnostic
+    // partial restore, etc.). Report as a manifest-shaped diagnostic
     // before SignStage / ChecksumStage bails with cosign / gpg's less
     // actionable "file not found".
     //
@@ -808,9 +808,7 @@ fn find_split_artifacts(dist: &Path) -> Result<Vec<PathBuf>> {
     Ok(files)
 }
 
-// ---------------------------------------------------------------------------
 // Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
@@ -1180,9 +1178,7 @@ mod tests {
         assert!(ArtifactKind::parse("").is_none());
     }
 
-    // -----------------------------------------------------------------
     // check_split_worker_completeness — second-opinion finding Q-merge1
-    // -----------------------------------------------------------------
 
     /// Write a minimal `dist/<subdir>/context.json` carrying one binary
     /// built for `target` — the only thing the completeness check reads
@@ -1509,7 +1505,7 @@ mod tests {
 
     #[test]
     fn worker_completeness_errors_when_surplus_workers_present() {
-        // Stale `dist/` from a prior split run must surface as an
+        // Stale `dist/` from a prior split run must be reported as an
         // error rather than silently merging a superset.
         let tmp = tempfile::TempDir::new().unwrap();
         let dist = tmp.path();
@@ -1637,7 +1633,7 @@ mod tests {
         };
 
         // Two from-clean serializations must produce equal bytes. This
-        // pins the surface that `release --split` re-runs against —
+        // pins the file that `release --split` re-runs against —
         // `cmp -s dist/<subdir>/context.json{,.prev}` would pass.
         let first = serde_json::to_string_pretty(&make_ctx()).unwrap();
         let second = serde_json::to_string_pretty(&make_ctx()).unwrap();
@@ -1871,9 +1867,7 @@ mod tests {
         );
     }
 
-    // -----------------------------------------------------------------
     // redact_secret_env_vars — pure secret-scrubbing transform
-    // -----------------------------------------------------------------
 
     #[test]
     fn redact_replaces_secret_suffix_values_keeps_keys() {
@@ -1948,9 +1942,7 @@ mod tests {
         assert_eq!(out.get("GITHUB_TOKEN").unwrap(), "");
     }
 
-    // -----------------------------------------------------------------
     // artifact_to_split — Artifact -> SplitArtifact projection
-    // -----------------------------------------------------------------
 
     #[test]
     fn artifact_to_split_projects_all_fields() {
@@ -2007,9 +1999,7 @@ mod tests {
         assert!(split.extra.is_empty());
     }
 
-    // -----------------------------------------------------------------
     // build_matrix — edge cases beyond the existing os/target dedup tests
-    // -----------------------------------------------------------------
 
     #[test]
     fn build_matrix_empty_targets_yields_empty_include() {
@@ -2051,9 +2041,7 @@ mod tests {
         assert_eq!(matrix.include[0].runner, "ubuntu-latest");
     }
 
-    // -----------------------------------------------------------------
     // load_artifact_manifests via the public loader's fallback branch
-    // -----------------------------------------------------------------
 
     fn write_artifacts_manifest(dist: &Path, subdir: Option<&str>, body: &str) {
         let dir = match subdir {
@@ -2241,9 +2229,7 @@ mod tests {
         );
     }
 
-    // -----------------------------------------------------------------
     // multi-crate (workspace per-crate) collect_build_targets path
-    // -----------------------------------------------------------------
 
     #[test]
     fn collect_build_targets_unions_distinct_targets_across_crates() {

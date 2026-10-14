@@ -220,7 +220,7 @@ fn validate_publish_order(order: &[String], graph: &[(String, Vec<String>)]) -> 
 /// Routed through `Config::effective_default_targets` — the same helper the
 /// build stage uses — so the binstall override set the cargo publisher emits
 /// equals the one the build stage emits for the same config; any divergence
-/// would surface as a per-target asset mismatch between the two paths.
+/// would show up as a per-target asset mismatch between the two paths.
 pub(crate) fn resolve_default_targets(ctx: &Context) -> Vec<String> {
     ctx.config.effective_default_targets()
 }

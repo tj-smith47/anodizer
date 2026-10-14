@@ -95,7 +95,7 @@ fn refresh_sort_tolerates_malformed_lines() {
     );
 }
 
-// -- Algorithm unit tests with known test vectors -------------------------
+// Algorithm unit tests with known test vectors
 
 #[test]
 fn test_sha1_file() {
@@ -240,7 +240,7 @@ fn test_md5_file() {
     assert_eq!(hash, "5eb63bbbe01eeed093cb22bb8f5acdc3");
 }
 
-// -- Dispatch tests -------------------------------------------------------
+// Dispatch tests
 
 #[test]
 fn test_hash_file_dispatches() {
@@ -324,7 +324,7 @@ fn test_format_checksum_line() {
     assert_eq!(line, "abcdef1234  myfile.tar.gz");
 }
 
-// -- Config parsing tests -------------------------------------------------
+// Config parsing tests
 
 #[test]
 fn test_extra_files_config_parsing() {
@@ -362,7 +362,7 @@ ids:
     );
 }
 
-// -- Stage integration tests ----------------------------------------------
+// Stage integration tests
 
 #[test]
 fn test_checksum_stage_run() {
@@ -860,9 +860,7 @@ fn test_checksum_stage_with_ids_filter() {
     assert!(!content.contains("myapp-darwin.tar.gz"));
 }
 
-// -----------------------------------------------------------------------
 // Deep integration tests: verify checksum format and hash correctness
-// -----------------------------------------------------------------------
 
 #[test]
 fn test_integration_checksum_file_format_and_correctness() {
@@ -1085,7 +1083,7 @@ fn test_integration_checksum_multiple_algorithms_produce_correct_lengths() {
     assert_eq!(hash, expected);
 }
 
-// -- TestContextBuilder + create_fake_binary integration test --
+// TestContextBuilder + create_fake_binary integration test
 
 #[test]
 fn test_checksum_of_fake_binary_via_builder() {
@@ -1136,9 +1134,7 @@ fn test_checksum_of_fake_binary_via_builder() {
     assert!(combined_content.starts_with(&expected_hash));
 }
 
-// -----------------------------------------------------------------------
 // Additional behavior tests — config fields actually do things
-// -----------------------------------------------------------------------
 
 #[test]
 fn test_each_algorithm_produces_correct_known_hash() {
@@ -1486,7 +1482,7 @@ fn test_ids_filter_excludes_unmatched_artifacts() {
     );
 }
 
-// ---- Error path tests: missing file / bad inputs ----
+// Error path tests: missing file / bad inputs
 
 #[test]
 fn test_hash_file_missing_file_errors_with_path() {
@@ -1570,7 +1566,7 @@ fn test_each_sha_algorithm_on_missing_file() {
     }
 }
 
-// -- split mode tests ---------------------------------------------------
+// split mode tests
 
 #[test]
 fn test_split_config_parsing() {
@@ -1898,7 +1894,7 @@ fn test_checksum_stage_global_split_cascades_to_crate() {
     );
 }
 
-// -- Default filename format tests -----------------------------------------
+// Default filename format tests
 
 #[test]
 fn test_default_checksum_filename_uses_project_name_and_version() {
@@ -1949,7 +1945,7 @@ fn test_default_checksum_filename_uses_project_name_and_version() {
     );
 }
 
-// -- SHA3-224 and SHA3-384 dispatch tests ----------------------------------
+// SHA3-224 and SHA3-384 dispatch tests
 
 #[test]
 fn test_sha3_224_dispatches_via_hash_file() {
@@ -1975,9 +1971,7 @@ fn test_sha3_384_dispatches_via_hash_file() {
     assert_eq!(h, sha3_384_file(&f).unwrap());
 }
 
-// -----------------------------------------------------------------------
 // Config + wiring parity tests
-// -----------------------------------------------------------------------
 
 #[test]
 fn test_config_disable_template_string_parsing() {
@@ -2636,9 +2630,7 @@ fn checksum_stage_never_produces_recursive_sidecar_chains() {
     }
 }
 
-// ---------------------------------------------------------------------------
 // SOURCE_DATE_EPOCH byte-stability regression
-// ---------------------------------------------------------------------------
 //
 // stage-checksum is trivially deterministic: SHA256 (and friends) over the
 // same byte stream produces an identical digest, and the formatted

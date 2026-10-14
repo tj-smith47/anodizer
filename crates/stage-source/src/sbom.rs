@@ -2,9 +2,7 @@
 
 use anyhow::{Context as _, Result};
 
-// ---------------------------------------------------------------------------
 // SBOM generation
-// ---------------------------------------------------------------------------
 
 /// A parsed Cargo.lock package entry.
 #[derive(Debug, Clone)]

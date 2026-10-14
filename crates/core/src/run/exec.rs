@@ -512,7 +512,7 @@ fn capture_inner(
     }
 
     // Timeout takes precedence over a stdin write error (the latter is the
-    // symptom — the child stopped reading because it hung). Surface a retriable
+    // symptom — the child stopped reading because it hung). Return a retriable
     // timeout so the announce retry profile treats it like a transient blip.
     if timed_out {
         let secs = timeout.map(|t| t.as_secs_f64()).unwrap_or_default();
@@ -760,7 +760,7 @@ fn await_readers(
 /// live (redacted) to stderr — `is_stderr` selects the capture level
 /// (stdout→Verbose, stderr→Error). At non-verbose verbosity `tee` is `false`,
 /// so the reader still drains the pipe (preventing deadlock) but prints
-/// nothing, leaving the captured buffer for `check_output` to surface only on
+/// nothing, leaving the captured buffer for `check_output` to show only on
 /// failure.
 ///
 /// Keeps whatever was captured even if a mid-stream read errors, so a

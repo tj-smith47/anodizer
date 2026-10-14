@@ -3,9 +3,7 @@ use serde::{Deserialize, Serialize};
 
 use super::{StringOrBool, deserialize_string_or_bool_opt};
 
-// ---------------------------------------------------------------------------
 // GemFury publisher config
-// ---------------------------------------------------------------------------
 //
 // The `gemfury:` publisher block.
 // Each entry pushes deb / rpm / apk artifacts to `https://push.fury.io/<account>`.

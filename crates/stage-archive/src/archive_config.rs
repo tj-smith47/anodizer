@@ -612,7 +612,7 @@ fn archive_metadata(
     }
     // Sorted so the joined string is byte-stable across runs: selected_bins
     // inherits its order from the artifact registry, which can pick up
-    // HashMap iteration order from earlier stages and surface as
+    // HashMap iteration order from earlier stages and show up as
     // mid-of-file drift in `artifacts.json`.
     let mut bin_names: Vec<String> = selected_bins
         .iter()

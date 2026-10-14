@@ -2,9 +2,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
-// ---------------------------------------------------------------------------
 // MonorepoConfig
-// ---------------------------------------------------------------------------
 
 /// Monorepo configuration.
 ///

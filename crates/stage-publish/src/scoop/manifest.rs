@@ -1,8 +1,6 @@
 use super::*;
 
-// ---------------------------------------------------------------------------
 // generate_manifest
-// ---------------------------------------------------------------------------
 
 /// Optional extended fields for manifest generation.
 #[derive(Default)]
@@ -507,9 +505,7 @@ pub(crate) fn generate_manifest_with_opts(
     serde_json::to_string_pretty(&manifest).context("scoop: serialize manifest")
 }
 
-// ---------------------------------------------------------------------------
 // Multi-artifact disambiguation
-// ---------------------------------------------------------------------------
 
 /// Format preference for scoop buckets: `.zip` (canonical on Windows) first,
 /// then `.tar.gz` / `tgz` as a fallback.

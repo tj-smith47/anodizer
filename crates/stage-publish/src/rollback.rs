@@ -103,7 +103,7 @@ pub(crate) fn run_with_publishers(
     // AUR), a second revert would revert-the-revert and re-publish the
     // broken artifact the operator is trying to remove.
     //
-    // Corruption / version-mismatch on rollback.json surfaces a clear
+    // Corruption / version-mismatch on rollback.json reports a clear
     // error rather than silently falling back to report.json — falling
     // back would re-roll everything and is the exact regression this
     // guard exists for.
@@ -246,7 +246,7 @@ pub fn planned_rollback_names(ctx: &Context, run_id: &str) -> Result<Vec<String>
 /// would revert-the-revert and re-publish the artifact the operator is
 /// removing.
 ///
-/// Corruption on `rollback.json` surfaces a clear error rather than
+/// Corruption on `rollback.json` reports a clear error rather than
 /// silently falling back to `report.json` — falling back would re-roll
 /// everything, the exact regression this ordering exists to prevent.
 ///
@@ -394,7 +394,7 @@ pub fn validate_run_id(run_id: &str) -> Result<()> {
 ///   exists only to undo a partial publish, not to revert a clean one.
 ///
 /// `Succeeded` rows without recorded evidence are still candidates —
-/// [`run`]'s loop surfaces the gap as
+/// [`run`]'s loop reports the gap as
 /// `RollbackFailed("no evidence in prior report")` rather than silently
 /// leaving the row untouched, so a missing-evidence row is visible to the
 /// operator instead of stranded. A failed Assets/Manager row without
@@ -544,7 +544,7 @@ pub(crate) fn execute_rollback_step(
             let msg = format!("{:#}", err);
             log.warn(&format!("rollback for '{name}' failed: {msg}"));
             // A live artifact anodizer could not pull — the on_rollback hook is
-            // the escalation surface (`{{ .RollbackFailed }}` == true).
+            // the escalation path (`{{ .RollbackFailed }}` == true).
             crate::failure_hooks::fire_on_rollback(
                 ctx,
                 name,
@@ -563,9 +563,7 @@ pub(crate) fn execute_rollback_step(
     }
 }
 
-// ---------------------------------------------------------------------------
 // Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
@@ -756,7 +754,7 @@ mod tests {
         // A publisher recorded Succeeded but somehow lacks evidence
         // (defensive: the dispatcher always writes evidence for
         // Succeeded, but a hand-edited report.json could omit it). The
-        // row is still a candidate — the loop surfaces the gap rather
+        // row is still a candidate — the loop reports the gap rather
         // than silently leaving a `Succeeded` row that was never
         // actually reverted.
         let (mut ctx, _tmp) = ctx_with_dist();
@@ -898,7 +896,7 @@ mod tests {
     fn blob_row_marked_not_found_when_blob_not_configured() {
         // Symmetry guard: `rollback_publishers` only instantiates a
         // BlobPublisher when blob is configured. With no `blobs:` block a
-        // stray `blob` row genuinely has no owner and must surface as
+        // stray `blob` row genuinely has no owner and must show up as
         // RollbackFailed rather than silently passing.
         let (mut ctx, _tmp) = ctx_with_dist();
         let mut report = PublishReport::default();
@@ -1226,13 +1224,11 @@ mod tests {
         );
     }
 
-    // -----------------------------------------------------------------------
     // Idempotency-on-second-invocation tests.
     //
     // These exercise the rollback.json-preferred-over-report.json load path
     // that makes re-invoking `anodizer tag rollback` against the same
     // `run_id` safe.
-    // -----------------------------------------------------------------------
 
     #[test]
     fn rollback_second_invocation_is_noop_for_already_rolled_back_entries() {
@@ -1324,7 +1320,7 @@ mod tests {
 
     #[test]
     fn rollback_errors_on_unparseable_rollback_json() {
-        // Corrupt rollback.json must surface a clear error rather than
+        // Corrupt rollback.json must report a clear error rather than
         // silently falling back to report.json — that fallback would
         // re-roll every Succeeded entry, which is exactly the regression
         // being guarded against.
@@ -1355,7 +1351,7 @@ mod tests {
             "error must name the rollback.json path, got '{}'",
             msg,
         );
-        // The error must surface the recovery hint so operators don't
+        // The error must report the recovery hint so operators don't
         // have to dig into the module rustdoc or commit body. This is
         // the rollback-state-specific branch; the report.json branch
         // does NOT carry this suffix (a corrupt pipeline-written file
@@ -1397,13 +1393,11 @@ mod tests {
         assert!(rollback_path(&ctx, "fixt").exists());
     }
 
-    // -----------------------------------------------------------------------
     // Scope-check parity: rollback must honor `rollback_scope_needed()` the
     // same way for every pass — otherwise it invokes `publisher.rollback(...)`
     // against a host that's missing the credential, which would either
     // fail-hard or (worse) silently degrade to no-op for a publisher that
     // swallows auth errors.
-    // -----------------------------------------------------------------------
 
     #[test]
     fn rollback_does_not_invoke_rollback_when_scope_unavailable() {
@@ -1505,9 +1499,7 @@ mod tests {
         );
     }
 
-    // -----------------------------------------------------------------------
     // on_rollback hook-firing mechanics.
-    // -----------------------------------------------------------------------
 
     /// Build a Context whose `config.dist` points at `dist` and whose single
     /// crate declares an `on_rollback` hook that appends
@@ -1598,7 +1590,7 @@ mod tests {
     }
 
     /// Headline case: a `Succeeded` publisher reverted fires `on_rollback`
-    /// with `RollbackFailed=false`. This is the surface `on_error` cannot
+    /// with `RollbackFailed=false`. This is the case `on_error` cannot
     /// reach (the publisher never failed).
     #[test]
     fn on_rollback_fires_for_succeeded_then_reverted_publisher() {
@@ -1634,7 +1626,7 @@ mod tests {
     }
 
     /// A revert that itself fails fires `on_rollback` with
-    /// `RollbackFailed=true` — the orphaned-artifact escalation surface.
+    /// `RollbackFailed=true` — the orphaned-artifact escalation path.
     #[test]
     fn on_rollback_fires_with_rollback_failed_true_when_revert_fails() {
         let dir = tempfile::tempdir().expect("tempdir");

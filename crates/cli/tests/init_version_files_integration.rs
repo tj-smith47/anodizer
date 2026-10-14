@@ -423,9 +423,7 @@ fn block_not_at_eof_inserts_within_block() {
     assert!(cfg.contains("\ndist: ./dist"), "trailing key lost:\n{cfg}");
 }
 
-// ---------------------------------------------------------------------------
 // Anchored entries already in the config
-// ---------------------------------------------------------------------------
 
 /// A file enrolled with a `path` + `match` mapping is already enrolled, and so
 /// is a bare entry listed AFTER it — a line scan breaks on the anchored item's

@@ -4,9 +4,7 @@
 
 use super::*;
 
-// ---------------------------------------------------------------------------
 // validate_upload_mode
-// ---------------------------------------------------------------------------
 
 /// Validate the upload mode string. Only `"archive"` and `"binary"` are
 /// accepted; matching is case-insensitive so `mode: Archive` works.
@@ -24,9 +22,7 @@ pub fn validate_upload_mode(mode: &str) -> Result<()> {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Artifact filtering by mode
-// ---------------------------------------------------------------------------
 
 /// Kinds the `archive` mode leaves to another switch rather than selecting
 /// itself: the compiled binary belongs to `binary` mode, the sidecars to the

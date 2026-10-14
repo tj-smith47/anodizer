@@ -7,9 +7,7 @@ use anodizer_core::config::SnapcraftConfig;
 use crate::arch::triple_to_snap_arch;
 use crate::yaml::{SnapcraftYaml, SnapcraftYamlApp, SnapcraftYamlLayout};
 
-// ---------------------------------------------------------------------------
 // generate_snap_yaml
-// ---------------------------------------------------------------------------
 
 /// Generate a snap.yaml metadata string from the anodizer snapcraft config.
 ///

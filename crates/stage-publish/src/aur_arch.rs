@@ -12,7 +12,7 @@
 //! silently relabeled. Relabeling (the historical `_ => "x86_64"` bug) ships a
 //! PKGBUILD that maps a non-x86 tarball under `source_x86_64`, so a user on
 //! that architecture installs a binary that cannot execute — a silent
-//! correctness corruption the caller must surface (hard-fail) or skip (loud
+//! correctness corruption the caller must report (hard-fail) or skip (loud
 //! warn), never paper over.
 
 /// An architecture name that has no known pacman equivalent.

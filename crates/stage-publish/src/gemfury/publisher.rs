@@ -77,7 +77,7 @@ fn encode_gemfury_targets(targets: &[GemFuryTarget]) -> anodizer_core::PublishEv
 /// after some artifacts published undoes exactly what this run placed. Best
 /// effort: a delete that fails (or a missing token) is warned, not raised —
 /// the goal is to remove as much of the half-published push as possible while
-/// surfacing whatever the operator must clean up by hand.
+/// reporting whatever the operator must clean up by hand.
 fn delete_recorded_targets(ctx: &mut Context, targets: &[GemFuryTarget]) {
     let log = ctx.logger("publish");
     let client = match anodizer_core::http::blocking_client(Duration::from_secs(30)) {
@@ -332,7 +332,7 @@ impl anodizer_core::Publisher for GemFuryPublisher {
         let fail = FailSeverity::for_required(Self::resolved_required(self));
         let api_base = api_base_from(ctx.env_source());
         // The package/version path component is only an auth + reachability
-        // surface — a 404 (version absent) is treated as reachable — so the
+        // check — a 404 (version absent) is treated as reachable — so the
         // project name + pending version are a fine, harmless sentinel.
         let package = ctx.config.project_name.clone();
         let version = ctx.version();

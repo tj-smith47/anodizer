@@ -1,8 +1,6 @@
 use super::*;
 
-// ---------------------------------------------------------------------------
 // Windows-artifact eligibility (shared by the live collector + schema guard)
-// ---------------------------------------------------------------------------
 
 /// True when an artifact is a Windows build — by target triple or by path —
 /// i.e. one the scoop bucket manifest's `architecture` block consumes.
@@ -96,9 +94,7 @@ pub(crate) fn crate_has_scoop_artifacts(
         .any(|a| filters.matches(a))
 }
 
-// ---------------------------------------------------------------------------
 // render_scoop_manifest_for_crate
-// ---------------------------------------------------------------------------
 
 /// Resolve a crate's scoop config and render its bucket manifest in-memory,
 /// with no clone, disk, or network side effects.

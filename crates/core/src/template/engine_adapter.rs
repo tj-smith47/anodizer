@@ -226,7 +226,7 @@ impl JsonRegisterExt for tera::Tera {
 /// backslash too, leaving a dangling `s'` neither engine can make sense of —
 /// the shim does not attempt to recover authorial intent. The transformed
 /// text may cascade into an unterminated string that swallows the rest of
-/// the template, but that must always surface as a LOUD tera parse/render
+/// the template, but that must always show up as a LOUD tera parse/render
 /// error, never a silent, wrong render.
 pub(super) fn double_string_literal_backslashes(template: &str) -> std::borrow::Cow<'_, str> {
     if !template.contains('\\') {

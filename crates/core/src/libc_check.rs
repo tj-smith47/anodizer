@@ -3,7 +3,7 @@
 //! A binary built against a newer glibc than the oldest distro you support
 //! will fail to run there with a cryptic `version 'GLIBC_2.xx' not found`.
 //! This check reads the required glibc symbol versions from a `.deb`'s
-//! embedded ELF binary (the `.gnu.version_r` / verneed records, surfaced by
+//! embedded ELF binary (the `.gnu.version_r` / verneed records, exposed by
 //! the `object` crate) and fails if the maximum required version exceeds a
 //! configured floor.
 //!
@@ -160,7 +160,7 @@ fn scan_glibc_requirement<Elf: FileHeader<Endian = Endianness>>(
 ) -> Result<Option<GlibcVersion>> {
     // A malformed section/symbol table on an otherwise-valid ELF header is
     // uninspectable, not a glibc violation: each step degrades to SKIP
-    // (`Ok(None)`) rather than surfacing an error the caller would log as a
+    // (`Ok(None)`) rather than returning an error the caller would log as a
     // false post-release issue.
     let Ok(endian) = elf.endian() else {
         return Ok(None);
@@ -528,7 +528,7 @@ mod tests {
         let bytes = elf32_le_with_glibc_2_99();
         assert_eq!(FileKind::parse(bytes.as_slice()).unwrap(), FileKind::Elf32);
 
-        // The extraction must surface the real requirement, proving the scan
+        // The extraction must report the real requirement, proving the scan
         // walked the Elf32 .gnu.version_r (a broken 32-bit path would return
         // None → NoGlibcRequirement, failing the assert below).
         let max = max_glibc_requirement(&bytes)
@@ -549,7 +549,7 @@ mod tests {
 
     #[test]
     fn non_elf_degrades_to_skip() {
-        // A non-ELF or unparseable artifact must DEGRADE TO SKIP, not surface a
+        // A non-ELF or unparseable artifact must DEGRADE TO SKIP, not return a
         // libc-check error the stage would log as a false post-release issue.
         let max = max_glibc_requirement(b"not an elf at all").unwrap();
         assert!(max.is_none());

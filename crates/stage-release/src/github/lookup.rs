@@ -44,7 +44,7 @@ const LIST_RELEASES_PAGE_SIZE: usize = 100;
 ///
 /// Returns `Ok(Some(release))` when a draft with the matching `name` is
 /// found, `Ok(None)` when the listing is exhausted with no match, and
-/// `Err(_)` when a non-retryable error surfaces (or every retry has been
+/// `Err(_)` when a non-retryable error occurs (or every retry has been
 /// consumed).
 pub(crate) async fn find_draft_by_name(
     octo: &Arc<octocrab::Octocrab>,
@@ -91,7 +91,7 @@ pub(crate) async fn find_draft_by_name(
 ///
 /// Returns `Ok(Some(release))` when a release exists for the tag,
 /// `Ok(None)` when the tag has no associated release (HTTP 404), and
-/// `Err(_)` when any other error surfaces (auth, validation, exhausted retries
+/// `Err(_)` when any other error occurs (auth, validation, exhausted retries
 /// on 5xx / 429) so the caller sees the real GitHub error rather than silently
 /// treating a failed lookup as "no existing release".
 pub(super) async fn find_release_by_tag(
@@ -256,7 +256,7 @@ const READINESS_GUARD_MAX_DELAY: std::time::Duration = std::time::Duration::from
 /// GitHub serves `POST /releases` from a primary replica but the
 /// `GET /releases/{id}` issued by `ReleasesHandler::upload_asset(...).send()`
 /// (to read the release's `upload_url`) may hit a replica that has not yet
-/// observed the create — a read-after-write lag that surfaces as a transient
+/// observed the create — a read-after-write lag that shows up as a transient
 /// 404. Because the upload loop fans out in parallel immediately after the
 /// create, several of those probes can race the propagation window at once.
 ///
@@ -307,7 +307,7 @@ pub(super) async fn wait_for_release_readable(
                     }
                 }
                 // A non-404 hard error (auth, validation) is not a propagation
-                // lag; surface it rather than silently consuming the budget.
+                // lag; return it rather than silently consuming the budget.
                 Err(err) => return Err(anyhow::Error::new(err)),
             }
         }
@@ -751,7 +751,7 @@ mod get_by_tag_lookup_tests {
     async fn get_by_tag_5xx_retries_then_succeeds_under_helper() {
         // Pin the regression: a transient 5xx on `get_by_tag` must retry
         // through `retry_octocrab_call`, NOT fall through to the
-        // create-release POST (which would surface a 422 "tag already
+        // create-release POST (which would return a 422 "tag already
         // exists" on a tag whose existing release just had a flaky lookup).
         let (addr, calls) = spawn_oneshot_http_responder(vec![
             "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\n\r\n",
@@ -785,7 +785,7 @@ mod get_by_tag_lookup_tests {
     #[tokio::test]
     async fn get_by_tag_500_forever_surfaces_real_error_not_404_fallthrough() {
         // Pin the regression: if every retry sees 5xx, the helper must
-        // surface the typed 500 error (NOT swallow it into None). The
+        // return the typed 500 error (NOT swallow it into None). The
         // backend's match arm has only one non-error fall-through (a real
         // 404 via `is_octocrab_404`); 500-forever must propagate so the
         // user sees the real GitHub error instead of a confusing downstream

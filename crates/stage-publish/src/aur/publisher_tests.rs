@@ -340,7 +340,6 @@ fn aur_collect_run_targets_records_derived_url_when_git_url_absent() {
     assert_eq!(target.git_url, "ssh://aur@aur.archlinux.org/demo-bin.git");
 }
 
-// -----------------------------------------------------------------------
 // Log-message helpers — the operator-facing log strings the publisher
 // emits at each boundary.
 

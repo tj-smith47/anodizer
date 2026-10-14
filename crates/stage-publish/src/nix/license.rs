@@ -497,9 +497,7 @@ mod tests {
         );
     }
 
-    // -----------------------------------------------------------------
     // resolve_nix_license_meta — single attr / list / string fallback.
-    // -----------------------------------------------------------------
 
     #[test]
     fn meta_single_known_spdx_maps_to_attr() {

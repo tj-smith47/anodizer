@@ -81,7 +81,7 @@ impl<'a> UrlTarget<'a> {
 /// variables: `name`, `version` and everything [`UrlTarget`] seeds.
 ///
 /// Prefer [`render_url_template_with_ctx`] for new call sites — that variant
-/// also exposes the full project template surface (`ProjectName`, `Tag`,
+/// also exposes the full project template variables (`ProjectName`, `Tag`,
 /// `Version`, `Env.*`, `ArtifactName`, etc.) so a dotted-variable config
 /// like `url_template: "{{ .Tag }}/{{ .ArtifactName }}"` resolves correctly.
 /// This thin wrapper is retained for the rare site that has no `&Context`
@@ -99,7 +99,7 @@ pub(crate) fn render_url_template(
     template::render(url_template, &vars).unwrap_or_else(|_| url_template.to_string())
 }
 
-/// Render a `url_template` string with the full context template-vars surface
+/// Render a `url_template` string with the full context template variables
 /// (Tag, ProjectName, Version, Env.\*, Major/Minor/Patch, Commit, Branch,
 /// PreviousTag, ArtifactName, …) plus the per-artifact overlays (`name`,
 /// `version`, `ArtifactName` and everything [`UrlTarget`] seeds).

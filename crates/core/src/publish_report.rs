@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 /// always Assets → Manager → Submitter. The one-way-door gate (historically
 /// "the submitter gate") arms once any `required: true` publisher in an
 /// already-run group fails, and from that point skips **both** the Manager
-/// and Submitter groups — every publisher that writes a surface that cannot be
+/// and Submitter groups — every publisher that writes a target that cannot be
 /// cleanly reclaim. Only the reversible Assets group runs ungated. This is
 /// why a botched blob mirror or homebrew tap push cannot burn a crates.io
 /// version slot, and why a failed required blob upload no longer lets the
@@ -82,7 +82,7 @@ impl PublisherOutcome {
     /// gate. True for [`PublisherOutcome::Failed`] (the publish itself failed)
     /// and [`PublisherOutcome::RollbackFailed`] (the publish ran, rollback was
     /// attempted, and the rollback also failed, leaving a half-published
-    /// surface needing manual intervention).
+    /// target needing manual intervention).
     ///
     /// Written as an exhaustive `match` (not `matches!`) so a future
     /// hard-failure variant cannot silently slip past a gate: adding one
@@ -571,7 +571,7 @@ mod tests {
     #[test]
     fn required_failures_counts_rollback_failed() {
         // Regression: a required publisher whose publish succeeded but whose
-        // rollback then failed leaves a half-published surface and MUST count
+        // rollback then failed leaves a half-published target and MUST count
         // as a required failure. The prior `matches!(Failed(_))`-only filter
         // silently dropped it.
         let mut r = PublishReport::default();

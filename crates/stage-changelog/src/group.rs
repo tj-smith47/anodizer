@@ -49,9 +49,7 @@ impl GroupedCommits {
     }
 }
 
-// ---------------------------------------------------------------------------
 // parse_commit_message
-// ---------------------------------------------------------------------------
 
 // SAFETY: This is a compile-time regex literal; it is known to be valid.
 // `unwrap_or_else(panic!)` instead of `.unwrap()` so the post-edit
@@ -84,9 +82,7 @@ pub(crate) fn parse_commit_message(msg: &str) -> CommitInfo {
     }
 }
 
-// ---------------------------------------------------------------------------
 // extract_co_authors — parse Co-Authored-By trailers from commit messages
-// ---------------------------------------------------------------------------
 
 /// Regex for parsing `Co-Authored-By:` trailers.
 /// Matches: `Co-Authored-By: Name <email>` (case-insensitive).
@@ -115,9 +111,7 @@ pub(crate) fn extract_co_authors(message: &str) -> Vec<String> {
     authors
 }
 
-// ---------------------------------------------------------------------------
 // apply_filters
-// ---------------------------------------------------------------------------
 
 /// Regex matching the subject of the version-sync bump commit anodizer writes
 /// after a bump (`chore(release): bump workspace → …` /
@@ -138,7 +132,7 @@ pub(crate) static VERSION_SYNC_BUMP_PATTERN: LazyLock<String> = LazyLock::new(||
 /// plus [`VERSION_SYNC_BUMP_PATTERN`] unless
 /// `changelog.filters.exclude_version_sync_commits` is `false`.
 ///
-/// Centralized so every changelog surface — the `release-notes` stage path
+/// Centralized so every changelog output — the `release-notes` stage path
 /// ([`crate::run`]) and the `keep-a-changelog` / `json` render paths
 /// ([`crate::render`]) — applies the same exclusion rather than re-deriving
 /// filters independently (they had drifted). Call only on the exclude path:
@@ -174,9 +168,7 @@ pub(crate) fn apply_filters(
         .collect())
 }
 
-// ---------------------------------------------------------------------------
 // apply_include_filters
-// ---------------------------------------------------------------------------
 
 /// Keep only commits whose `raw_message` matches at least one of the include
 /// regex patterns. If `include` is empty, all commits are kept (no-op).
@@ -221,9 +213,7 @@ fn compile_filter_patterns(
     patterns
 }
 
-// ---------------------------------------------------------------------------
 // sort_commits
-// ---------------------------------------------------------------------------
 
 /// Sort commits in-place by `raw_message` (the full commit subject line),
 /// `order` must be `"asc"`, `"desc"`, or
@@ -244,9 +234,7 @@ pub(crate) fn sort_commits(commits: &mut [CommitInfo], order: &str) -> Result<()
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
 // group_commits
-// ---------------------------------------------------------------------------
 
 /// Compile each group's `regexp` in config order, returning the compiled regex
 /// paired with its source group. An **absent OR empty** `regexp` maps to `None`
@@ -394,9 +382,7 @@ fn group_commits_inner(
     Ok(result)
 }
 
-// ---------------------------------------------------------------------------
 // render_changelog
-// ---------------------------------------------------------------------------
 
 /// Render grouped commits as a Markdown string. Each group becomes a `## Title`
 /// section, and each commit is a bullet formatted according to `format_template`.

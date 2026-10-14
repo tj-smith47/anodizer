@@ -13,8 +13,6 @@ use crate::sbom::{
     CargoPackage, deterministic_uuid_from, generate_cyclonedx, generate_spdx, parse_cargo_lock,
 };
 
-// -----------------------------------------------------------------------
-
 #[test]
 fn test_parse_cargo_lock_basic() {
     let content = r#"
@@ -96,9 +94,7 @@ fn test_parse_cargo_lock_invalid_toml() {
     assert!(result.unwrap_err().to_string().contains("parse"));
 }
 
-// -----------------------------------------------------------------------
 // CycloneDX generation
-// -----------------------------------------------------------------------
 
 #[test]
 fn test_generate_cyclonedx_basic() {
@@ -167,9 +163,7 @@ fn test_generate_cyclonedx_purl_format() {
     assert_eq!(components[0]["purl"], "pkg:cargo/tokio@1.37.0");
 }
 
-// -----------------------------------------------------------------------
 // SPDX generation
-// -----------------------------------------------------------------------
 
 #[test]
 fn test_generate_spdx_basic() {
@@ -284,9 +278,7 @@ fn test_generate_spdx_purl_in_external_refs() {
     assert_eq!(ext_refs[0]["referenceLocator"], "pkg:cargo/clap@4.5.0");
 }
 
-// -----------------------------------------------------------------------
 // Config parsing
-// -----------------------------------------------------------------------
 
 #[test]
 fn test_source_config_defaults() {
@@ -360,9 +352,7 @@ crates: []
     assert!(config.sboms.is_empty());
 }
 
-// -----------------------------------------------------------------------
 // Source archive stage (integration-style)
-// -----------------------------------------------------------------------
 
 #[test]
 fn test_source_archive_with_git_repo() {
@@ -449,9 +439,7 @@ fn test_source_archive_zip_format_with_git_repo() {
     assert!(std::fs::metadata(&archive_path).unwrap().len() > 0);
 }
 
-// -----------------------------------------------------------------------
 // SBOM stage (integration-style using actual Cargo.lock)
-// -----------------------------------------------------------------------
 
 #[test]
 fn test_sbom_from_real_cargo_lock() {
@@ -547,9 +535,7 @@ fn test_sbom_written_to_file() {
     assert_eq!(read_back["spdxVersion"], "SPDX-2.3");
 }
 
-// -----------------------------------------------------------------------
 // Dry-run behavior
-// -----------------------------------------------------------------------
 
 #[test]
 fn test_stage_dry_run_does_not_create_files() {
@@ -865,9 +851,7 @@ fn source_prefix_var_reflects_trailing_slash_directory_semantics() {
     }
 }
 
-// -----------------------------------------------------------------------
 // ArtifactKind variants
-// -----------------------------------------------------------------------
 
 #[test]
 fn test_artifact_kind_source_archive() {
@@ -883,9 +867,7 @@ fn test_artifact_kind_sbom() {
     assert_eq!(json, "sbom");
 }
 
-// -----------------------------------------------------------------------
 // UUID generation
-// -----------------------------------------------------------------------
 
 #[test]
 fn test_deterministic_uuid_from_format_and_stability() {
@@ -949,9 +931,7 @@ fn test_sbom_byte_identical_across_runs() {
     );
 }
 
-// -----------------------------------------------------------------------
 // SBOM format validation tests
-// -----------------------------------------------------------------------
 
 #[test]
 fn test_cyclonedx_has_required_fields() {
@@ -1032,9 +1012,7 @@ fn test_spdx_has_required_fields() {
     );
 }
 
-// -----------------------------------------------------------------------
 // SourceStage integration test (runs through the Stage interface)
-// -----------------------------------------------------------------------
 
 #[test]
 fn test_source_stage_run_creates_archive_in_git_repo() {
@@ -1108,9 +1086,7 @@ fn test_source_stage_run_creates_archive_in_git_repo() {
     );
 }
 
-// -----------------------------------------------------------------------
 // strip_parent behavior
-// -----------------------------------------------------------------------
 
 #[test]
 fn test_source_archive_strip_parent_flattens_nested_file() {
@@ -1396,9 +1372,7 @@ fn test_source_extra_files_with_info() {
     panic!("config.toml not found in source archive");
 }
 
-// ---------------------------------------------------------------------------
 // 2026-05-08 second-opinion parity audit regressions (Q-src1, Q-src2)
-// ---------------------------------------------------------------------------
 
 /// Q-src1 — `core::git::get_head_commit` resolves HEAD to the full SHA via
 /// `git rev-parse HEAD`. Used by `SourceStage` when `ctx.git_info` was not
@@ -1664,9 +1638,7 @@ fn test_source_archive_zip_extras_deterministic_under_sde() {
     );
 }
 
-// -----------------------------------------------------------------------
 // Source zip rewrite: entry metadata survives the append pass
-// -----------------------------------------------------------------------
 
 /// A committed repo whose `scripts/run.sh` is executable and whose
 /// `src/main.rs` is not, plus an uncommitted `extra.txt` for `source.files`.

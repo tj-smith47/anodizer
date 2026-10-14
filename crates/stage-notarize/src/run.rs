@@ -118,8 +118,10 @@ pub(super) fn run_cross_platform(
         let key = secret.path.clone();
         // Stat-check the resolved path before launching rcodesign so a
         // typo or unmounted secret produces a clean "key not found"
-        // error before any rcodesign run in the artifact loop. Skipped in
-        // dry-run for the same reason as the cert check above.
+        // error before any rcodesign run in the artifact loop: rcodesign's
+        // exit code alone does not say the key is missing, so its message
+        // would have to be read. Skipped in dry-run for the same reason as
+        // the cert check above.
         if !dry_run && !std::path::Path::new(&key).exists() {
             bail!("notarize: macos[{idx}] notarize.key path does not exist: '{key}'");
         }
@@ -348,7 +350,7 @@ pub(super) fn run_native(
     });
 
     // sign.options only applies to DMG mode; warn so a configured-but-ignored
-    // field is visible.
+    // field is reported when its value is dropped.
     if artifact_type == MacOSNativeArtifactKind::Pkg
         && sign.options.as_ref().is_some_and(|o| !o.is_empty())
     {

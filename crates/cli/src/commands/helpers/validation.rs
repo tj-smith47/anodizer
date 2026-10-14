@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 /// - Empty / whitespace-only tokens (trailing comma, double comma,
 ///   surrounding spaces) are dropped — they're noise, not intent.
 /// - `Some("")` or `Some(" , ")` (all-empty after trimming) → `Err`. The
-///   operator clearly meant to pass *something*; surfacing the typo
+///   operator clearly meant to pass *something*; reporting the typo
 ///   beats silently degrading into a no-op filter.
 ///
 /// `flag_help` is the `--flag=<example>` snippet appended to the error so
@@ -39,7 +39,7 @@ pub(crate) fn parse_csv_list(
 
 /// Walk an artifact path iterator and fail if any path appears more than
 /// once. Used by post-load manifest validators (publish-only's per-shard
-/// merge, `release --merge`'s split-worker merge) to surface accidental
+/// merge, `release --merge`'s split-worker merge) to report accidental
 /// shard overlap as a hard error rather than a silent double-publish
 /// downstream.
 pub(crate) fn detect_duplicate_paths<'a, I>(paths: I) -> Result<()>

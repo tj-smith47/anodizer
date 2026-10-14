@@ -40,9 +40,7 @@ pub struct DockerRetryConfig {
     pub max_delay: Option<String>,
 }
 
-// ---------------------------------------------------------------------------
 // DockerV2Config
-// ---------------------------------------------------------------------------
 
 /// Docker V2 configuration — the canonical Docker build API.
 ///
@@ -170,9 +168,7 @@ pub struct DockerV2Config {
     // the publish step (matches every other publisher / pipe in anodizer).
 }
 
-// ---------------------------------------------------------------------------
 // DockerDigestConfig
-// ---------------------------------------------------------------------------
 
 /// Controls docker image digest file creation.
 ///
@@ -196,9 +192,7 @@ pub struct DockerDigestConfig {
     pub name_template: Option<String>,
 }
 
-// ---------------------------------------------------------------------------
 // DockerManifestConfig
-// ---------------------------------------------------------------------------
 
 /// Deprecated: prefer `dockers_v2`, which produces multi-arch manifests from
 /// its `platforms:` field. `docker_manifests` is kept so imported configs

@@ -180,7 +180,7 @@ fn serve_one_tls(stream: TcpStream, config: Arc<ServerConfig>, resp: &str) {
     let _ = tls.flush();
     // Send TLS close_notify so the peer's TLS stack (hyper/reqwest)
     // distinguishes a graceful end-of-stream from an aborted
-    // connection. Without this, hyper surfaces
+    // connection. Without this, hyper reports
     // `UnexpectedEof: peer closed connection without sending TLS
     // close_notify` and the body read fails.
     tls.conn.send_close_notify();

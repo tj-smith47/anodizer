@@ -1,6 +1,4 @@
-// ---------------------------------------------------------------------------
 // detect_cargo_profile — parse --release / --profile flags from cargo flags
-// ---------------------------------------------------------------------------
 
 /// Detect the effective cargo profile from a flags string.
 ///

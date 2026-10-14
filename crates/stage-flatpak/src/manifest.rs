@@ -1,8 +1,6 @@
 use serde::Serialize;
 
-// ---------------------------------------------------------------------------
 // Architecture mapping
-// ---------------------------------------------------------------------------
 
 /// Map a Go-style or Rust-style architecture name to the Flatpak equivalent.
 /// Only x86_64 and aarch64 are supported by Flatpak.
@@ -14,9 +12,7 @@ pub(crate) fn arch_to_flatpak(arch: &str) -> Option<&'static str> {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Default name template
-// ---------------------------------------------------------------------------
 
 /// Stem of the default Flatpak bundle filename template, before the amd64
 /// variant suffix and the `.flatpak` extension.
@@ -38,9 +34,7 @@ pub(crate) fn default_name_template() -> String {
     )
 }
 
-// ---------------------------------------------------------------------------
 // Manifest JSON structures
-// ---------------------------------------------------------------------------
 
 #[derive(Serialize)]
 pub(crate) struct Manifest {

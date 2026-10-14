@@ -1,8 +1,6 @@
 use super::*;
 
-// ---------------------------------------------------------------------------
 // ScoopPublisher — Publisher trait wrapper (git-revert rollback)
-// ---------------------------------------------------------------------------
 
 // Scoop bucket publisher. Mirrors the `homebrew` shape: each pushed
 // manifest is recorded so a `anodizer tag rollback` re-clones the bucket,

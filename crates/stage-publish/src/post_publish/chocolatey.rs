@@ -3,7 +3,7 @@
 //! Strategy: scrape the HTML page
 //! `https://community.chocolatey.org/packages/<name>/<version>` for the
 //! moderation-status callout. The OData API (`/api/v2/Packages(...)`)
-//! does NOT surface the in-moderation visual state — it only emits
+//! does NOT report the in-moderation visual state — it only emits
 //! `<d:PackageStatus>` for approved/rejected rows, so the HTML page is
 //! the canonical signal for "still in queue".
 //!
@@ -144,7 +144,7 @@ pub fn poll(
                 // text drifted upstream and fell through to the
                 // catch-all "status callout not yet present" branch —
                 // flips this. A subsequent legitimate `404` then
-                // surfaces as a regression. Accepted trade-off:
+                // shows up as a regression. Accepted trade-off:
                 // false positives produce an investigable Error with
                 // the URL, which is cheap to dismiss; false negatives
                 // (suppressing a real takedown) are not.
@@ -160,7 +160,7 @@ pub fn poll(
                 let nf_elapsed = nf_start.elapsed();
                 if ever_visible {
                     // Regression: page resolved earlier in this run and
-                    // now returns 404. Surfaces as Error so the operator
+                    // now returns 404. Shows up as Error so the operator
                     // sees the takedown.
                     let reason = format!(
                         "community.chocolatey.org returned 404 for {} after the page was \
@@ -207,7 +207,7 @@ pub fn poll(
             // outcome for a single-shot release whose package is still
             // sitting in the human-moderator queue (often multi-day).
             // Log verbose only; the Timeout return variant still
-            // surfaces to the release summary so an operator who DOES
+            // goes to the release summary so an operator who DOES
             // want to follow up can see it.
             log.verbose(&format!(
                 "chocolatey moderation poll budget for '{}-{}' elapsed after {:?} (last state: {})",
@@ -305,7 +305,7 @@ const NO_CALLOUT_DETAIL: &str = "status callout not yet present on page";
 /// Chocolatey community gallery in a state that blocks re-submitting the same
 /// version?
 ///
-/// Chocolatey's flat OData API (`/api/v2/Packages`) surfaces only APPROVED
+/// Chocolatey's flat OData API (`/api/v2/Packages`) lists only APPROVED
 /// versions — a submission sitting in the human-moderation queue is invisible
 /// there yet still blocks a re-push of the same version. The HTML version
 /// page is the one public signal that covers both states, so this probe

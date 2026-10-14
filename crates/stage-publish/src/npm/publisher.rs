@@ -206,7 +206,7 @@ impl anodizer_core::Publisher for NpmPublisher {
     /// `GET {registry}/{pkg}/{version}` = 200. npm versions are immutable, so
     /// presence is completion per package; anything unenumerable (no built
     /// binaries yet, template/config errors) stays `Absent` so `run()` keeps
-    /// surfacing the failure loudly, and a probe transport error is `Unknown`
+    /// reporting the failure loudly, and a probe transport error is `Unknown`
     /// rather than a false "not published".
     fn reconcile(&self, ctx: &mut Context) -> anyhow::Result<anodizer_core::ReconcileState> {
         use anodizer_core::ReconcileState;
@@ -410,7 +410,7 @@ impl anodizer_core::Publisher for NpmPublisher {
 
         // For each recorded target, attempt `npm unpublish`. Within the 72h
         // window this succeeds; outside it npm exits non-zero and the caller
-        // surfaces a manual-cleanup warning. Failures here are warn-only so
+        // prints a manual-cleanup warning. Failures here are warn-only so
         // sibling publishers' rollback paths still run.
         let env = ctx.env_source();
         let mut succeeded = 0usize;
@@ -423,7 +423,7 @@ impl anodizer_core::Publisher for NpmPublisher {
                 .unwrap_or_default();
             if token.is_empty() {
                 log.warn(&format!(
-                    "npm rollback of '{}@{}' skipped — env var ${} is unset; \
+                    "npm rollback of '{}@{}' skipped — env var ${} is unset or blank; \
                      manually run `npm unpublish {}@{}` within 72h",
                     t.package, t.version, t.token_env_var, t.package, t.version
                 ));
@@ -768,7 +768,7 @@ mod preflight_tests {
         ctx
     }
 
-    /// End-to-end wiring proof: an invalid token must surface through the full
+    /// End-to-end wiring proof: an invalid token must be reported through the full
     /// path (config enumeration → registry/token resolution → `/-/whoami`) as a
     /// Blocker. The whoami probe is served 401; the follow-up version probe 404.
     #[test]
@@ -820,7 +820,7 @@ mod preflight_tests {
     #[test]
     fn npm_preflight_skip_metapackage_skips_metapackage_probe() {
         // Only the whoami response is provisioned; a metapackage version
-        // probe would hit a closed responder and surface as a Warning/probe
+        // probe would hit a closed responder and show up as a Warning/probe
         // noise instead of the clean Pass asserted here.
         let (addr, _c) = spawn_oneshot_http_responder(vec![canned_http_response(
             "200 OK",
@@ -838,7 +838,7 @@ mod preflight_tests {
         }
     }
 
-    /// A valid token + an already-published version must surface as a Warning
+    /// A valid token + an already-published version must be reported as a Warning
     /// (not a Blocker): the publish would be rejected but the credential is good.
     #[test]
     fn npm_preflight_warns_on_already_published() {

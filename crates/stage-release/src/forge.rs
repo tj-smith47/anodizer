@@ -164,7 +164,7 @@ fn upload_pace_delay(idx: usize, pace: Duration) -> Option<Duration> {
 ///    an idempotent skip REGARDLESS of `replace_existing_artifacts`, a
 ///    differing one is deleted first only when the user opted in — then
 ///    upload.
-/// 5. Drain: first task failure aborts the loop; a panicked task surfaces as
+/// 5. Drain: first task failure aborts the loop; a panicked task is reported as
 ///    `release: upload task panicked`.
 pub(crate) async fn run_upload_loop<C: ForgeAssetClient>(
     client: Arc<C>,
@@ -275,7 +275,7 @@ pub(crate) async fn run_upload_loop<C: ForgeAssetClient>(
                             client.delete_asset(&file_name).await?;
                         }
                         // No pre-upload bail on a forbidden conflict: the
-                        // forge API surfaces the duplicate on upload with
+                        // forge API reports the duplicate on upload with
                         // its own conflict semantics.
                         crate::AssetConflict::ConflictForbidden
                         | crate::AssetConflict::NoConflict => {}
@@ -578,7 +578,7 @@ mod tests {
 
     #[tokio::test]
     async fn differing_remote_without_replace_uploads_without_delete() {
-        // The forge API surfaces the conflict itself; the driver must not
+        // The forge API reports the conflict itself; the driver must not
         // pre-delete without the user's opt-in.
         let dir = tempfile::tempdir().expect("tempdir");
         let a = write_artifact(dir.path(), "a.bin", b"AAAA");

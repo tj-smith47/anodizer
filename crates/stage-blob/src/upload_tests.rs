@@ -29,9 +29,7 @@ use crate::upload::{
     upload_files_owned,
 };
 
-// -----------------------------------------------------------------------
 // The store double
-// -----------------------------------------------------------------------
 
 /// The store error a [`Probe`] raises in place of the real call.
 #[derive(Clone, Copy, Debug)]
@@ -313,9 +311,7 @@ impl MultipartUpload for ProbeUpload {
     }
 }
 
-// -----------------------------------------------------------------------
 // Helpers
-// -----------------------------------------------------------------------
 
 const PART: usize = 64 * 1024;
 
@@ -459,9 +455,7 @@ fn publish(
     )
 }
 
-// -----------------------------------------------------------------------
 // stream_upload
-// -----------------------------------------------------------------------
 
 #[tokio::test]
 async fn parts_reach_the_store_before_the_file_has_been_read_to_its_end() {
@@ -668,9 +662,7 @@ async fn the_content_type_is_set_from_the_first_bytes_on_both_paths() {
     }
 }
 
-// -----------------------------------------------------------------------
 // A failed upload's abort
-// -----------------------------------------------------------------------
 
 /// Upload a file whose read fails five parts in, against `faults`, and
 /// return the error, the warnings and what the store saw.
@@ -989,9 +981,7 @@ fn the_warning_names_each_providers_own_cleanup() {
     );
 }
 
-// -----------------------------------------------------------------------
 // Store errors through the stream
-// -----------------------------------------------------------------------
 
 async fn upload_error(total: usize, faults: Faults) -> String {
     let (store, _) = Probe::in_memory(faults);
@@ -1072,9 +1062,7 @@ async fn a_not_found_after_the_upload_opened_reports_the_upload_as_gone() {
     assert_eq!(upload_error(4 * PART, faults).await, ACCESS_DENIED);
 }
 
-// -----------------------------------------------------------------------
 // The identical-object comparison
-// -----------------------------------------------------------------------
 
 const RANGE: usize = 1000;
 
@@ -1181,9 +1169,7 @@ async fn an_object_replaced_between_two_ranges_is_not_identical() {
     assert_eq!(seen.range_sizes.lock().unwrap().len(), 2);
 }
 
-// -----------------------------------------------------------------------
 // The whole publish path
-// -----------------------------------------------------------------------
 
 /// A file several parts long is handed to the store one part at a time,
 /// `UPLOAD_PART_CONCURRENCY` in flight, and never as one payload; the

@@ -7,7 +7,7 @@
 //! renders that manifest per crate; this validator renders the exact JSON the
 //! live publish would push — via the same render path — and checks it against
 //! the vendored schema, so a structural defect (an out-of-place architecture
-//! key, a wrong-typed `bin`, a missing required field) surfaces in the
+//! key, a wrong-typed `bin`, a missing required field) shows up in the
 //! emission-validate pass rather than after a bucket commit has shipped.
 
 use anodizer_core::context::Context;
@@ -74,7 +74,7 @@ impl PublisherSchemaValidator for ScoopSchemaValidator {
             // artifact, in which case the crate would be skipped and the publish-
             // time `reject_unsupported_use` in the render path would never run —
             // letting an unshippable `use: msi/nsis/wix/exe` config slip past
-            // `check`. Surfacing it here makes the config error fail validation
+            // `check`. Reporting it here makes the config error fail validation
             // independent of which artifacts this run built.
             reject_unsupported_use(scoop_cfg.use_artifact.as_deref(), crate_name)?;
             if ctx.is_target_restricted_build()
@@ -497,7 +497,7 @@ mod tests {
 
     /// On a FULL build (no `partial_target`) a scoop-configured crate that
     /// produced NO Windows archive is a genuine misconfiguration — the same "no
-    /// Windows archive artifact" bail the live publish hits must surface at
+    /// Windows archive artifact" bail the live publish hits must show up at
     /// `check`/`--snapshot` rather than being silently skipped (the
     /// failure-hiding class this closes).
     #[test]

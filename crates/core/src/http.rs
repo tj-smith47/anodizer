@@ -105,7 +105,7 @@ pub fn body_read_error_message<E: std::fmt::Display>(err: E) -> String {
 /// `"could not read response body: <err>"` rather than silently truncating
 /// to an empty string. Callers typically pass the resulting text into a
 /// larger error context (e.g. `"GitHub API returned 422: {body}"`), so the
-/// placeholder still surfaces a usable diagnostic instead of a confusing
+/// placeholder still gives a usable diagnostic instead of a confusing
 /// empty payload.
 ///
 /// Use this when the body will be interpolated into a downstream error

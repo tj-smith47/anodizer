@@ -25,12 +25,23 @@ const CORE_REPO: &str = "homebrew-core";
 pub(crate) struct ResolvedToken {
     /// The token value used to authenticate the bump.
     pub token: String,
-    /// The env var the token came from, threaded into the target snapshot so
-    /// `rollback` re-resolves through the SAME var (a
-    /// `COMMITTER_TOKEN`-sourced token must not record `HOMEBREW_CORE_GITHUB_TOKEN`).
-    /// `None` when the token came from `repository.token` or the run token
-    /// (no single env var to record; the rollback resolves the order again).
+    /// The env var that supplied the token, recorded in the target snapshot
+    /// so a rollback that finds no token can name it in its message. The
+    /// rollback resolves the whole order again. `None` when the token came
+    /// from `repository.token` or the run token.
     pub env_var: Option<String>,
+}
+
+/// The token sources [`resolve_token`] reads, in its order, for a message
+/// that says what to set when none of them holds a token.
+pub(crate) fn token_order_hint() -> String {
+    format!(
+        "`homebrew_cores[].repository.token`, ${}, ${}, the run's GitHub token \
+         (`--token`), then ${}",
+        TOKEN_ENV_VARS[0],
+        TOKEN_ENV_VARS[1],
+        anodizer_core::git::GITHUB_TOKEN_ENV_LADDER.join(" / $"),
+    )
 }
 
 /// Resolve the bump token in the push order every publisher shares

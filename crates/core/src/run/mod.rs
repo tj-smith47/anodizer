@@ -1,8 +1,8 @@
 //! Single subprocess-execution helper that captures stdout/stderr and routes
 //! the result through `StageLogger::check_output`.
 //!
-//! Consolidates the spawn / capture / surface-on-failure pattern that every
-//! stage repeats by hand so the success/failure surface stays consistent.
+//! Consolidates the spawn / capture / report-on-failure pattern that every
+//! stage repeats by hand so the success/failure output stays consistent.
 //! Every helper runs the child through the same capture loop; verbosity only
 //! decides whether the captured lines are also printed as they arrive:
 //!
@@ -35,7 +35,7 @@
 //!   leftover process tree after its own shorter grace.
 //!
 //! This module does **not** construct a [`std::process::Command`] — that would
-//! make `core` a subprocess-spawn surface, which the module-boundary rule
+//! make `core` a subprocess-spawn site, which the module-boundary rule
 //! forbids. It runs an already-built command supplied by the caller (`&mut
 //! Command`), which `module-boundaries.md` explicitly sanctions.
 //!

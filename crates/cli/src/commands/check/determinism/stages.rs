@@ -108,7 +108,7 @@ pub(super) fn parse_stages(s: Option<&str>) -> Result<Vec<StageId>, String> {
 /// The harness byte-compares the GATED formats and counts any drift as a
 /// regression; the ALLOWLISTED ones are intrinsically non-reproducible (see
 /// `anodizer_core::DeterminismState::seed_from_commit`) and excluded from
-/// `drift_count` while still surfaced in the report:
+/// `drift_count` while still shown in the report:
 ///
 /// - `install-script` — **GATED**: the `curl | sh` installer is derived from
 ///   configured release intent (targets + flagship crate) and only written to
@@ -199,7 +199,7 @@ pub(super) const ALWAYS_ON_STAGES: &[StageId] = &[
 /// `config` must already have `apply_defaults` run on it (producers declared
 /// under `defaults:` materialize onto crates). `None` (config failed to load)
 /// falls back to the full OS partition — the conservative "do not silently
-/// under-verify" choice; a genuine config-load failure surfaces from the
+/// under-verify" choice; a genuine config-load failure is reported by the
 /// pipeline itself.
 ///
 /// Only the DEFAULT path is intersected: an EXPLICIT `--stages=<x>` is the

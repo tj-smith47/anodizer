@@ -13,7 +13,7 @@ use super::*;
 /// [`git::stage_and_commit_in`] (rooted at the same `root`) matches.
 ///
 /// A BARE entry with zero matches is reported via `warn` but is not an error: a
-/// stale enrollment should surface loudly without aborting the tag. An ANCHORED
+/// stale enrollment should be reported loudly without aborting the tag. An ANCHORED
 /// entry that selects no region IS an error — it states a precise intent, and
 /// the engine raises it before writing any file, so nothing is half-applied.
 /// When `dry_run` is set, counts are logged but no file is written and no path

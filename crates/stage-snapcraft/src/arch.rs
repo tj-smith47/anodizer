@@ -1,6 +1,4 @@
-// ---------------------------------------------------------------------------
 // triple_to_snap_arch — map target triple to snapcraft architecture name
-// ---------------------------------------------------------------------------
 
 /// Map a Rust target triple to a snapcraft architecture name.
 pub(super) fn triple_to_snap_arch(triple: &str) -> &'static str {

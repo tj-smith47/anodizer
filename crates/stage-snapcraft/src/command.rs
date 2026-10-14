@@ -11,9 +11,7 @@ pub const SNAPCRAFT_UPLOAD_TIMEOUT: Duration = Duration::from_secs(600);
 /// A probe only reads a small table, so a much shorter bound suffices.
 pub const SNAPCRAFT_PROBE_TIMEOUT: Duration = Duration::from_secs(120);
 
-// ---------------------------------------------------------------------------
 // snapcraft_command
-// ---------------------------------------------------------------------------
 
 /// Construct the snapcraft pack CLI command arguments.
 ///
@@ -66,9 +64,7 @@ pub fn snapcraft_upload_command(snap_path: &str, channels: Option<&[String]>) ->
     args
 }
 
-// ---------------------------------------------------------------------------
 // Promotion — `snapcraft release <name> <revision> <channel>`
-// ---------------------------------------------------------------------------
 
 /// Construct the `snapcraft release <name> <revision> <channel>` command used to
 /// promote an already-uploaded revision into a channel without rebuilding.
@@ -223,7 +219,7 @@ fn revisions_by_arch(output: &str, keep: impl Fn(&[&str], usize, usize) -> bool)
 /// invocation's combined output says the snap is simply absent from the store
 /// — not yet registered or holding no revisions — as opposed to a genuine
 /// authentication / network / server fault. Promotion treats the absent case
-/// as "nothing to promote" (a skip) while surfacing every real fault honestly.
+/// as "nothing to promote" (a skip) while reporting every real fault honestly.
 ///
 /// Matching is case-insensitive. Only the store's unambiguous
 /// snap-does-not-exist / no-revisions wording qualifies; an auth or
@@ -294,7 +290,7 @@ fn channel_risk(channel: &str) -> &str {
 ///
 /// The Snap Store rejects a malformed channel only after authenticating and
 /// resolving a revision, so an operator typo in `promote --to` or in a
-/// rendered `channel_templates` entry would otherwise surface as a late store
+/// rendered `channel_templates` entry would otherwise show up as a late store
 /// error — or, under `--dry-run`, not at all. Segments are matched
 /// case-insensitively, the same way [`channel_risk`] matches.
 pub(crate) fn validate_snap_channel(channel: &str) -> anyhow::Result<()> {
@@ -405,9 +401,7 @@ pub fn missing_channels_for_version<'a>(
     Some((rev.to_string(), missing))
 }
 
-// ---------------------------------------------------------------------------
 // Channel auto-population based on grade
-// ---------------------------------------------------------------------------
 
 /// Resolve effective channels for snapcraft upload.
 ///
@@ -462,9 +456,7 @@ pub fn first_channel_rejected_for_prerelease_snap(channels: &[String]) -> Option
     })
 }
 
-// ---------------------------------------------------------------------------
 // 5xx retry classifier
-// ---------------------------------------------------------------------------
 
 /// Return `true` if the combined stdout/stderr of a failed `snapcraft upload`
 /// invocation looks like a transient Snap Store failure that should be
@@ -509,9 +501,7 @@ pub fn is_retriable_snap_push(combined_output: &str) -> bool {
     BRACKETED.iter().any(|m| lower.contains(m)) || TEXT.iter().any(|m| lower.contains(m))
 }
 
-// ---------------------------------------------------------------------------
 // Content-dedup rejection classifier
-// ---------------------------------------------------------------------------
 
 /// Return `true` if the combined stdout/stderr of a failed `snapcraft upload`
 /// invocation shows the Snap Store rejecting the push because the uploaded
@@ -635,7 +625,7 @@ mod tests {
     fn absence_probe_treats_connectivity_failure_as_a_hard_error() {
         // A DNS/network fault ("could not find host …") must NOT masquerade as
         // an unregistered snap — it carries no snap-does-not-exist wording, so
-        // the promote probe surfaces it honestly rather than silently skipping.
+        // the promote probe reports it honestly rather than silently skipping.
         let msg = "snapcraft: error: could not find host api.snapcraft.io";
         assert!(
             !is_snap_absent_from_store(msg),

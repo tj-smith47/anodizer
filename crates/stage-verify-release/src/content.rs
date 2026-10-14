@@ -15,7 +15,7 @@ const DIGEST_DOWNLOAD_CAP: u64 = 64 * 1024 * 1024;
 ///
 /// `assets_published_by_this_run` is false only for the pre-submitter gate in
 /// a leg whose assets an earlier leg uploaded; it exempts the
-/// publish-surface-dependent combined checksum manifests (and their
+/// publisher-selection-dependent combined checksum manifests (and their
 /// signatures' cryptographic re-check, whose payload is that manifest) from
 /// cross-leg byte comparison — see [`surface_dependent_asset_names`].
 #[allow(clippy::too_many_arguments)]
@@ -98,7 +98,7 @@ pub(crate) fn verify_published_contents(
                 summary.issue_count += 1;
                 continue;
             }
-            // A signature over a surface-dependent payload (the combined
+            // A signature over a selection-dependent payload (the combined
             // checksum manifest) cannot be cryptographically re-checked
             // cross-leg: the published signature signs the UPLOADING leg's
             // manifest bytes, while this leg holds its own recomputed
@@ -187,7 +187,7 @@ pub(crate) fn verify_published_contents(
         }
         // Cross-leg exemption for the combined checksum manifest itself: the
         // uploading leg rewrote it with publish-time evidence (docker
-        // digests) this leg's surface never produces, so this leg's locally
+        // digests) this leg's publishers never produce, so this leg's locally
         // recomputed bytes legitimately differ from the published ones.
         // Presence was already enforced by the missing-asset diff.
         if surface_dependent.contains(name) {

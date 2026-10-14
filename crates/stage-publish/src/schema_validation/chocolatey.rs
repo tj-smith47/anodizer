@@ -10,7 +10,7 @@
 //! parse plus the required-child / namespace / boolean / no-duplicate rules)
 //! and, when `xmllint` is on `PATH`, a full XSD validation against the vendored
 //! schema. A structural defect (a missing required element, an XML-escaping
-//! bug in user-supplied metadata, a wrong-typed boolean) surfaces in the
+//! bug in user-supplied metadata, a wrong-typed boolean) shows up in the
 //! emission-validate pass rather than after a registry-rejected nupkg ships.
 
 use anodizer_core::context::Context;
@@ -118,7 +118,7 @@ impl PublisherSchemaValidator for ChocolateySchemaValidator {
 
 /// The always-on, hermetic structural floor: parse the rendered nuspec with a
 /// real read-only XML parser and assert the rules the NuGet schema enforces
-/// that a registry rejection would otherwise be the first to surface. Returns
+/// that a registry rejection would otherwise be the first to report. Returns
 /// one [`SchemaFinding`] per violation; an empty Vec means the document clears
 /// the floor. Runs with no external tools, so it holds even where `xmllint` is
 /// absent.
@@ -695,7 +695,7 @@ mod tests {
     /// On a FULL build (no `partial_target`) a chocolatey-configured crate that
     /// produced NO Windows artifact is a genuine misconfiguration. The nuspec is
     /// metadata-only and would validate cleanly, so the validator reproduces the
-    /// live `build_install_mode` "no windows artifact" bail — surfacing at
+    /// live `build_install_mode` "no windows artifact" bail — showing up at
     /// `check`/`--snapshot` the same failure a real publish would hit (the
     /// failure-hiding class this closes; the nuspec render alone could not catch
     /// it).
@@ -1010,7 +1010,7 @@ mod tests {
 
     /// Malformed XML — an unescaped `&` in user-supplied metadata — is itself a
     /// finding (the parse fails), which is exactly what an XML-escaping bug
-    /// would surface as.
+    /// would show up as.
     #[test]
     fn malformed_xml_is_reported_at_root() {
         let broken = r#"<?xml version="1.0" encoding="utf-8"?>

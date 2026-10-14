@@ -8,7 +8,7 @@
 //!
 //! Why a separate module: `Command::new` is an authorization boundary
 //! (write-to-disk, network, env exfiltration); concentrating the
-//! harness's one call site here keeps the security-relevant surface
+//! harness's one call site here keeps the security-relevant code
 //! reviewable.
 
 use anyhow::{Context, Result};
@@ -125,7 +125,7 @@ pub fn run_build_pipeline_subprocess(spec: &ChildInvocation<'_>) -> Result<()> {
 }
 
 /// Invocation knobs for the child `anodizer release` subprocess, grouped
-/// so the spawn surface takes one spec instead of a positional argument
+/// so the spawn function takes one spec instead of a positional argument
 /// list that grows with every new knob.
 pub struct ChildInvocation<'a> {
     /// Path to the running `anodizer` binary (see
@@ -226,7 +226,7 @@ fn build_subprocess_command(spec: &ChildInvocation<'_>) -> Command {
     // the child's stdout so its data channel never pollutes the harness's
     // own stdout. The child's *stderr* (its logger's status/verbose lines)
     // stays inherited so the operator's verbosity choice, forwarded above,
-    // still surfaces the inner run's progress.
+    // still shows the inner run's progress.
     cmd.stdout(Stdio::null());
     // The child's stderr is inherited, so its lines interleave straight
     // into the harness's stream. Export the parent's nesting depth (+2)
@@ -325,7 +325,7 @@ pub fn prefetch_deps(manifest_dir: &Path, cargo_home: &Path) -> Result<()> {
 /// resolve graph, dropping host-target deps the offline rebuild still needs
 /// for host-side work (the man-page `before:` hook's `cargo run --bin anodizer`
 /// host build, proc-macros, build scripts). On a cross shard (host x86_64 ≠
-/// target aarch64) that surfaces as `failed to download <crate>: --offline was
+/// target aarch64) that shows up as `failed to download <crate>: --offline was
 /// specified` the instant the offline seal bites.
 fn build_fetch_command(manifest_dir: &Path, cargo_home: &Path) -> Command {
     let mut cmd = Command::new("cargo");
@@ -874,7 +874,7 @@ mod tests {
     #[test]
     fn side_effect_stages_covers_every_known_publish_side_effect() {
         // Regression guard: if a future pipeline edit adds a side-effect
-        // stage and forgets to register it here, this test surfaces the
+        // stage and forgets to register it here, this test reports the
         // omission. Add the new stage to SIDE_EFFECT_STAGES (and update
         // this list) once the new entry is confirmed to belong in the
         // skip set.
@@ -995,7 +995,7 @@ mod tests {
     }
 
     /// Every name the harness shovels into `--skip=...` MUST be accepted
-    /// by the release CLI's skip validator. Surfaced by the
+    /// by the release CLI's skip validator. Caught by the
     /// drift-injection integration test when `docker-sign`
     /// was present in [`SIDE_EFFECT_STAGES`] but missing from
     /// [`crate::context::VALID_RELEASE_SKIPS`] — the harness's child

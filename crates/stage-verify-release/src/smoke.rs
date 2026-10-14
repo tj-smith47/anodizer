@@ -117,7 +117,7 @@ fn smoke_script(job: &SmokeJob, container_pkg_path: &str) -> String {
 /// (emulation probe, `docker create`/`cp`) where there is no install-vs-check
 /// boundary to attribute.
 ///
-/// Always surfaces the exit code — for an exec failure (glibc binary on musl)
+/// Always reports the exit code — for an exec failure (glibc binary on musl)
 /// the bare `127` IS the smoking gun, and it was absent from the v0.9.0 log.
 /// stderr carries the real error; a stdout tail is appended so a step that
 /// reports its failure on stdout (or succeeds noisily before failing) is not
@@ -563,7 +563,7 @@ fn mount_strategy(probe_image: &str) -> MountStrategy {
     *CACHE.get_or_init(|| probe_mount_strategy(probe_image))
 }
 
-/// Decide whether `--mount type=bind` of a host file surfaces inside the
+/// Decide whether `--mount type=bind` of a host file appears inside the
 /// container. Under a separate-filesystem dind sidecar (daemon in another
 /// container without the runner's workspace shared in), a bind source resolves
 /// against the daemon's filesystem and the file is absent — so the package must
@@ -1228,7 +1228,7 @@ mod tests {
     /// The v0.9.0 regression: install succeeds (stdout carries the apk
     /// success banner) yet the version-check fails with exit 127 (glibc binary
     /// on musl). The detail must attribute the failure to the version-check,
-    /// include `exit 127`, surface the real stderr, and NOT show the install
+    /// include `exit 127`, report the real stderr, and NOT show the install
     /// banner as the "error".
     #[cfg(unix)]
     #[test]
@@ -1266,7 +1266,7 @@ mod tests {
     /// A Docker-daemon failure to start the container (image pull / exec /
     /// OCI runtime error) must be labeled "container failed to start", NOT
     /// "install step failed" — the container never reached the install step.
-    /// The real docker stderr must still surface.
+    /// The real docker stderr must still be reported.
     #[cfg(unix)]
     #[test]
     fn smoke_failure_detail_labels_container_start_failure() {
@@ -1323,7 +1323,7 @@ mod tests {
     }
 
     /// When install itself fails the marker is absent; the detail must blame
-    /// the install step, include the exit code, and surface the install error.
+    /// the install step, include the exit code, and report the install error.
     #[cfg(unix)]
     #[test]
     fn smoke_failure_detail_attributes_install_when_marker_absent() {
@@ -1351,7 +1351,7 @@ mod tests {
     #[test]
     fn output_detail_always_includes_exit_code() {
         // A step that succeeds noisily on stdout but exits non-zero (no
-        // stderr): the exit code must still surface.
+        // stderr): the exit code must still be reported.
         let out = fake_output(2, "some progress output", "");
         let detail = output_detail(&out);
         assert!(detail.contains("exit 2"), "{detail}");

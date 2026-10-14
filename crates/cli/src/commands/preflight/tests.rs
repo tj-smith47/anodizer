@@ -151,7 +151,7 @@ fn empty_config_yields_no_publisher_requirements() {
 /// Bundler stages contribute their tools only when the configured
 /// build targets include the platform they package: a Windows target
 /// matrix demands makensis + the WiX toolchain, a Linux-only matrix
-/// demands neither — and dmg's detection ladder surfaces as a
+/// demands neither — and dmg's detection ladder shows up as a
 /// tool-any-of, not three hard requirements.
 #[test]
 fn bundler_requirements_follow_configured_targets() {
@@ -338,7 +338,7 @@ fn announce_requirements_derive_from_announcer_config() {
         );
     }
 
-    // `--skip=announce` drops the whole surface.
+    // `--skip=announce` drops every announce requirement.
     let mut skipped = TestContextBuilder::new()
         .skip_stages(vec!["announce".to_string()])
         .build();
@@ -395,7 +395,7 @@ publish:
 
 /// The github-hosted npm-provenance job runs
 /// `release --publish-only --publishers npm` with NO `--skip`: the
-/// `--publishers npm` allowlist alone must deselect every non-npm surface.
+/// `--publishers npm` allowlist alone must deselect every non-npm requirement.
 /// That is every OTHER publisher PLUS the stages that self-skip at runtime
 /// on publisher deselection —
 ///
@@ -481,7 +481,7 @@ publish:
     }
     // PublishOnly scope: every signature consumer is deselected by the
     // npm-only allowlist, so BOTH slices self-skip and ZERO cosign demands
-    // survive — this is the npm-job's clean surface.
+    // survive — this is the npm-job's clean requirement set.
     assert_eq!(
         cosign_sign_reqs, 0,
         "under --publish-only --publishers npm BOTH sign slices must self-skip \
@@ -639,7 +639,7 @@ publish:
     );
 }
 
-/// The announce-only scope collects the announce surface and nothing
+/// The announce-only scope collects the announce requirements and nothing
 /// else, even when builds and publishers are configured: announcers
 /// are the only side effects `--announce-only` can produce, so their
 /// secrets are the only thing its preflight may demand.
@@ -679,7 +679,7 @@ publish:
 
 /// The build block reports the resolved cross toolchain (not just
 /// `cargo`): a crate cross-compiling to a non-host glibc-Linux target under
-/// the default `auto` strategy must surface `cargo-zigbuild` + `zig` so
+/// the default `auto` strategy must report `cargo-zigbuild` + `zig` so
 /// `anodizer tools` tells the runner what to install. Skipped on non
 /// x86_64-linux-gnu hosts, where Auto routing differs.
 #[test]
@@ -757,7 +757,7 @@ builds:
     );
 }
 
-/// A `signs:` cosign config keyed off `env://COSIGN_KEY` must surface as a
+/// A `signs:` cosign config keyed off `env://COSIGN_KEY` must show up as a
 /// distinct `env://COSIGN_KEY` ref for the offline load verification, and
 /// duplicate refs (cosign declared on two crates) collapse to one.
 #[test]

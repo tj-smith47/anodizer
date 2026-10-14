@@ -41,9 +41,7 @@ use crate::config::{
     PublishDefaults, SnapcraftConfig,
 };
 
-// ---------------------------------------------------------------------------
 // Skip-block suppression
-// ---------------------------------------------------------------------------
 //
 // A per-crate config block carrying a truthy `skip` takes nothing from the
 // matching `defaults.*` block. A list entry with a different identity key
@@ -84,9 +82,7 @@ fn json_skip_truthy(value: &Json) -> bool {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Public entry point
-// ---------------------------------------------------------------------------
 
 /// Fold workspace-level `defaults` into every per-crate config.
 ///
@@ -217,7 +213,7 @@ fn apply_top_level_defaults(config: &mut Config, defaults: &Defaults) {
 /// `makeselves`, `srpms`, `install_scripts`) are folded by
 /// [`apply_defaults`] into the top-level config, outside this function.
 pub fn apply_to_crate(defaults: &Defaults, crate_cfg: &mut CrateConfig) {
-    // ---- Scalar / Option<T> fields: fill if None ----
+    // Scalar / Option<T> fields: fill if None
     if crate_cfg.cross.is_none() && defaults.cross.is_some() {
         crate_cfg.cross = defaults.cross.clone();
     }
@@ -237,14 +233,14 @@ pub fn apply_to_crate(defaults: &Defaults, crate_cfg: &mut CrateConfig) {
         crate_cfg.version_files = defaults.version_files.clone();
     }
 
-    // ---- Single-struct deep-merge fields ----
+    // Single-struct deep-merge fields
     // Per-crate block with truthy `skip:` suppresses inheritance entirely —
     // handled inside `deep_merge_option` via the generic `is_skipped` JSON
     // inspector so the rule applies uniformly to every `skip`-bearing
     // block as additional single-struct fields are wired in.
     deep_merge_option(&mut crate_cfg.checksum, defaults.checksum.as_ref());
 
-    // ---- List-typed fields: append + merge-by-identity ----
+    // List-typed fields: append + merge-by-identity
     merge_archives(&mut crate_cfg.archives, defaults.archives.as_ref());
     merge_list_by_identity(&mut crate_cfg.nfpms, defaults.nfpms.as_ref(), nfpm_identity);
     merge_list_by_identity(
@@ -272,7 +268,7 @@ pub fn apply_to_crate(defaults: &Defaults, crate_cfg: &mut CrateConfig) {
         docker_v2_identity,
     );
 
-    // ---- Builds: defaults.builds is a single template; fold into each
+    // Builds: defaults.builds is a single template; fold into each
     //              crate build via deep-merge (per-build fields like
     //              flags/ignore/overrides flow through here).
     if let Some(ref tpl) = defaults.builds {
@@ -290,7 +286,7 @@ pub fn apply_to_crate(defaults: &Defaults, crate_cfg: &mut CrateConfig) {
         }
     }
 
-    // ---- Publish axis: each publisher inherits its struct from
+    // Publish axis: each publisher inherits its struct from
     //                    defaults.publish.<publisher> when per-crate is None.
     if let Some(ref pubd) = defaults.publish {
         let target = crate_cfg.publish.get_or_insert_with(PublishConfig::default);
@@ -298,9 +294,7 @@ pub fn apply_to_crate(defaults: &Defaults, crate_cfg: &mut CrateConfig) {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Generic deep-merge helpers (JSON-backed)
-// ---------------------------------------------------------------------------
 
 /// Deep-merge two struct-typed fields when the per-crate value is `Some`.
 /// On collision the per-crate value wins; defaults fill any field that the
@@ -335,8 +329,8 @@ fn deep_merge_option<T: Serialize + DeserializeOwned + Clone>(
 ///
 /// Defaults merging is best-effort by design — a serialise / deserialise
 /// failure here leaves `target` unchanged rather than failing the whole
-/// pipeline. The failure is still surfaced via `tracing::warn!` so that
-/// genuinely broken configs surface in CI rather than silently dropping
+/// pipeline. The failure is still reported via `tracing::warn!` so that
+/// genuinely broken configs show up in CI rather than silently dropping
 /// defaults.
 fn deep_merge_struct_inplace<T: Serialize + DeserializeOwned>(target: &mut T, defaults: &T) {
     let type_name = std::any::type_name::<T>();
@@ -402,9 +396,7 @@ fn deep_merge_json(target: &mut Json, defaults: &Json) {
     }
 }
 
-// ---------------------------------------------------------------------------
 // List merge: archives (specialised because of ArchivesConfig wrapper)
-// ---------------------------------------------------------------------------
 
 fn merge_archives(target: &mut ArchivesConfig, defaults: Option<&ArchiveConfig>) {
     let Some(default_entry) = defaults else {
@@ -424,9 +416,7 @@ fn archive_identity(a: &ArchiveConfig) -> Option<String> {
     a.formats.as_ref().and_then(|f| f.first().cloned())
 }
 
-// ---------------------------------------------------------------------------
 // List merge helpers
-// ---------------------------------------------------------------------------
 
 /// Append-merge: extend `target` with every item from `defaults`.
 /// Used for Vec fields (e.g. `on_error`) where both the per-crate list and the
@@ -512,9 +502,7 @@ fn identity_matches(a: &Option<String>, b: &Option<String>) -> bool {
     matches!((a, b), (Some(x), Some(y)) if x == y)
 }
 
-// ---------------------------------------------------------------------------
 // Identity functions per packaging type
-// ---------------------------------------------------------------------------
 
 fn nfpm_identity(c: &NfpmConfig) -> Option<String> {
     // Merge identity: id → package_name → none (unkeyed).
@@ -559,9 +547,7 @@ fn docker_v2_identity(c: &DockerV2Config) -> Option<String> {
     c.id.clone()
 }
 
-// ---------------------------------------------------------------------------
 // Publisher defaults
-// ---------------------------------------------------------------------------
 
 fn merge_publish_defaults(target: &mut PublishConfig, defaults: &PublishDefaults) {
     deep_merge_option(&mut target.homebrew, defaults.homebrew.as_ref());
@@ -578,9 +564,7 @@ fn merge_publish_defaults(target: &mut PublishConfig, defaults: &PublishDefaults
     merge_append_list(&mut target.on_rollback, defaults.on_rollback.as_ref());
 }
 
-// ---------------------------------------------------------------------------
 // Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
@@ -671,7 +655,7 @@ mod tests {
         }
     }
 
-    // --------------- (1) Map deep-merge ---------------
+    // (1) Map deep-merge
 
     #[test]
     fn map_deep_merge_combines_disjoint_fields() {
@@ -703,7 +687,7 @@ mod tests {
         assert_eq!(hb.license, Some("MIT".to_string()));
     }
 
-    // --------------- (2) List append (different identity) ---------------
+    // (2) List append (different identity)
 
     #[test]
     fn list_append_keeps_both_when_identity_differs() {
@@ -735,7 +719,7 @@ mod tests {
         }
     }
 
-    // --------------- (3) List merge-by-identity ---------------
+    // (3) List merge-by-identity
 
     #[test]
     fn list_merge_by_identity_combines_fields_crate_wins() {
@@ -796,7 +780,7 @@ mod tests {
         }
     }
 
-    // --------------- (4) {} = inherit-all ---------------
+    // (4) {} = inherit-all
 
     #[test]
     fn empty_per_crate_block_inherits_all_from_defaults() {
@@ -817,7 +801,7 @@ mod tests {
         assert_eq!(checksum.algorithm, Some("sha512".to_string()));
     }
 
-    // --------------- (5) skip: true = suppress block ---------------
+    // (5) skip: true = suppress block
 
     #[test]
     fn per_crate_skip_true_suppresses_inherited_block() {
@@ -846,7 +830,7 @@ mod tests {
         assert_eq!(checksum.algorithm, None);
     }
 
-    // --------------- (6) Per-crate scalar wins ---------------
+    // (6) Per-crate scalar wins
 
     #[test]
     fn per_crate_scalar_wins_over_defaults() {
@@ -876,7 +860,7 @@ mod tests {
         assert_eq!(crate_cfg.cross, Some(CrossStrategy::Cross));
     }
 
-    // --------------- (7) tag_template: crate > defaults.crate > built-in ---------------
+    // (7) tag_template: crate > defaults.crate > built-in
 
     #[test]
     fn crate_tag_template_wins_over_defaults_crate() {
@@ -931,7 +915,7 @@ mod tests {
         assert_eq!(crate_cfg.tag_family_template(), "a-v{{ Version }}");
     }
 
-    // --------------- Apply-defaults entry point: idempotent ---------------
+    // Apply-defaults entry point: idempotent
 
     #[test]
     fn apply_defaults_is_idempotent() {
@@ -961,7 +945,7 @@ mod tests {
         }
     }
 
-    // --------------- on_error defaults: lockstep append-merge ---------------
+    // on_error defaults: lockstep append-merge
 
     /// `defaults.publish.on_error` append-merges into EVERY crate of a
     /// multi-crate (lockstep) workspace independently: a crate with its own
@@ -1063,7 +1047,7 @@ mod tests {
         assert!(b[0] == "revert-default");
     }
 
-    // --------------- Cargo (crates.io) publisher defaults ---------------
+    // Cargo (crates.io) publisher defaults
 
     #[test]
     fn cargo_defaults_merge_into_per_crate_publish_cargo_when_unset() {
@@ -1212,7 +1196,7 @@ mod tests {
         );
     }
 
-    // --------------- Builds template fold ---------------
+    // Builds template fold
 
     #[test]
     fn defaults_builds_fills_per_build_settings_when_crate_unset() {
@@ -1248,7 +1232,7 @@ mod tests {
         );
     }
 
-    // --------------- (I-5) Workspace-overlay path ---------------
+    // (I-5) Workspace-overlay path
 
     #[test]
     fn defaults_apply_to_workspace_crates() {
@@ -1284,7 +1268,7 @@ mod tests {
         );
     }
 
-    // --------------- (I-1) Generic skip suppression ---------------
+    // (I-1) Generic skip suppression
 
     #[test]
     fn per_crate_skip_true_suppresses_arbitrary_block() {
@@ -1318,7 +1302,7 @@ mod tests {
         );
     }
 
-    // --------------- (M-6) Single defaults entry, fan-out guard ---------------
+    // (M-6) Single defaults entry, fan-out guard
 
     #[test]
     fn defaults_entry_does_not_fan_out_into_multiple_matching_entries() {
@@ -1361,7 +1345,7 @@ mod tests {
         }
     }
 
-    // --------------- (M-7) Unkeyed entries stay distinct ---------------
+    // (M-7) Unkeyed entries stay distinct
 
     #[test]
     fn unkeyed_entries_stay_distinct_no_collapse() {
@@ -1403,7 +1387,7 @@ mod tests {
         }
     }
 
-    // --------------- HomebrewCask publisher defaults ---------------
+    // HomebrewCask publisher defaults
 
     #[test]
     fn homebrew_cask_top_level_yaml_parses_with_unified_type() {
@@ -1587,7 +1571,7 @@ crates:
         );
     }
 
-    // ---- New-type round-trip coverage for the typed fields ----
+    // New-type round-trip coverage for the typed fields
 
     #[test]
     fn nfpm_umask_string_or_u32_inherits_from_defaults() {
@@ -1627,7 +1611,7 @@ crates:
         // The merge engine does NOT yet fold top-level `Config.notarize`
         // into per-crate state because notarize lives on `Config`, not
         // `CrateConfig`. This test pins that gap so any future wiring
-        // change surfaces explicitly.
+        // change shows up explicitly.
         use crate::config::{
             HumanDuration, MacOSNotarizeApiConfig, MacOSSignNotarizeConfig, NotarizeConfig,
         };
@@ -1652,7 +1636,7 @@ crates:
         // at all today. Notarize lives only on `Config` and `Defaults`, so
         // there is no per-crate slot for the merge engine to fold the typed
         // `HumanDuration` timeout into. Test pins the structural state so
-        // any future field-add (CrateConfig.notarize) surfaces here and the
+        // any future field-add (CrateConfig.notarize) shows up here and the
         // wiring change can be cross-checked against the known-bug entry.
         let _ = crate_cfg; // no-op: no per-crate notarize field exists.
     }
@@ -1678,7 +1662,7 @@ crates:
         let _ = crate_cfg; // explicit no-op assertion: there is no field to check.
     }
 
-    // --------------- Top-level Config field fold ---------------
+    // Top-level Config field fold
 
     /// `defaults.source` fills `Config.source` when the user did not set it.
     #[test]

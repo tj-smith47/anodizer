@@ -61,9 +61,7 @@ impl FileType {
     }
 }
 
-// ---------------------------------------------------------------------------
 // zip (archive) templates — unpack into tools/
-// ---------------------------------------------------------------------------
 
 /// Dual-arch zip install script (both 32-bit and 64-bit).
 const ZIP_TEMPLATE_DUAL: &str = r#"$ErrorActionPreference = 'Stop'
@@ -105,9 +103,7 @@ $packageArgs = @{
 Install-ChocolateyZipPackage @packageArgs
 "#;
 
-// ---------------------------------------------------------------------------
 // msi / nsis exe templates — run the installer silently
-// ---------------------------------------------------------------------------
 
 /// Dual-arch installer (msi/exe) install script. `validExitCodes` is emitted
 /// only for MSI (the `{{ valid_exit_codes }}` line is omitted for exe).

@@ -1,4 +1,4 @@
-//! Minimal GitHub REST surface for the homebrew-core bump: read a formula
+//! Minimal GitHub REST client for the homebrew-core bump: read a formula
 //! file, create a bump branch, commit the rewritten formula through the
 //! contents API, ensure a fork, and open the pull request. Everything is
 //! API-only — the publisher never clones the (multi-gigabyte) formula repo.
@@ -290,7 +290,7 @@ impl GithubApi {
 
     /// `POST /repos/{owner}/{repo}/pulls` — open the bump PR. The
     /// already-exists 422 folds to [`PrOutcome::AlreadyExists`] so the
-    /// caller can surface the idempotent skip.
+    /// caller can report the idempotent skip.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn create_pr(
         &self,

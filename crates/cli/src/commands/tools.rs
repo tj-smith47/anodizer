@@ -219,7 +219,7 @@ mod tests {
     }
 
     /// End-to-end through `collect_requirements`: a config that cross-compiles
-    /// to a non-host glibc-Linux target surfaces `cargo-zigbuild` + `zig` in the
+    /// to a non-host glibc-Linux target lists `cargo-zigbuild` + `zig` in the
     /// `tools` JSON, so the GitHub Action installs the cross toolchain instead
     /// of re-deriving it in bash. Skipped off x86_64-linux-gnu (Auto routing
     /// is host-dependent).
@@ -284,7 +284,7 @@ builds:
     }
 
     /// End-to-end through `collect_requirements`: a chocolatey-configured
-    /// crate surfaces `xmllint` in the `tools` JSON as REQUIRED, so the GitHub
+    /// crate lists `xmllint` in the `tools` JSON as REQUIRED, so the GitHub
     /// Action installs it up front instead of the release dying at the strict
     /// prepublish guard (which hard-fails without `xmllint`) after the GitHub
     /// release already shipped.
@@ -325,7 +325,7 @@ publish:
     }
 
     /// End-to-end through `collect_requirements`: a homebrew-configured crate
-    /// surfaces the optional `ruby -c` validator in the `tools` JSON as
+    /// lists the optional `ruby -c` validator in the `tools` JSON as
     /// ADVISORY (the schema check warn+skips without it), alongside the hard
     /// `git` requirement — so the GitHub Action provisions the stronger
     /// validation without a missing ruby ever blocking the gate.

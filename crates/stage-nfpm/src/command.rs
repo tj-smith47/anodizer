@@ -25,9 +25,7 @@ pub fn nfpm_command(config_path: &str, format: &str, target: &str) -> Vec<String
     ]
 }
 
-// ---------------------------------------------------------------------------
 // Format validation
-// ---------------------------------------------------------------------------
 
 /// Recognized nfpm packager format names.
 pub(crate) const KNOWN_FORMATS: &[&str] = &[
@@ -53,9 +51,7 @@ pub(crate) fn validate_format(format: &str) -> Result<()> {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Architecture validation per format
-// ---------------------------------------------------------------------------
 
 /// Check if a target triple's architecture is supported for the given nfpm
 /// packager format. Returns `true` for formats with no restrictions or when

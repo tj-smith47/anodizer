@@ -5,9 +5,7 @@ use std::path::PathBuf;
 use anodizer_core::artifact::{Artifact, ArtifactKind};
 use anodizer_core::stage::Stage;
 
-// -----------------------------------------------------------------------
 // Architecture mapping
-// -----------------------------------------------------------------------
 
 #[test]
 fn install_commands_quote_both_fields() {
@@ -44,9 +42,7 @@ fn test_arch_to_flatpak() {
     assert_eq!(arch_to_flatpak(""), None);
 }
 
-// -----------------------------------------------------------------------
 // Manifest JSON serialization
-// -----------------------------------------------------------------------
 
 #[test]
 fn test_manifest_json_serialization() {
@@ -116,9 +112,7 @@ fn test_manifest_json_empty_finish_args_omitted() {
     assert!(json.get("finish-args").is_none());
 }
 
-// -----------------------------------------------------------------------
 // FlatpakConfig deserialization
-// -----------------------------------------------------------------------
 
 #[test]
 fn test_flatpak_config_deserialize() {
@@ -178,9 +172,7 @@ fn test_flatpak_config_defaults() {
     assert!(config.id.is_none());
 }
 
-// -----------------------------------------------------------------------
 // Required field validation
-// -----------------------------------------------------------------------
 
 #[test]
 fn test_flatpak_config_required_field_validation() {
@@ -379,9 +371,7 @@ fn test_flatpak_config_required_field_validation() {
     }
 }
 
-// -----------------------------------------------------------------------
 // Disable via bool and template
-// -----------------------------------------------------------------------
 
 #[test]
 fn test_flatpak_config_disable_bool_and_template() {
@@ -486,9 +476,7 @@ fn test_flatpak_config_disable_bool_and_template() {
     }
 }
 
-// -----------------------------------------------------------------------
 // Stage skips non-Linux binaries
-// -----------------------------------------------------------------------
 
 #[test]
 fn test_flatpak_stage_skips_non_linux() {
@@ -551,9 +539,7 @@ fn test_flatpak_stage_skips_non_linux() {
     assert!(flatpaks.is_empty(), "should skip non-Linux binaries");
 }
 
-// -----------------------------------------------------------------------
 // Stage skips unsupported architectures
-// -----------------------------------------------------------------------
 
 #[test]
 fn test_flatpak_stage_skips_unsupported_arch() {
@@ -610,9 +596,7 @@ fn test_flatpak_stage_skips_unsupported_arch() {
     );
 }
 
-// -----------------------------------------------------------------------
 // Default name template
-// -----------------------------------------------------------------------
 
 #[test]
 fn test_default_name_template() {
@@ -631,9 +615,7 @@ fn test_default_name_template() {
     assert!(tmpl.ends_with(".flatpak"), "{tmpl}");
 }
 
-// -----------------------------------------------------------------------
 // Stage no-op when no flatpak config
-// -----------------------------------------------------------------------
 
 #[test]
 fn test_stage_skips_when_no_flatpak_config() {
@@ -647,9 +629,7 @@ fn test_stage_skips_when_no_flatpak_config() {
     assert!(ctx.artifacts.all().is_empty());
 }
 
-// -----------------------------------------------------------------------
 // Dry-run produces correct artifact
-// -----------------------------------------------------------------------
 
 #[test]
 fn test_flatpak_dry_run_produces_artifact() {
@@ -723,9 +703,7 @@ fn test_flatpak_dry_run_produces_artifact() {
     );
 }
 
-// -----------------------------------------------------------------------
 // Dry-run with multiple architectures
-// -----------------------------------------------------------------------
 
 #[test]
 fn test_flatpak_dry_run_multiple_arches() {
@@ -789,9 +767,7 @@ fn test_flatpak_dry_run_multiple_arches() {
     assert_eq!(flatpaks.len(), 2);
 }
 
-// -----------------------------------------------------------------------
 // Same-triple multi-variant: distinct .flatpak names, no clobber
-// -----------------------------------------------------------------------
 
 /// Three x86_64 builds tagged amd64_variant v1/v2/v3 plus one aarch64 build
 /// must each produce a distinct `.flatpak` artifact (no ArchPathGuard
@@ -941,9 +917,7 @@ fn test_flatpak_two_configs_same_default_name_bail_across_configs() {
     assert!(!err.contains(".Binary"), "{err}");
 }
 
-// -----------------------------------------------------------------------
 // Custom name_template rendering
-// -----------------------------------------------------------------------
 
 #[test]
 fn test_flatpak_dry_run_custom_name_template() {
@@ -1011,9 +985,7 @@ fn test_flatpak_dry_run_custom_name_template() {
     );
 }
 
-// -----------------------------------------------------------------------
 // Replace config marks archives for removal
-// -----------------------------------------------------------------------
 
 #[test]
 fn test_flatpak_dry_run_replace_removes_archives() {
@@ -1088,9 +1060,7 @@ fn test_flatpak_dry_run_replace_removes_archives() {
     assert_eq!(flatpaks.len(), 1);
 }
 
-// -----------------------------------------------------------------------
 // Mod timestamp logged in dry_run
-// -----------------------------------------------------------------------
 
 #[test]
 fn test_flatpak_dry_run_mod_timestamp() {
@@ -1146,9 +1116,7 @@ fn test_flatpak_dry_run_mod_timestamp() {
     assert_eq!(flatpaks.len(), 1);
 }
 
-// -----------------------------------------------------------------------
 // build_manifest with extra files
-// -----------------------------------------------------------------------
 
 /// Verifies that extra_file_names produces additional sources + install
 /// commands with the correct paths. A regression here would mean the
@@ -1203,9 +1171,7 @@ fn test_build_manifest_with_extra_files() {
     assert!(cmds[1].as_str().unwrap().contains("644"));
 }
 
-// -----------------------------------------------------------------------
 // build_subprocess_args
-// -----------------------------------------------------------------------
 
 /// Verifies the builder and bundle arg vectors contain the correct flags.
 /// A regression that rearranges args would silently break the subprocess
@@ -1234,9 +1200,7 @@ fn test_build_subprocess_args() {
     assert!(bundle.iter().any(|a| a.contains("amd64.flatpak")));
 }
 
-// -----------------------------------------------------------------------
 // resolve_extra_file_specs — valid glob
-// -----------------------------------------------------------------------
 
 /// Verifies that a valid glob resolves to (path, destination_name) pairs.
 /// When name_template is absent the destination is the file's basename.
@@ -1300,9 +1264,7 @@ fn test_resolve_extra_file_specs_invalid_glob_skipped() {
     assert!(results.is_empty(), "invalid glob should produce no results");
 }
 
-// -----------------------------------------------------------------------
 // filter_binaries_by_ids
-// -----------------------------------------------------------------------
 
 /// Verifies that with an ids filter, only binaries whose metadata "id" or
 /// "name" matches are retained. Without this filter the ids-gate is a no-op.
@@ -1399,9 +1361,7 @@ fn test_filter_binaries_by_ids_none_is_noop() {
     assert_eq!(binaries.len(), 2, "None filter should retain all binaries");
 }
 
-// -----------------------------------------------------------------------
 // render_output_filename — auto-appends .flatpak suffix
-// -----------------------------------------------------------------------
 
 /// Verifies that a name_template that does NOT end with ".flatpak" gets the
 /// suffix appended automatically. Without this logic the produced file would
@@ -1466,9 +1426,7 @@ fn test_render_output_filename_appends_suffix_when_missing() {
     );
 }
 
-// -----------------------------------------------------------------------
 // resolve_flatpak_version — missing Version var falls back to "0.0.0"
-// -----------------------------------------------------------------------
 
 /// Verifies that when the Version template variable is absent the stage falls
 /// back to "0.0.0" for the Flatpak bundle version (the value passed to
@@ -1533,9 +1491,7 @@ fn test_flatpak_stage_no_version_falls_back_to_0_0_0() {
     assert_eq!(flatpaks.len(), 1);
 }
 
-// -----------------------------------------------------------------------
 // require_flatpak_tools bails when tools are missing
-// -----------------------------------------------------------------------
 
 /// Verifies that when flatpak-builder is absent (which it is in the test
 /// sandbox) `require_flatpak_tools` returns an error with a helpful message.
@@ -1559,9 +1515,7 @@ fn test_require_flatpak_tools_errors_when_absent() {
     // succeeds — that is also correct.
 }
 
-// -----------------------------------------------------------------------
 // Stage::run bails early when no flatpak tool and not dry-run
-// -----------------------------------------------------------------------
 
 /// Verifies that the non-dry-run path calls require_flatpak_tools and bails
 /// when neither flatpak-builder nor flatpak is on PATH. This exercises
@@ -1628,9 +1582,7 @@ fn test_stage_run_non_dry_run_fails_without_tools() {
     );
 }
 
-// -----------------------------------------------------------------------
 // any_flatpak_enabled — skip template render error propagates
-// -----------------------------------------------------------------------
 
 /// Verifies that a malformed skip template in `any_flatpak_enabled` causes
 /// the stage to return an error rather than silently running or suppressing.
@@ -1687,9 +1639,7 @@ fn test_any_flatpak_enabled_bad_template_propagates_error() {
     );
 }
 
-// -----------------------------------------------------------------------
 // process_flatpak_cfg — ids filter matched no binaries
-// -----------------------------------------------------------------------
 
 /// Verifies that when the ids filter matches none of the available binaries
 /// the stage skips quietly (no error, no flatpak artifact).
@@ -1749,9 +1699,7 @@ fn test_flatpak_stage_ids_filter_no_match_skips() {
     );
 }
 
-// -----------------------------------------------------------------------
 // process_flatpak_cfg — per-cfg skip template (lines 717-723)
-// -----------------------------------------------------------------------
 
 /// Verifies that a skip template evaluated at the per-cfg level (inside
 /// process_flatpak_cfg) suppresses that specific config but not others.
@@ -1823,9 +1771,7 @@ fn test_process_flatpak_cfg_skip_per_cfg() {
     );
 }
 
-// -----------------------------------------------------------------------
 // Workspace multi-crate mode: two crates, each with a flatpak config
-// -----------------------------------------------------------------------
 
 /// Verifies that in workspace per-crate mode (multiple crates each with an
 /// independent flatpaks: config), each crate emits its own artifact keyed
@@ -1904,9 +1850,7 @@ fn test_flatpak_dry_run_workspace_per_crate() {
     assert!(crate_names.contains("crate-b"), "crate-b artifact missing");
 }
 
-// -----------------------------------------------------------------------
 // selected_crates filter (crate selection axis)
-// -----------------------------------------------------------------------
 
 /// Verifies that when selected_crates is set, only the matching crate
 /// is processed. The excluded crate must produce no artifact.
@@ -1978,9 +1922,7 @@ fn test_flatpak_dry_run_selected_crates_filter() {
     assert_eq!(flatpaks[0].crate_name, "included");
 }
 
-// -----------------------------------------------------------------------
 // map_to_supported_arches
-// -----------------------------------------------------------------------
 
 /// Verifies that binaries with supported arches are mapped and those with
 /// unsupported arches (i686, armv7) are dropped.
@@ -2099,12 +2041,10 @@ fn test_map_to_supported_arches_keeps_distinct_amd64_variants() {
     assert!(variants.contains(&Some("v3")));
 }
 
-// -----------------------------------------------------------------------
 // Dry-run with extra_files config (process_binary_iteration lines 627-634)
-// -----------------------------------------------------------------------
 
 /// Verifies that when extra_files is configured, the resolved file names
-/// surface in the dry-run artifact path (via the manifest JSON — the
+/// appear in the dry-run artifact path (via the manifest JSON — the
 /// assertion is that the stage runs without error and produces the artifact).
 /// The extra_file_names collection at lines 627-634 is exercised.
 #[test]

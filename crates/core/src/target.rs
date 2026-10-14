@@ -86,7 +86,7 @@ pub fn rust_arch_to_goarch(token: &str, little_endian: bool) -> Option<&'static 
 }
 
 pub fn map_target(triple: &str) -> (String, String) {
-    // ---- OS (substring match) ----
+    // OS (substring match)
     // Note: android triples contain "linux" (e.g. aarch64-linux-android),
     // so check android before linux.
     let os = if triple.contains("android") {
@@ -115,7 +115,7 @@ pub fn map_target(triple: &str) -> (String, String) {
         "unknown"
     };
 
-    // ---- Architecture ----
+    // Architecture
     // First check contains-based patterns (matches util.rs infer_arch behaviour),
     // then fall back to exact first-component matching for Rust-specific arch names.
     //
@@ -492,7 +492,7 @@ mod tests {
     }
 
     /// 32-bit PowerPC and WebAssembly have canonical Go arch names, so they
-    /// stop reaching arch-keyed surfaces (archive names, checksums, nfpm,
+    /// stop reaching arch-keyed outputs (archive names, checksums, nfpm,
     /// krew, docker, release asset matching) as their raw Rust tokens.
     #[test]
     fn rust_arch_to_goarch_maps_powerpc_and_wasm32() {

@@ -1,8 +1,6 @@
 use super::*;
 
-// ---------------------------------------------------------------------------
 // publish_to_aur
-// ---------------------------------------------------------------------------
 
 /// A rendered AUR package: the `PKGBUILD` Bash script and its `.SRCINFO`
 /// metadata sidecar, exactly as a live publish would write them, plus the
@@ -34,7 +32,7 @@ pub(crate) struct AurRendered {
 /// underlying [`util::find_artifacts_by_os_with_variant`] returns `Err` when a
 /// MATCHED artifact is missing its sha256 (the same error the live publish path
 /// `?`s at [`aur_build_sources`]), and that `Err` flows through here so the
-/// caller surfaces a matched-but-broken artifact rather than silently skipping
+/// caller reports a matched-but-broken artifact rather than silently skipping
 /// it. Only a clean `Ok(empty)` (true absence) skips.
 pub(crate) fn crate_has_aur_linux_archive(
     ctx: &Context,
@@ -134,7 +132,7 @@ pub(crate) fn render_aur_inner(
 /// Errors when the crate carries no `aur` block, when no Linux archive matches
 /// the configured filters, or when a matched artifact is missing its sha256 (a
 /// release always builds at least one valid archive). A sharded snapshot that
-/// built no matching archive surfaces as that error; the validator treats it
+/// built no matching archive shows up as that error; the validator treats it
 /// as a skip via [`crate_has_aur_linux_archive`].
 pub(crate) fn render_aur_pkgbuild_and_srcinfo_for_crate(
     ctx: &Context,

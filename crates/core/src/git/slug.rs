@@ -56,7 +56,7 @@ impl RepoSlug {
 
     /// Validated constructor — module-private so the only public path to a
     /// `RepoSlug` is a `resolve_*` function. Rejects an empty/whitespace owner
-    /// or name (an unusable slug must surface as an error at resolution time,
+    /// or name (an unusable slug must be reported as an error at resolution time,
     /// not as a silent `""/""` that 404s a downstream API call).
     fn validated(owner: String, name: String) -> Result<Self> {
         if owner.trim().is_empty() || name.trim().is_empty() {

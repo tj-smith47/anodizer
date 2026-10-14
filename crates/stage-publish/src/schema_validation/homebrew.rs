@@ -9,7 +9,7 @@
 //! live publish would push — via the same render path — and checks it two ways:
 //! an always-on structural floor (pure-Rust stanza scanning) and, when `ruby` is
 //! on `PATH`, a real `ruby -c` syntax check. A structural defect (a missing
-//! required stanza, an unbalanced template that produced broken Ruby) surfaces
+//! required stanza, an unbalanced template that produced broken Ruby) shows up
 //! in the emission-validate pass rather than after a tap commit ships an
 //! uninstallable formula.
 
@@ -367,7 +367,7 @@ const RUBY_TEMP_NAME: &str = "artifact.rb";
 /// every diagnostic. So the parser anchors on the known filename marker
 /// (`artifact.rb:`) and reads the digits after it — robust to any path shape
 /// ruby emits. A line lacking that marker falls through, letting the caller's
-/// raw-stderr fallback surface the failure.
+/// raw-stderr fallback report the failure.
 fn parse_ruby_c_stderr(stderr: &str) -> Vec<SchemaFinding> {
     // Derived from RUBY_TEMP_NAME so a rename of the written file can't silently
     // desync the parser's anchor.
@@ -1073,7 +1073,7 @@ end
     }
 
     /// A line with no `artifact.rb:` marker (no recognizable position) is
-    /// dropped, leaving the caller's raw-stderr fallback to surface the failure.
+    /// dropped, leaving the caller's raw-stderr fallback to report the failure.
     #[test]
     fn ruby_c_stderr_drops_lines_without_the_filename_marker() {
         let stderr = "ruby: No such file or directory -- /nope (LoadError)\n";

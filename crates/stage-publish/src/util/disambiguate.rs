@@ -31,7 +31,7 @@ pub(crate) struct DisambiguateConfig<'a> {
     pub ids_was_set: bool,
     /// Publisher name used as the error-message prefix (`"homebrew"` / `"scoop"`).
     pub publisher_label: &'a str,
-    /// Crate name surfaced in errors so multi-crate workspaces are diagnosable.
+    /// Crate name reported in errors so multi-crate workspaces are diagnosable.
     pub crate_name: &'a str,
     /// Logger for warn lines emitted when the fallback drops an archive.
     pub logger: &'a StageLogger,

@@ -86,7 +86,7 @@ pub(crate) fn validate_and_check_skip(
     // Confinement/grade vs. channel cross-check: the Snap Store rejects a
     // devmode-confined or devel-grade snap ("not ready for general use")
     // pushed to candidate/stable. Catch this at preflight, before any
-    // build/upload work, rather than surfacing it as an upload-time Store
+    // build/upload work, rather than reporting it as an upload-time Store
     // rejection. An unset `channel_templates` auto-populates to edge/beta
     // for these snaps (see `resolve_effective_channels`) and never reaches
     // this branch — only an explicit, conflicting channel is bailed on.

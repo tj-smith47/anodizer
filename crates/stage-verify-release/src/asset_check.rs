@@ -5,7 +5,7 @@
 //! published release actually STORES. GitHub silently tolerates partial
 //! uploads — a 422/transient that drops one asset can leave a release missing
 //! a checksum or a `.deb` while every other asset is present. This diff
-//! surfaces exactly which produced artifacts have no matching uploaded asset.
+//! shows exactly which produced artifacts have no matching uploaded asset.
 //!
 //! [`check_asset_content`] extends the name diff with a byte-level verdict
 //! for each asset that IS present: the stored size (and, when GitHub exposes

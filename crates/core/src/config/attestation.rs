@@ -4,9 +4,7 @@ use serde::{Deserialize, Serialize};
 use super::{StringOrBool, deserialize_string_or_bool_opt};
 use crate::artifact::{ArtifactKind, release_uploadable_kinds};
 
-// ---------------------------------------------------------------------------
 // AttestationConfig
-// ---------------------------------------------------------------------------
 
 /// SLSA build-provenance / attestation configuration for binaries and archives.
 ///

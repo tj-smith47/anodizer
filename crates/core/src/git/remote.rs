@@ -8,7 +8,7 @@ use crate::redact::redact_url_credentials;
 ///
 /// Probes `git remote get-url <remote>` and reports success. Any spawn or
 /// non-zero exit (no such remote) maps to
-/// `false` so callers can branch on presence without surfacing an error.
+/// `false` so callers can branch on presence without reporting an error.
 pub fn has_remote_in(cwd: &Path, remote: &str) -> bool {
     crate::git::git_command()
         .current_dir(cwd)
@@ -195,7 +195,7 @@ pub(crate) fn parse_github_remote(url: &str) -> Option<(String, String)> {
 pub(crate) fn detect_github_repo_in(cwd: &Path) -> Result<(String, String)> {
     let url = git_output_in(cwd, &["remote", "get-url", "origin"])?;
     parse_github_remote(&url).ok_or_else(|| {
-        // Strip inline `<scheme>://<userinfo>@...` userinfo before surfacing
+        // Strip inline `<scheme>://<userinfo>@...` userinfo before showing
         // the URL in a user-visible error.
         let safe = redact_url_credentials(&url);
         anyhow::anyhow!(
@@ -285,7 +285,7 @@ pub fn detect_remote_web_base_in(cwd: &Path) -> Result<String> {
 pub(crate) fn detect_owner_repo_in(cwd: &Path) -> Result<(String, String)> {
     let url = git_output_in(cwd, &["remote", "get-url", "origin"])?;
     parse_remote_owner_repo(&url).ok_or_else(|| {
-        // Strip inline userinfo before surfacing the URL.
+        // Strip inline userinfo before showing the URL.
         let safe = redact_url_credentials(&url);
         anyhow::anyhow!("could not parse owner/repo from remote URL: {}", safe)
     })

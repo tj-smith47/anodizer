@@ -4,7 +4,7 @@
 //!
 //! Invoked from [`super::config_loader::load_config`] after per-crate `path`
 //! resolution so every relative `extra_files` / `files` glob across archive,
-//! release, checksum, docker, nfpm, and publisher surfaces is rewritten
+//! release, checksum, docker, nfpm, and publisher config is rewritten
 //! relative to `monorepo.dir`.
 
 use anodizer_core::config::Config;
@@ -15,7 +15,7 @@ use anodizer_core::config::Config;
 /// - A crate's `path` is defaulted to `monorepo.dir` when empty or `"."`.
 /// - Each crate's release `name_template` defaults to
 ///   `"{{ ProjectName }} {{ Tag }}"` so the rendered release name carries
-///   a project prefix and three sub-projects don't all surface as `v1.2.3`.
+///   a project prefix and three sub-projects don't all appear as `v1.2.3`.
 /// - Every relative `extra_files` / `files` glob on archive / release /
 ///   checksum / source / docker / nfpm / publisher subsystems is rewritten
 ///   to be relative to `monorepo.dir` ("Extra files on the
@@ -111,9 +111,9 @@ fn apply_monorepo_to_top_level(config: &mut Config, dir: &str) {
     }
 }
 
-/// Walk every packaging surface attached to a crate and prefix any
+/// Walk every packaging config attached to a crate and prefix any
 /// `extra_files` / `templated_extra_files` paths so monorepo intent is
-/// uniform across archive / release / installer / blob surfaces.
+/// uniform across archive / release / installer / blob configs.
 fn prefix_publisher_extras(crate_cfg: &mut anodizer_core::config::CrateConfig, dir: &str) {
     // Crate-level release config (mirrors top-level).
     if let Some(ref mut rel) = crate_cfg.release {
@@ -301,9 +301,7 @@ fn validate_monorepo_tag_prefix(config: &Config) {
 mod tests {
     use super::*;
 
-    // -----------------------------------------------------------------------
     // monorepo defaults
-    // -----------------------------------------------------------------------
 
     fn monorepo_config_with_archive_files(extra: &str) -> anodizer_core::config::Config {
         let yaml = format!(

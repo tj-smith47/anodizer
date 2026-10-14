@@ -2,7 +2,7 @@
 //!
 //! A publisher reporting `Succeeded` proves its client call returned OK — not
 //! that consumers can actually SEE the published artifact. This module closes
-//! that gap for the publishers whose published surface is independently
+//! that gap for the publishers whose published output is independently
 //! probeable with coordinates the run already recorded in its own publish
 //! report:
 //!
@@ -1607,7 +1607,7 @@ mod tests {
     fn optional_publisher_unverifiable_landing_warns_but_never_fails_the_gate() {
         // A required: false publisher that reported success but whose landing
         // cannot be confirmed (probe says absent) is a false-success — still
-        // surfaced (warned) but never gate-failing, since the operator marked
+        // reported (warned) but never gate-failing, since the operator marked
         // it advisory. Required publishers keep failing on the same condition.
         let report = PublishReport {
             results: vec![optional(result_with(
@@ -1638,7 +1638,7 @@ mod tests {
 
     #[test]
     fn attempted_and_failed_homebrew_publisher_is_reported_as_a_landing_issue() {
-        // homebrew has no independently-probeable landing surface (no cargo
+        // homebrew has no independently-probeable landing target (no cargo
         // index / npm registry / bucket / Snap Store equivalent), but a
         // publisher this run actually attempted and failed is a landing
         // defect on its own merits regardless of whether it's one of the

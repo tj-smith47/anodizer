@@ -58,7 +58,7 @@ pub fn lock_recover<'a, T>(m: &'a Mutex<T>, log: &StageLogger, label: &str) -> M
 /// Translate a `thread::JoinHandle::join` result's panic payload into
 /// an `anyhow::Error` tagged with `label`. The two common panic
 /// payload shapes (`&'static str` / `String`) are downcast so the
-/// surfaced message is readable rather than the opaque `Any`
+/// reported message is readable rather than the opaque `Any`
 /// placeholder.
 ///
 /// Accepts `Result<T, Box<dyn Any + Send>>` rather than the handle
@@ -459,7 +459,7 @@ mod tests {
         );
     }
 
-    // ---------- lock_recover ----------
+    // lock_recover
 
     #[test]
     fn lock_recover_returns_inner_when_unpoisoned() {
@@ -492,7 +492,7 @@ mod tests {
         assert_eq!(*g, 7);
     }
 
-    // ---------- join_panic_to_err ----------
+    // join_panic_to_err
 
     #[test]
     fn join_panic_to_err_passes_through_success() {
@@ -505,7 +505,7 @@ mod tests {
     fn join_panic_to_err_translates_str_panic() {
         // The most common panic shape in this codebase is `panic!("msg")`
         // which produces a `&'static str` payload — verify the message
-        // survives into the surfaced anyhow chain.
+        // survives into the returned anyhow chain.
         let h = std::thread::spawn(|| -> u32 {
             panic!("kaboom");
         });

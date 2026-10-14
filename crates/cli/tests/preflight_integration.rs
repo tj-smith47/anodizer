@@ -3,7 +3,7 @@
 //!
 //! Drives the real binary against a synthesized fixture repo whose config
 //! demands things the host cannot satisfy, asserting:
-//!   - collect-all: failures from independent surfaces (publisher SSH key,
+//!   - collect-all: failures from independent sources (publisher SSH key,
 //!     sbom tool, cosign key material) all appear in ONE run;
 //!   - the exit code is non-zero when anything is missing;
 //!   - secret VALUES never appear in the output — only env-var names;
@@ -31,7 +31,7 @@ const FIXTURE_CRATE_NAME: &str = "anodizer-preflight-fixture";
 const SECRET_SENTINEL: &str = "SUPERSECRET-PREFLIGHT-SENTINEL-VALUE";
 
 fn write_fixture_config(dir: &std::path::Path) {
-    // Four independent failure surfaces:
+    // Four independent failure sources:
     //   publish.aur  -> PF_MISSING_AUR_KEY unset        (env-missing)
     //   publish.npm  -> NPM_TOKEN unset                 (env-missing)
     //   sboms.cmd    -> tool that cannot exist on PATH  (tool-missing)
@@ -83,7 +83,7 @@ fn run_preflight(dir: &std::path::Path, extra_args: &[&str]) -> std::process::Ou
         .env_remove("PF_MISSING_AUR_KEY")
         // Unset on the child only (never the test process) so the npm
         // publisher's token requirement deterministically reads as missing;
-        // the allowlist test asserts this surfaces for the SELECTED npm
+        // the allowlist test asserts this appears for the SELECTED npm
         // publisher. Per-child env keeps the test-isolation guard satisfied.
         .env_remove("NPM_TOKEN")
         .output()
@@ -111,7 +111,7 @@ fn preflight_collects_all_failures_and_exits_nonzero() {
         !out.status.success(),
         "preflight must exit non-zero on failures; output:\n{combined}"
     );
-    // Collect-all: every independent failure surface present in ONE run.
+    // Collect-all: every independent failure source present in ONE run.
     assert!(
         combined.contains("PF_MISSING_AUR_KEY"),
         "missing publisher SSH key env var not reported:\n{combined}"
@@ -201,14 +201,14 @@ fn preflight_skip_drops_stage_requirements() {
 /// one, in a single pass. The fixture configures two publishers — `npm` and
 /// `aur` — so one run proves BOTH directions of the allowlist:
 ///   - SELECTED (`npm`): its `NPM_TOKEN` requirement SURVIVES the allowlist
-///     and surfaces in the report as `[needed by: publish:npm]`;
+///     and appears in the report as `[needed by: publish:npm]`;
 ///   - DESELECTED (`aur`): its `PF_MISSING_AUR_KEY` requirement is DROPPED.
 ///
 /// Crucially, NO `--skip` is passed: the `--publishers npm` allowlist ALONE
-/// must auto-deselect the `signs:` surface (its only consumers —
+/// must auto-deselect the `signs:` requirements (its only consumers —
 /// github-release / blob / artifactory — are all deselected), so the malformed
 /// `PF_COSIGN_KEY` cosign demand vanishes without a hand-skip. This is exactly
-/// the surface the npm-provenance job validates with
+/// the requirement set the npm-provenance job validates with
 /// `preflight --publish-only --publishers npm` and zero `--skip`.
 #[test]
 fn preflight_publishers_allowlist_keeps_selected_drops_deselected_publisher() {
@@ -275,7 +275,7 @@ fn preflight_publishers_allowlist_keeps_selected_drops_deselected_publisher() {
 }
 
 /// Under `--publish-only` with an EMPTY `--publishers` allowlist BOTH signature
-/// surfaces must survive: `publisher_deselected` short-circuits to the denylist,
+/// requirements must survive: `publisher_deselected` short-circuits to the denylist,
 /// which never names a signature consumer, and a binary signature is a release
 /// asset of the same job. Guards the gate against over-firing and silently
 /// shipping a release with no signatures.
@@ -291,7 +291,7 @@ fn preflight_publish_only_empty_allowlist_keeps_both_sign_surfaces() {
 
     // No allowlist, no skip, publish-only: neither slice's consumers are
     // deselected, so both cosign key demands (malformed PF_COSIGN_KEY and
-    // PF_BINARY_COSIGN_KEY) surface.
+    // PF_BINARY_COSIGN_KEY) requirement.
     let out = run_preflight(tmp.path(), &["--publish-only"]);
     let combined = format!(
         "{}{}",
@@ -310,7 +310,7 @@ fn preflight_publish_only_empty_allowlist_keeps_both_sign_surfaces() {
 
 /// The MAIN-job invariant under the REAL binary: the full release pipeline
 /// (no `--publish-only`; the main job runs `release --skip=npm`, i.e. the FULL
-/// scope with an empty allowlist) must KEEP BOTH sign surfaces — `signs:` AND
+/// scope with an empty allowlist) must KEEP BOTH sign requirements — `signs:` AND
 /// `binary_signs:` — so the binaries that ship are still signed.
 #[test]
 fn preflight_full_scope_keeps_both_sign_surfaces() {
@@ -341,7 +341,7 @@ fn preflight_full_scope_keeps_both_sign_surfaces() {
 
 /// The `uploads` publisher consumes the `signs:` sidecars when an entry sets
 /// `signature: true`, so it is a member of `signs_consumers()`. Selecting it
-/// ALONE (every OTHER consumer deselected) must KEEP the `signs:` surface — its
+/// ALONE (every OTHER consumer deselected) must KEEP the `signs:` requirements — its
 /// cosign key demand must survive — proving preflight stays in lockstep with
 /// the fixed runtime. Before the fix, `uploads` was absent from the hard-coded
 /// three-consumer conjunction, so `--publishers uploads` falsely dropped
@@ -363,7 +363,7 @@ fn preflight_publishers_uploads_keeps_signs_surface() {
         String::from_utf8_lossy(&out.stderr)
     );
     // The selected `uploads` publisher reads the signs sidecars, so the signs
-    // surface (and its cosign key demand) must NOT be deselected.
+    // requirements (and its cosign key demand) must NOT be deselected.
     assert!(
         combined.contains("PF_COSIGN_KEY"),
         "--publishers uploads must keep the signs surface (uploads consumes the sidecars):\n{combined}"
@@ -374,9 +374,7 @@ fn preflight_publishers_uploads_keeps_signs_surface() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // Reconcile sweep: position resolution → probe-or-skip → exit code
-// ---------------------------------------------------------------------------
 
 const RECONCILE_CRATE_NAME: &str = "anodizer-reconcile-fixture";
 const RECONCILE_TAG: &str = "v0.1.0";

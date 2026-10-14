@@ -106,9 +106,7 @@ fn assert_no_subsection_graft(text: &str, allowed_group_titles: &[&str]) {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Mode 1: single-crate refresh + write
-// ---------------------------------------------------------------------------
 
 fn single_crate_repo() -> TempDir {
     let tmp = TempDir::new().unwrap();
@@ -215,9 +213,7 @@ fn single_crate_write_preserves_released_history() {
     assert!(cl.contains("compare/v0.1.0"), "footer dropped: {cl}");
 }
 
-// ---------------------------------------------------------------------------
 // Mode 2: workspace-lockstep
-// ---------------------------------------------------------------------------
 
 #[test]
 fn lockstep_write_refreshes_root_changelog() {
@@ -315,9 +311,7 @@ fn lockstep_honors_custom_tag_prefix_for_range() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // Mode 3: workspace per-crate
-// ---------------------------------------------------------------------------
 
 fn per_crate_repo() -> TempDir {
     let tmp = TempDir::new().unwrap();
@@ -432,9 +426,7 @@ fn per_crate_filter_restricts_to_one_crate() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // Range parsing: single tag resolves crate + predecessor
-// ---------------------------------------------------------------------------
 
 #[test]
 fn single_tag_resolves_owning_crate_and_predecessor() {
@@ -466,9 +458,7 @@ fn single_tag_resolves_owning_crate_and_predecessor() {
     assert_eq!(arr[0]["to"], "core-v0.3.0");
 }
 
-// ---------------------------------------------------------------------------
 // release-notes format (regression: grouped-bullet body)
-// ---------------------------------------------------------------------------
 
 #[test]
 fn release_notes_format_emits_grouped_bullets() {
@@ -772,9 +762,7 @@ fn snapshot_release_notes_renders_without_config_opt_in() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // json format shape
-// ---------------------------------------------------------------------------
 
 #[test]
 fn json_format_emits_sorted_array_with_crate_field() {
@@ -796,9 +784,7 @@ fn json_format_emits_sorted_array_with_crate_field() {
     }
 }
 
-// ---------------------------------------------------------------------------
 // --write + non-kac format error (end-to-end through clap)
-// ---------------------------------------------------------------------------
 
 #[test]
 fn write_with_release_notes_format_is_rejected() {
@@ -826,9 +812,7 @@ fn explicit_range_overrides_auto_discovery() {
     assert_eq!(arr[0]["to"], "HEAD");
 }
 
-// ---------------------------------------------------------------------------
 // Range consistency: empty-from = full history, uniformly across formats
-// ---------------------------------------------------------------------------
 
 /// A single-crate repo with two tagged releases and a commit AFTER the latest
 /// tag, so "since the last release" (v0.2.0..HEAD) is a strict subset of full
@@ -997,7 +981,7 @@ fn omitted_range_is_pending_not_full_history() {
     );
 }
 
-/// For the SAME range arg, json and release-notes must surface the SAME commit
+/// For the SAME range arg, json and release-notes must show the SAME commit
 /// set — for the OMITTED (pending) range, full history (`..HEAD`), and an
 /// explicit `v0.1.0..HEAD`.
 #[test]
@@ -1217,11 +1201,9 @@ fn release_notes_for_crate(root: &Path, crate_name: &str) -> String {
     r.stdout
 }
 
-// ---------------------------------------------------------------------------
 // Same-prefix shared-root collapse: N crates all on `v{{ Version }}` routing to
 // one shared root CHANGELOG.md are a SINGLE flat lockstep aggregate, not N
 // multi-track `### <crate>` subsections.
-// ---------------------------------------------------------------------------
 
 /// A flat `crates:` workspace whose members ALL share `tag_template:
 /// "v{{ Version }}"` and route to one shared root (no `per_crate`/`root`
@@ -1566,11 +1548,9 @@ crates:
     );
 }
 
-// ---------------------------------------------------------------------------
 // github-native preview: the standalone command renders from LOCAL git instead
 // of GitHub (whose body is generated at release time), requires no token, and
 // never emits empty.
-// ---------------------------------------------------------------------------
 
 /// A single-crate repo configured `changelog.use: github-native` with a
 /// `release.github` repo. The standalone `changelog --format release-notes`
@@ -1649,10 +1629,8 @@ fn github_native_release_notes_previews_from_local_git() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // Multi-track (distinct tag prefixes) release-notes preview: each crate's
 // pending window renders without a checkout, bounded at its own tag.
-// ---------------------------------------------------------------------------
 
 /// Multi-track (distinct-prefix `core-v*` / `cli-v*`) repo with each crate's
 /// last tag BEHIND HEAD. `changelog --crate <name> --format release-notes`
@@ -1708,11 +1686,9 @@ fn multitrack_release_notes_preview_bounds_at_each_crate_tag() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // Flat-aggregate coherence guard: members sharing one tag prefix must agree on
 // `[package].version` (one tag can't carry two versions). The guard fires
 // identically for changelog / tag / bump.
-// ---------------------------------------------------------------------------
 
 /// A flat `crates:` workspace whose members share `tag_template:
 /// "v{{ Version }}"` but carry the supplied (possibly divergent) versions.
@@ -1828,12 +1804,10 @@ fn bump_rejects_divergent_flat_aggregate_versions() {
     assert_coherence_error(&String::from_utf8_lossy(&out.stderr));
 }
 
-// ---------------------------------------------------------------------------
 // Subdirectory invocation: `changelog` must resolve the workspace root from
 // the config (not the cwd), so a run from `crates/<x>` produces the same
 // `[Unreleased]` preview as a run from the repo root — across all three modes.
 // Regression guard for the cwd-as-root bug (known-bugs #4).
-// ---------------------------------------------------------------------------
 
 /// Run `changelog -q` against an explicit `--config` (the root `.anodizer.yaml`)
 /// from `run_dir`. The explicit config isolates the workspace-root concern: the
@@ -1913,13 +1887,11 @@ fn per_crate_changelog_from_subdir_matches_root() {
     assert_subdir_matches_root(&tmp, "crates/cli");
 }
 
-// ---------------------------------------------------------------------------
 // Config-shape × format matrix: the changelog command must render correctly
 // across the FINITE set of config-shape encodings, in every format, leaving no
 // preview `dist/` artifact. This is the exhaustive guard against a shape that
 // is only tested under one encoding (the class of bug that left
 // `workspaces:`-multi-track release-notes empty).
-// ---------------------------------------------------------------------------
 
 /// One config-shape encoding the changelog command must support.
 struct ShapeCase {
@@ -2098,7 +2070,7 @@ fn config_shape_matrix_renders_all_formats() {
         let label = case.name;
         let is_ghnative = case.yaml.contains("use: github-native");
 
-        // --- kac (default) preview: renders [Unreleased], no dist artifact. ---
+        // kac (default) preview: renders [Unreleased], no dist artifact.
         let kac = changelog(root, &["-q"]);
         assert!(
             kac.success,
@@ -2112,7 +2084,7 @@ fn config_shape_matrix_renders_all_formats() {
         );
         assert_no_dist_changelog(root, label);
 
-        // --- release-notes (no --crate): every track non-empty. ---
+        // release-notes (no --crate): every track non-empty.
         let rn = changelog(root, &["-q", "--format", "release-notes"]);
         assert!(
             rn.success,
@@ -2151,7 +2123,7 @@ fn config_shape_matrix_renders_all_formats() {
         }
         assert_no_dist_changelog(root, label);
 
-        // --- json: valid array, one element per rendered track. ---
+        // json: valid array, one element per rendered track.
         let js = changelog(root, &["-q", "--format", "json"]);
         assert!(
             js.success,
@@ -2171,8 +2143,8 @@ fn config_shape_matrix_renders_all_formats() {
         );
         assert_no_dist_changelog(root, label);
 
-        // --- snapshot release-notes: renders without `changelog.snapshot:
-        //     true` (the standalone command bypasses the config gate). ---
+        // snapshot release-notes: renders without `changelog.snapshot:
+        //     true` (the standalone command bypasses the config gate).
         let snap = changelog(root, &["-q", "--snapshot", "--format", "release-notes"]);
         assert!(
             snap.success,
@@ -2197,11 +2169,9 @@ fn config_shape_matrix_renders_all_formats() {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Per-crate scope: the single resolver routes all three formats. A multi-track
 // repo must scope each track to its OWN crate dir; a global `changelog.paths`
 // can only NARROW that scope (intersect), never REPLACE it across tracks.
-// ---------------------------------------------------------------------------
 
 /// Build a cfgd-shape distinct-prefix multi-track repo: `core` and `cli` each
 /// tagged on their own track, each with a post-tag commit ONLY in its own dir,
@@ -2515,11 +2485,9 @@ fn narrowed_aggregate_preserves_full_body_and_coauthor_and_drops_excluded() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // Upper-bound honoring: an explicit `<from>..<to>` / single `<tag>` must NOT
 // leak commits made AFTER `<to>`. Regression for the release-notes path
 // rendering `<from>..HEAD` (dropping the upper bound) while json honored it.
-// ---------------------------------------------------------------------------
 
 /// A single-crate repo with three tags (v0.1.0/v0.2.0/v0.3.0) and one commit
 /// AFTER the latest tag, on HEAD. Commit subjects are distinct per inter-tag
@@ -2688,9 +2656,7 @@ fn release_notes_open_upper_bound_still_reaches_head() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // --crate validation + workspace overlay resolution
-// ---------------------------------------------------------------------------
 
 /// A `workspaces:` fixture whose workspace carries its OWN `changelog.groups`
 /// (a title no default config produces), one member crate, a `member-v0.1.0`

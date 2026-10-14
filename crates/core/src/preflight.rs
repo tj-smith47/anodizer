@@ -19,9 +19,7 @@ use std::fmt;
 
 use crate::log::StageLogger;
 
-// ---------------------------------------------------------------------------
 // PublisherState
-// ---------------------------------------------------------------------------
 
 /// The state of a single publisher for the target version.
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
@@ -105,9 +103,7 @@ impl fmt::Display for PublisherState {
     }
 }
 
-// ---------------------------------------------------------------------------
 // PreflightEntry
-// ---------------------------------------------------------------------------
 
 /// One publisher's result in the preflight report.
 #[derive(Debug, Clone, serde::Serialize)]
@@ -122,9 +118,7 @@ pub struct PreflightEntry {
     pub state: PublisherState,
 }
 
-// ---------------------------------------------------------------------------
 // PreflightReport
-// ---------------------------------------------------------------------------
 
 /// Aggregated results for all one-way-door publishers.
 ///
@@ -135,15 +129,15 @@ pub struct PreflightEntry {
 /// results. The two channels are kept separate from `entries` so that
 /// the report-only publisher-state channel (queried via `clean_count`)
 /// stays focused on publisher state, while the
-/// CLI's operator-facing output can still surface every warning and blocker
+/// CLI's operator-facing output can still show every warning and blocker
 /// the preflight pipeline produced.
 #[derive(Debug, Default, serde::Serialize)]
 pub struct PreflightReport {
     pub entries: Vec<PreflightEntry>,
-    /// Non-blocking concerns surfaced during preflight (missing rollback
+    /// Non-blocking concerns raised during preflight (missing rollback
     /// scope in default mode, `Publisher::preflight()` returning Warning).
     pub warnings: Vec<String>,
-    /// Hard blockers surfaced during preflight (missing rollback scope in
+    /// Hard blockers raised during preflight (missing rollback scope in
     /// `--strict` mode, `Publisher::preflight()` returning Blocker).
     pub blockers: Vec<String>,
 }
@@ -213,9 +207,7 @@ impl PreflightReport {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {

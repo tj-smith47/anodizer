@@ -14,7 +14,7 @@ use crate::{PublishEvidence, PublisherGroup};
 /// Each variant signals a different release-pipeline reaction:
 ///
 /// * `Pass` — no concern detected; publishing may proceed.
-/// * `Warning(msg)` — surface the message to the operator (and review log)
+/// * `Warning(msg)` — show the message to the operator (and review log)
 ///   but do not block the publish. Use for soft signals like "remote
 ///   already has a tag at this version but contents match".
 /// * `Blocker(msg)` — abort before the publish stage runs. Use for hard
@@ -28,7 +28,7 @@ use crate::{PublishEvidence, PublisherGroup};
 pub enum PreflightCheck {
     /// Publisher's pre-flight checks completed with no concerns.
     Pass,
-    /// Publisher detected a non-blocking concern; surface it but continue.
+    /// Publisher detected a non-blocking concern; report it but continue.
     Warning(String),
     /// Publisher detected a blocking concern; abort before the publish stage.
     Blocker(String),
@@ -56,7 +56,7 @@ impl PreflightCheck {
 /// ([`Publisher::reconcile`]) instead of being re-derived ad hoc by per-`run()`
 /// self-skips, the global preflight gate, and the burn-guard probes.
 ///
-/// Consumed by two surfaces with one contract:
+/// Consumed by two callers with one contract:
 /// * the publish dispatch loop — `Complete` skips `run()`
 ///   (`SkipReason::AlreadyPublished`), `Diverged` records a `Failed` result
 ///   (for a required publisher that closes the Submitter gate and the run
@@ -126,7 +126,7 @@ pub enum ReconcileState {
 ///   publisher in the pipeline runs. Defaults to [`PreflightCheck::Pass`].
 /// * [`Publisher::rollback_scope_needed`] — declare an opt-in OAuth /
 ///   token scope that rollback would require (e.g. `"delete_repo"` for
-///   GitHub-fork-based publishers). Defaults to `None`. Surfaced by
+///   GitHub-fork-based publishers). Defaults to `None`. Shown by
 ///   the CLI when explaining why a rollback path is unavailable.
 ///
 /// Implementations must be `Send + Sync` so the publish stage can fan out
@@ -157,7 +157,7 @@ pub trait Publisher: Send + Sync {
 
     /// Fast self-check executed before any publisher runs.
     ///
-    /// Default returns [`PreflightCheck::Pass`]. Override to surface
+    /// Default returns [`PreflightCheck::Pass`]. Override to report
     /// publisher-specific blockers (missing tap, missing fork, network
     /// unreachable) or warnings (duplicate-but-matching upload).
     fn preflight(&self, _ctx: &Context) -> anyhow::Result<PreflightCheck> {
@@ -231,7 +231,7 @@ pub trait Publisher: Send + Sync {
     /// `nix-instantiate --parse`) that warn+skip when missing, or a preferred
     /// transport with a full fallback (`gh` vs the GitHub REST API).
     ///
-    /// Collected alongside [`Publisher::requirements`] but surfaced as
+    /// Collected alongside [`Publisher::requirements`] but reported as
     /// ADVISORY: preflight warns instead of blocking, and `anodizer tools`
     /// reports them as recommended so an auto-provisioned runner installs
     /// them and gets the stronger validation/transport. Hard needs (the run
@@ -415,7 +415,7 @@ mod tests {
     /// A run that published nothing has no remote state to inspect, so the
     /// empty-evidence line must not send the operator to verify any. Decided
     /// on the evidence, once, rather than in the publisher that happened to
-    /// surface it.
+    /// report it.
     #[test]
     fn a_run_that_published_nothing_is_not_asked_to_verify_remote_state() {
         for mode in ["dry_run", "snapshot"] {

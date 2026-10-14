@@ -250,7 +250,7 @@ fn unreadable_aside_path(path: &std::path::Path) -> PathBuf {
 ///
 /// Best-effort: any IO / serialization failure is logged as a warn and
 /// returns `Ok(())`. The write does NOT fail the pipeline — the release
-/// itself isn't affected by a missing on-disk replay surface.
+/// itself isn't affected by a missing on-disk replay file.
 ///
 /// Skipped (no-op) when:
 /// - `ctx.is_snapshot()` or `ctx.is_dry_run()` — these modes are not
@@ -311,7 +311,7 @@ fn unreadable_aside_path(path: &std::path::Path) -> PathBuf {
 /// This function is `pub` + `#[doc(hidden)]` only so the in-crate
 /// integration test (`tests/run_report_persistence.rs`) can drive the
 /// production writer without re-implementing it. It is **not** part of
-/// the public API surface — downstream crates must invoke
+/// the public API — downstream crates must invoke
 /// `PublishStage` via the `Stage` trait, which calls this writer
 /// internally at end-of-pipeline.
 #[doc(hidden)]

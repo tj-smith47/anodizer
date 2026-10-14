@@ -49,7 +49,7 @@ pub(super) fn check_sign_artifact_filters(config: &Config, warnings: &mut Vec<St
             // The authenticode block carries its own `artifacts` selector,
             // resolved through the same `should_sign_artifact` vocabulary. An
             // unrecognized value here matches no artifact and (now that the
-            // stage propagates the error) fails the run — surface it at check
+            // stage propagates the error) fails the run — report it at check
             // time too.
             if let Some(ref auth) = sign_cfg.authenticode
                 && let Some(filter) = unrecognized(&auth.artifacts)

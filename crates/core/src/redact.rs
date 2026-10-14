@@ -41,7 +41,7 @@ const SECRET_VALUE_PREFIXES: &[&str] = &[
 
 /// Whether an environment entry looks like it holds a credential.
 ///
-/// The one heuristic behind both the redacted log lines and the surfaces that
+/// The one heuristic behind both the redacted log lines and the code paths that
 /// write env into a FILE rather than into output (the `--split` context), so a
 /// value that logs as `$OPENAI_KEY` is never written in clear beside it.
 ///
@@ -367,7 +367,7 @@ pub fn with_env(input: &str, env: &[(String, String)]) -> String {
 /// process env (`std::env::vars()`) PLUS strip inline URL credentials.
 ///
 /// Used by modules that don't have a `Context` in scope (e.g. the `git/`
-/// shell-out helpers) and still want the same redaction surface as the
+/// shell-out helpers) and still want the same redaction as the
 /// `StageLogger`. Equivalent to `redact_url_credentials(input)` followed
 /// by `string(..., &process_env_vec)`.
 pub fn redact_process_env(input: &str) -> String {

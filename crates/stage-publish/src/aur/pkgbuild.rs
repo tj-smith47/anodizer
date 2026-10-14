@@ -1,8 +1,6 @@
 use super::*;
 
-// ---------------------------------------------------------------------------
 // PkgbuildParams
-// ---------------------------------------------------------------------------
 
 /// Parameters for generating an Arch Linux PKGBUILD file.
 pub(crate) struct PkgbuildParams<'a> {
@@ -164,9 +162,7 @@ fn default_package_body(params: &PkgbuildParams<'_>) -> Vec<String> {
     }
 }
 
-// ---------------------------------------------------------------------------
 // archive extension helper
-// ---------------------------------------------------------------------------
 
 /// Extract the archive extension from a URL path.
 ///
@@ -190,9 +186,7 @@ pub(crate) fn extract_archive_extension(url: &str) -> &str {
     }
 }
 
-// ---------------------------------------------------------------------------
 // generate_pkgbuild
-// ---------------------------------------------------------------------------
 
 pub(crate) const PKGBUILD_TEMPLATE: &str = r#"{% for m in maintainers %}# Maintainer: {{ m }}
 {% endfor %}{% for c in contributors %}# Contributor: {{ c }}
@@ -292,9 +286,7 @@ pub(crate) fn generate_pkgbuild(params: &PkgbuildParams<'_>) -> Result<String> {
     anodizer_core::template::render_static(&tera, "pkgbuild", &ctx, "aur")
 }
 
-// ---------------------------------------------------------------------------
 // generate_srcinfo (template-based, no makepkg dependency)
-// ---------------------------------------------------------------------------
 
 pub(crate) const SRCINFO_TEMPLATE: &str = r#"pkgbase = {{ name }}
 	pkgdesc = {{ description }}

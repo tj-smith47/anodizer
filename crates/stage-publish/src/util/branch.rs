@@ -5,7 +5,7 @@
 //! is `super::pr::submit_pr_via_gh_with_opts_with_env`, which threads the
 //! Context's `EnvSource` so an in-process responder can intercept the
 //! lookup without mutating the process env; keeping it out of `pub(crate)`
-//! keeps the surface tight.
+//! keeps the API small.
 
 use anodizer_core::EnvSource;
 use anodizer_core::config::RepositoryConfig;
@@ -219,13 +219,11 @@ mod tests {
         );
     }
 
-    // -----------------------------------------------------------------
     // `fetch_default_branch_with_env` HTTP coverage. Each test redirects
     // requests to an in-process responder by injecting `ANODIZER_GITHUB_API_BASE`
     // through a [`MapEnvSource`] passed to `fetch_default_branch_with_env`
     // — no process env mutation, no env mutex acquisition, no shared
     // state with sibling tests.
-    // -----------------------------------------------------------------
 
     use anodizer_core::MapEnvSource;
     use anodizer_core::test_helpers::responder::spawn_oneshot_http_responder;
@@ -250,7 +248,7 @@ mod tests {
         assert_eq!(got.as_deref(), Some("master"));
     }
 
-    /// Sanity for the parse path — the function must surface whatever
+    /// Sanity for the parse path — the function must report whatever
     /// branch name the API returns, not pin to a hardcoded value.
     #[test]
     fn fetch_default_branch_returns_main_on_200() {
@@ -276,7 +274,7 @@ mod tests {
     }
 
     /// 500 returns `None` — the function silently degrades on server
-    /// error too, not just 404. A regression that surfaced the 5xx as
+    /// error too, not just 404. A regression that reported the 5xx as
     /// an `Err` would gate PR creation on transient upstream outages.
     #[test]
     fn fetch_default_branch_returns_none_on_500() {

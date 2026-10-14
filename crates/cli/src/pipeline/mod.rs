@@ -8,7 +8,7 @@
 //! - [`builders`] — the `build_*_pipeline` constructors for each entry point.
 //!
 //! The [`Pipeline`] type and its sequential `run` loop live here; the
-//! submodules' public surface is re-exported below so external callers keep
+//! submodules' public API is re-exported below so external callers keep
 //! reaching items via `crate::pipeline::<item>`.
 
 use anodizer_core::context::Context;
@@ -39,7 +39,7 @@ pub use config_loader::{
 pub(crate) struct Pipeline {
     stages: Vec<Box<dyn Stage>>,
     /// Whether this pipeline is expected to have a compiled binary for
-    /// every in-scope crate that configures a binary-requiring surface.
+    /// every in-scope crate that configures a binary-requiring packager.
     ///
     /// Set only on the build-producing pipelines (full release, which
     /// runs `BuildStage`, and merge, which pre-loads the split shards'
@@ -247,7 +247,7 @@ impl Pipeline {
                         // Build-producing checkpoint: the per-crate binary
                         // artifact set is final once the build stage finishes.
                         // Fail loud here so a crate that configures a
-                        // binary-requiring surface but produced no binary
+                        // binary-requiring packager but produced no binary
                         // aborts the release at build time rather than 20
                         // minutes later inside publish/docker.
                         if self.expects_binaries {
@@ -316,7 +316,7 @@ impl Pipeline {
 ///
 /// These rows are diagnostic ("why didn't publish run for this snapshot?",
 /// "why did archive skip a library crate?") and at default verbosity they
-/// would bury the real output. They surface only under `--show-skipped`
+/// would bury the real output. They appear only under `--show-skipped`
 /// (`show`), mirroring [`StageLogger::skip_line`] so every no-op skip — the
 /// per-crate ones inside the stages and these consolidated pipeline rows —
 /// shares one visibility gate.
@@ -451,7 +451,7 @@ mod tests {
     }
 
     /// `--skip=build` must NOT disarm the binary-presence guard: the crate
-    /// configures a binary-requiring surface (docker_v2) but only a source
+    /// configures a binary-requiring packager (docker_v2) but only a source
     /// archive is present, so the up-front guard must fire rather than the
     /// pipeline silently proceeding with a source-only dist.
     #[test]

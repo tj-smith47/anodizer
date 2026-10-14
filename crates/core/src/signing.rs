@@ -191,8 +191,10 @@ pub struct AuthenticodeConfig {
     /// [`cert_file`](Self::cert_file) is set.
     pub cert_env: Option<String>,
     /// Name of the env var holding the cert password. Defaults to
-    /// `WINDOWS_CERT_PASSWORD`. The value is read at execution time, passed to
-    /// the signer, and redacted from all logs.
+    /// `WINDOWS_CERT_PASSWORD`. The value is read at execution time, trimmed
+    /// of leading and trailing whitespace, passed to the signer, and redacted
+    /// from all logs. A blank value counts as no password, and a password
+    /// whose own first or last character is whitespace cannot be passed.
     pub password_env: Option<String>,
     /// RFC 3161 timestamp server URL. Defaults to
     /// [`DEFAULT_TIMESTAMP_URL`](AuthenticodeConfig::DEFAULT_TIMESTAMP_URL).
@@ -561,7 +563,7 @@ impl DockerSignConfig {
 mod tests {
     use super::*;
 
-    // ---- SignConfig::resolved_*() (lazy-defaults policy) ----
+    // SignConfig::resolved_*() (lazy-defaults policy)
 
     #[test]
     fn sign_resolved_id_default() {
@@ -657,7 +659,7 @@ mod tests {
         assert_eq!(cfg.resolved_args(), custom);
     }
 
-    // ---- DockerSignConfig::resolved_*() ----
+    // DockerSignConfig::resolved_*()
 
     #[test]
     fn docker_sign_resolved_id_default() {
@@ -723,7 +725,7 @@ mod tests {
         };
         assert_eq!(cfg.resolved_args(), custom);
     }
-    // ---- SignConfig::is_gpg() ---------------------------------------
+    // SignConfig::is_gpg()
 
     #[test]
     fn is_gpg_default_cmd_with_signing_artifacts_is_true() {
@@ -774,7 +776,7 @@ mod tests {
         assert!(cfg.is_gpg());
     }
 
-    // ---- is_gpg_command() -------------------------------------------
+    // is_gpg_command()
 
     #[test]
     fn is_gpg_command_matches_gpg_variants() {
@@ -801,7 +803,7 @@ mod tests {
         }
     }
 
-    // ---- AuthenticodeConfig::resolved_*() (lazy-defaults policy) ----
+    // AuthenticodeConfig::resolved_*() (lazy-defaults policy)
 
     #[test]
     fn authenticode_resolved_cert_env_default() {

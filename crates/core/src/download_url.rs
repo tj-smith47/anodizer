@@ -26,7 +26,7 @@ use anyhow::{Context as _, Result};
 /// never runs the release stage at all — the question this pass answers is
 /// "would a real release seed the URL?"), an unresolvable repo, or a tag
 /// template that renders empty/erroneous. In each `None` case the downstream
-/// publisher render surfaces its own actionable missing-url error, exactly as
+/// publisher render reports its own actionable missing-url error, exactly as
 /// the corresponding real run would.
 pub fn seed_missing_download_urls_for_crate(
     ctx: &mut Context,

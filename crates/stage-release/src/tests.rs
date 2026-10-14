@@ -158,7 +158,7 @@ fn release_stage_runs_when_github_release_is_selected() {
     );
 }
 
-// ---- populate_artifact_download_urls tests ----
+// populate_artifact_download_urls tests
 
 #[test]
 fn test_populate_artifact_download_urls_github() {
@@ -393,7 +393,7 @@ fn test_populate_artifact_download_urls_skips_other_crates() {
     );
 }
 
-// ---- retry_upload tests ----
+// retry_upload tests
 
 #[tokio::test]
 async fn test_retry_upload_succeeds_immediately() {
@@ -476,7 +476,7 @@ async fn retry_upload_retries_5xx() {
     );
 }
 
-// ---- build_release_body tests ----
+// build_release_body tests
 
 #[test]
 fn test_build_release_body_with_header_and_footer() {
@@ -521,7 +521,7 @@ fn test_build_release_body_all_empty() {
     assert_eq!(body, "");
 }
 
-// ---- derived Full Changelog link + default attribution footer ----
+// derived Full Changelog link + default attribution footer
 
 /// The exact release body anodizer shipped for v0.25.2, when its footer was
 /// still hand-written in `.anodizer.yaml`. The derived link and the default
@@ -882,7 +882,7 @@ fn test_build_release_body_empty_string_header_footer() {
     assert_eq!(body, "changes\n");
 }
 
-// ---- collect_extra_files tests ----
+// collect_extra_files tests
 
 #[test]
 fn test_collect_extra_files_no_patterns() {
@@ -1007,7 +1007,7 @@ fn test_collect_extra_files_detailed_spec() {
     assert_eq!(result[0].1.as_deref(), Some("artifact.sig.sig"));
 }
 
-// ---- resolve_make_latest tests ----
+// resolve_make_latest tests
 
 /// Identity renderer for tests — returns the input unchanged.
 fn noop_render(s: &str) -> anyhow::Result<String> {
@@ -1086,7 +1086,7 @@ fn test_resolve_make_latest_template_rendered() {
     assert_eq!(ml.unwrap().to_string(), "false");
 }
 
-// ---- skip_upload behavior test ----
+// skip_upload behavior test
 
 #[test]
 fn test_skip_upload_dry_run_message() {
@@ -1110,7 +1110,7 @@ fn test_skip_upload_dry_run_message() {
     assert!(stage.run(&mut ctx).is_ok());
 }
 
-// ---- replace_existing_draft / replace_existing_artifacts config defaults ----
+// replace_existing_draft / replace_existing_artifacts config defaults
 
 #[test]
 fn test_replace_existing_draft_defaults() {
@@ -1124,7 +1124,7 @@ fn test_replace_existing_artifacts_defaults() {
     assert_eq!(cfg.replace_existing_artifacts, None);
 }
 
-// ---- integration-style dry-run tests ----
+// integration-style dry-run tests
 
 #[test]
 fn test_dry_run_with_extra_files() {
@@ -1198,7 +1198,7 @@ fn test_dry_run_with_make_latest() {
     assert!(stage.run(&mut ctx).is_ok());
 }
 
-// ---- release.tag override tests ----
+// release.tag override tests
 
 /// A crate whose tag family is `tag_template`, for the resolver pins.
 fn tag_crate(tag_template: &str) -> anodizer_core::config::CrateConfig {
@@ -1247,7 +1247,7 @@ fn test_resolve_release_tag_falls_back_to_tag_template() {
 
 /// An unset `tag_template` resolves the `<name>-v` convention — the family
 /// `init` writes and `tag`, `bump` and `changelog` all scan. A bare `v` here
-/// would create the release on a tag no other surface looks for.
+/// would create the release on a tag no other command looks for.
 #[test]
 fn resolve_release_tag_unset_template_uses_the_name_v_convention() {
     let ctx = TestContextBuilder::new().build();
@@ -1324,7 +1324,7 @@ fn release_tag_template_renders_empty_bails_with_actionable_error() {
     );
 }
 
-// ---- Error path tests ----
+// Error path tests
 
 #[test]
 fn test_release_missing_token_errors() {
@@ -1419,7 +1419,7 @@ fn test_collect_extra_files_invalid_glob_pattern() {
     assert!(result.is_err());
 }
 
-// ---- MockGitHubClient integration test ----
+// MockGitHubClient integration test
 
 #[test]
 fn test_release_pipeline_with_mock_github_client() {
@@ -1488,9 +1488,7 @@ fn test_release_pipeline_with_mock_github_client() {
     assert_eq!(upload_calls[0].file_name, "myapp-linux-amd64.tar.gz");
 }
 
-// -----------------------------------------------------------------------
 // Additional behavior tests — config fields actually do things
-// -----------------------------------------------------------------------
 
 #[test]
 fn test_header_footer_wrap_changelog_in_release_body() {
@@ -1511,7 +1509,7 @@ fn test_header_footer_wrap_changelog_in_release_body() {
     assert!(body.contains("Added feature B\n\n---"));
 }
 
-// ---- C-new-18: changelog.header / changelog.footer fall back into release body ----
+// C-new-18: changelog.header / changelog.footer fall back into release body
 
 #[test]
 fn test_resolve_header_footer_release_only_wins() {
@@ -1819,7 +1817,7 @@ fn test_prerelease_auto_case_insensitive() {
     ));
 }
 
-// ---- Error path tests: actionable error messages ----
+// Error path tests: actionable error messages
 
 #[test]
 fn test_release_missing_token_error_message_is_actionable() {
@@ -2029,7 +2027,7 @@ fn test_dry_run_with_draft_release() {
     assert!(stage.run(&mut ctx).is_ok());
 }
 
-// ---- conflicting draft config tests ----
+// conflicting draft config tests
 
 #[test]
 fn test_conflicting_replace_and_use_existing_draft_fails() {
@@ -2103,7 +2101,7 @@ fn test_use_existing_draft_alone_ok() {
     assert!(stage.run(&mut ctx).is_ok());
 }
 
-// ---- release disable tests ----
+// release disable tests
 
 #[test]
 fn test_release_disable_config_parsing() {
@@ -2276,7 +2274,7 @@ fn test_invalid_release_mode_fails_stage() {
     );
 }
 
-// ---- ids filtering tests ----
+// ids filtering tests
 
 #[test]
 fn test_ids_filter_includes_matching_artifacts() {
@@ -2654,7 +2652,7 @@ fn test_release_collects_all_uploadable_artifact_kinds() {
     // collection logic compiles and processes all expected kinds.
 }
 
-// ---- compose_body_for_mode tests ----
+// compose_body_for_mode tests
 
 #[test]
 fn test_compose_body_replace_ignores_existing() {
@@ -2756,7 +2754,7 @@ fn test_compose_body_prepend_empty_existing() {
     assert_eq!(result, "new body");
 }
 
-// ---- resolve_content_source tests ----
+// resolve_content_source tests
 
 fn content_source_test_ctx() -> anodizer_core::context::Context {
     use anodizer_core::config::Config;
@@ -2869,7 +2867,7 @@ from_url: https://example.com/h.md
     }
 }
 
-// ---- new config field parsing tests ----
+// new config field parsing tests
 
 #[test]
 fn test_target_commitish_config_parsing() {
@@ -2964,7 +2962,7 @@ draft: true
     assert_eq!(cfg.use_existing_draft, None);
 }
 
-// ---- dry-run tests for new config fields ----
+// dry-run tests for new config fields
 
 #[test]
 fn test_dry_run_with_target_commitish() {
@@ -3083,7 +3081,7 @@ fn test_dry_run_with_all_new_fields() {
     assert!(stage.run(&mut ctx).is_ok());
 }
 
-// ---- ContentSource from_file dry-run integration test ----
+// ContentSource from_file dry-run integration test
 
 #[test]
 fn test_dry_run_with_header_from_file() {
@@ -3111,7 +3109,7 @@ fn test_dry_run_with_header_from_file() {
     assert!(stage.run(&mut ctx).is_ok());
 }
 
-// ---- include_meta: the uploadable meta set is exactly metadata.json ----
+// include_meta: the uploadable meta set is exactly metadata.json
 //
 // `include_meta: true` ships one file. `dist/artifacts.json` records
 // absolute dist paths and internal artifact bookkeeping that mean nothing
@@ -3215,7 +3213,7 @@ fn test_include_meta_collects_dist_files() {
     assert!(stage.run(&mut ctx).is_ok());
 }
 
-// ---- body truncation tests ----
+// body truncation tests
 
 #[test]
 fn test_build_release_json_body_within_limit() {
@@ -3319,7 +3317,7 @@ fn test_build_release_json_empty_body_not_set() {
     assert!(json.get("body").is_none());
 }
 
-// ---- draft-then-publish: build_release_json always uses draft as passed ----
+// draft-then-publish: build_release_json always uses draft as passed
 
 #[test]
 fn test_build_release_json_draft_true() {
@@ -3427,9 +3425,7 @@ fn test_dry_run_with_templated_extra_files() {
     assert_eq!(content, "Release myapp 2.0.0");
 }
 
-// -----------------------------------------------------------------------
 // GitHub Enterprise URL support tests
-// -----------------------------------------------------------------------
 
 /// Helper: build_octocrab_client requires a tokio runtime (octocrab's
 /// Buffer service needs one) and a rustls CryptoProvider installed.
@@ -3590,7 +3586,7 @@ fn test_dry_run_without_github_urls_still_works() {
     stage.run(&mut ctx).unwrap();
 }
 
-// ---- GitLab backend tests ----
+// GitLab backend tests
 
 #[test]
 fn test_dry_run_gitlab_token_type_shows_gitlab_release() {
@@ -3715,7 +3711,7 @@ fn test_gitlab_backend_falls_back_to_github_config() {
     assert!(stage.run(&mut ctx).is_ok());
 }
 
-// ---- Gitea backend tests ----
+// Gitea backend tests
 
 #[test]
 fn test_gitea_dry_run_with_gitea_config() {
@@ -3838,7 +3834,7 @@ fn test_gitea_missing_token_errors() {
     );
 }
 
-// ---- build_publish_patch_body regression tests ----
+// build_publish_patch_body regression tests
 //
 // Behaviours: preserve prerelease on publish +
 // 2e17678 (preserve prerelease publish fields). The PATCH body sent when
@@ -3944,7 +3940,7 @@ fn test_build_publish_patch_body_prerelease_with_discussion() {
     );
 }
 
-// ---- Q11.1: header-access panic-freedom regression ----
+// Q11.1: header-access panic-freedom regression
 //
 // An update-release call could panic when `resp`
 // was nil before accessing `resp.Header.Get(...)`. Anodizer is panic-free
@@ -3973,7 +3969,7 @@ fn test_response_header_access_returns_option_no_panic() {
     );
 }
 
-// ---- populate_checksums_var: workspace aggregation ----
+// populate_checksums_var: workspace aggregation
 //
 // In a multi-crate workspace, each crate's checksum stage writes a combined
 // SHA256SUMS-style sidecar. When the release body references
@@ -4154,7 +4150,7 @@ fn test_populate_checksums_var_unreadable_artifact_errors_not_silent() {
     // A registered checksum artifact whose file does not exist stands in for the
     // truncated / permission-denied / IO-error read. Such a read must NOT
     // collapse the `{{ .Checksums }}` release-body variable to empty and publish
-    // passing — it is a real defect on a tool-produced artifact and must surface.
+    // passing — it is a real defect on a tool-produced artifact and must be reported.
     let dir = tempfile::tempdir().unwrap();
     let missing = dir.path().join("myapp_1.0.0_checksums.txt");
 
@@ -4180,9 +4176,7 @@ fn test_populate_checksums_var_unreadable_artifact_errors_not_silent() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // RetryConfig -> RetryPolicy wiring for the github backend
-// ---------------------------------------------------------------------------
 //
 // The github backend (`crates/stage-release/src/github/mod.rs`) resolves a
 // single `policy = ctx.config.retry.unwrap_or_default().to_policy()` at the
@@ -4193,7 +4187,7 @@ fn test_populate_checksums_var_unreadable_artifact_errors_not_silent() {
 //
 // The unit-level retry-loop contract (5xx-retries, 4xx-fast-fails, honors
 // `attempts`) is pinned by `github::retry_call::tests` against a real TCP
-// responder. The tests below pin the config-surface translation
+// responder. The tests below pin the config-to-policy translation
 // (`RetryConfig::to_policy`) so the upload-loop locals
 // (`max_upload_attempts`, `initial_retry_delay`, `max_retry_delay`) and the
 // `retry_octocrab_call` policy argument trace back to the user's YAML.
@@ -4236,7 +4230,7 @@ fn test_retry_config_default_yields_goreleaser_defaults_for_github_backend() {
 
 #[test]
 fn test_retry_config_attempts_one_short_circuits_github_backend_policy() {
-    // Pin the "user wants no retries" surface: `attempts: 1` in YAML must
+    // Pin the "user wants no retries" setting: `attempts: 1` in YAML must
     // produce `max_attempts == 1` so every retry-wrapped octocrab call site
     // (find-draft list, delete, create, update, upload, publish) attempts
     // exactly once and fast-fails on the first transient error. This is the
@@ -4412,11 +4406,9 @@ fn one_asset_name_uploads_once() {
     );
 }
 
-// =====================================================================
 // run.rs coverage: behaviors not already pinned by sibling tests.
-// =====================================================================
 
-// ---- release.skip template-rendering path -----------------------------
+// release.skip template-rendering path
 //
 // `release.skip` is a `StringOrBool`: when a template string evaluates
 // to "true" the crate is skipped before validation runs. Pin both
@@ -4488,7 +4480,7 @@ fn test_release_skip_template_renders_to_false_proceeds() {
     );
 }
 
-// ---- skip_upload string/template variants -----------------------------
+// skip_upload string/template variants
 //
 // `release.skip_upload` accepts true/false/auto/1/0 plus a templated
 // string. The bare-bool path is covered (`test_skip_upload_dry_run_message`)
@@ -4649,7 +4641,7 @@ fn test_skip_upload_template_renders_to_invalid_bails() {
     );
 }
 
-// ---- selected_crates filter -------------------------------------------
+// selected_crates filter
 //
 // Only crates whose name is in `ctx.options.selected_crates` are
 // processed (when the filter is non-empty). Pin by setting up a crate
@@ -4705,7 +4697,7 @@ fn test_selected_crates_filter_includes_listed_crate() {
     assert!(err.contains("replace_existing_draft"));
 }
 
-// ---- include_meta: missing metadata.json ------------------------------
+// include_meta: missing metadata.json
 //
 // When `include_meta` is true and `dist/metadata.json` is absent:
 //   - non-strict: warn and continue (stage succeeds);
@@ -4799,7 +4791,7 @@ fn test_include_meta_missing_metadata_json_is_expected_in_dry_run() {
         .expect("a dry-run must not bail on the metadata.json it never wrote");
 }
 
-// ---- release.tag override drifts from pushed git tag (warn) -----------
+// release.tag override drifts from pushed git tag (warn)
 //
 // The stage warns when `release.tag` resolves to a value different from
 // the pushed `Tag` template var. The warn is logged, not returned, so the
@@ -4846,7 +4838,7 @@ fn test_release_tag_override_drifts_from_pushed_tag_does_not_fail() {
     );
 }
 
-// ---- replace_existing_artifacts CLI override --------------------------
+// replace_existing_artifacts CLI override
 //
 // The CLI `--replace-existing` flag (`ctx.options.replace_existing_artifacts`)
 // is OR'd with the config value. Test that setting only the CLI flag is
@@ -4873,7 +4865,7 @@ fn test_replace_existing_artifacts_cli_override_drives_stage() {
     assert!(ReleaseStage.run(&mut ctx).is_ok());
 }
 
-// ---- ids filter zero-match warning --------------------------------
+// ids filter zero-match warning
 //
 // When `ids` is set and no artifacts match, the stage logs a warn and
 // proceeds (release still gets created with no uploads). Observable
@@ -4915,7 +4907,7 @@ fn test_ids_filter_zero_match_warns_and_proceeds() {
     );
 }
 
-// ---- exemptions block injection into release body ---------------------
+// exemptions block injection into release body
 //
 // When `ctx.determinism.runtime_allowlist` is non-empty AND the
 // changelog body is empty, the exemptions block becomes the body
@@ -4967,7 +4959,7 @@ fn test_release_with_exemptions_and_changelog_joins_both() {
     assert!(ReleaseStage.run(&mut ctx).is_ok());
 }
 
-// ---- dry-run gitea derives download URL from API URL ------------------
+// dry-run gitea derives download URL from API URL
 //
 // In the dry-run path, when `gitea_urls.download` is None but `api` is
 // set, the stage derives the download URL by stripping `/api/v1` from
@@ -5018,7 +5010,7 @@ fn test_gitea_dry_run_derives_download_url_from_api_url() {
     );
 }
 
-// ---- collect_release_upload_candidates: include_meta + ids filter -----
+// collect_release_upload_candidates: include_meta + ids filter
 //
 // Beyond the existing binary-sign exclusion test, pin two more behaviors
 // of the public helper:
@@ -5319,12 +5311,10 @@ fn test_release_upload_candidates_filters_by_crate_name() {
     assert!(!paths.iter().any(|p| p.ends_with("theirs.tar.gz")));
 }
 
-// =====================================================================
 // run.rs additional coverage: bail paths, template render errors, and
 // dry-run branches not yet pinned above.
-// =====================================================================
 
-// ---- conflicting draft options bail (without skip-template detour) -----
+// conflicting draft options bail (without skip-template detour)
 //
 // The pre-existing test that pins this error path threads through the
 // `release.skip` renders-to-false branch. Pin the direct bail path too:
@@ -5356,10 +5346,10 @@ fn test_release_conflicting_draft_options_bails_direct() {
     );
 }
 
-// ---- header template render error ------------------------------------
+// header template render error
 //
 // `release.header` is template-rendered. An invalid Tera template must
-// surface a contextualised error mentioning the crate name.
+// return a contextualised error mentioning the crate name.
 
 #[test]
 fn test_release_header_invalid_template_errors() {
@@ -5386,7 +5376,7 @@ fn test_release_header_invalid_template_errors() {
     );
 }
 
-// ---- footer template render error ------------------------------------
+// footer template render error
 
 #[test]
 fn test_release_footer_invalid_template_errors() {
@@ -5412,7 +5402,7 @@ fn test_release_footer_invalid_template_errors() {
     );
 }
 
-// ---- release.name_template render error -------------------------------
+// release.name_template render error
 
 #[test]
 fn test_release_name_template_invalid_errors() {
@@ -5438,7 +5428,7 @@ fn test_release_name_template_invalid_errors() {
     );
 }
 
-// ---- target_commitish render error ------------------------------------
+// target_commitish render error
 
 #[test]
 fn test_release_target_commitish_invalid_template_errors() {
@@ -5464,7 +5454,7 @@ fn test_release_target_commitish_invalid_template_errors() {
     );
 }
 
-// ---- release.skip template render error -------------------------------
+// release.skip template render error
 //
 // When the skip template fails to render, the error context must
 // identify the field and crate.
@@ -5493,7 +5483,7 @@ fn test_release_skip_invalid_template_errors() {
     );
 }
 
-// ---- release.tag override matches pushed tag → no drift warn ----------
+// release.tag override matches pushed tag → no drift warn
 //
 // When the override resolves to the same value as the pushed Tag, no
 // drift warning should fire. The warn is not directly introspectable, but
@@ -5536,7 +5526,7 @@ fn test_release_tag_override_matches_pushed_tag_no_drift() {
     );
 }
 
-// ---- selected_crates excludes other release-configured crate ----------
+// selected_crates excludes other release-configured crate
 //
 // When `selected_crates` is non-empty, crates not in the set must be
 // silently filtered. Combined with one selected and one ignored crate
@@ -5599,7 +5589,7 @@ fn test_selected_crates_excludes_other_release_configured_crate() {
     );
 }
 
-// ---- multiple crates: one with release config, one without -----------
+// multiple crates: one with release config, one without
 //
 // Crates without a `release` block must be silently filtered (no
 // failure, no warn). Sanity-check the stage iterates only the
@@ -5631,7 +5621,7 @@ fn test_release_stage_filters_crates_without_release_block() {
     assert!(ReleaseStage.run(&mut ctx).is_ok());
 }
 
-// ---- release.skip plain bool true skips silently ----------------------
+// release.skip plain bool true skips silently
 //
 // Bool-shaped skip (not a template) hits the same branch. Pin it
 // explicitly so a future regression that only handles the template
@@ -5664,7 +5654,7 @@ fn test_release_skip_plain_bool_true_skips_silently() {
     );
 }
 
-// ---- GitLab missing token returns an actionable error -----------------
+// GitLab missing token returns an actionable error
 
 #[test]
 fn test_gitlab_missing_token_errors() {
@@ -5697,11 +5687,11 @@ fn test_gitlab_missing_token_errors() {
     );
 }
 
-// ---- Gitea backend dry-run with default URLs (no gitea_urls) ---------
+// Gitea backend dry-run with default URLs (no gitea_urls)
 //
 // When `gitea_urls` is None, the dry-run still publishes a ReleaseURL
 // derived from the default `https://gitea.com`. Pin that URL prefix so
-// dropping the default would surface immediately.
+// dropping the default would show up immediately.
 
 #[test]
 fn test_gitea_dry_run_default_urls() {
@@ -5740,7 +5730,7 @@ fn test_gitea_dry_run_default_urls() {
     );
 }
 
-// ---- dry-run + skip_upload + extra_files: upload lines must not fire --
+// dry-run + skip_upload + extra_files: upload lines must not fire
 //
 // skip_upload should suppress the per-artifact "would upload" logging
 // even when extra_files contribute entries. Observable proof: the run
@@ -5775,7 +5765,7 @@ fn test_dry_run_skip_upload_with_extra_files_succeeds() {
     assert!(ReleaseStage.run(&mut ctx).is_ok());
 }
 
-// ---- include_meta=true dry-run with metadata.json present -----------
+// include_meta=true dry-run with metadata.json present
 //
 // When `include_meta=true` AND `dist/metadata.json` exists, the dry-run
 // path enumerates it as a would-upload candidate (no warn, no bail).
@@ -5806,7 +5796,7 @@ fn test_dry_run_include_meta_with_existing_metadata_json() {
     assert!(ReleaseStage.run(&mut ctx).is_ok());
 }
 
-// ---- dry-run sets ReleaseURL even with empty owner (defensive path) --
+// dry-run sets ReleaseURL even with empty owner (defensive path)
 //
 // When no repo config resolves (no github/gitlab/gitea block), the
 // dry-run path uses empty owner/repo and skips composing the
@@ -5839,7 +5829,7 @@ fn test_dry_run_no_repo_config_does_not_set_release_url() {
     );
 }
 
-// ---- skip_upload template that renders to a bare bool string ---------
+// skip_upload template that renders to a bare bool string
 //
 // `skip_upload: "{{ IsSnapshot }}"` should evaluate IsSnapshot and the
 // rendered "true"/"false" string is consumed by the same matcher. Pin
@@ -5867,7 +5857,7 @@ fn test_skip_upload_template_renders_false_in_non_snapshot() {
     assert!(ReleaseStage.run(&mut ctx).is_ok());
 }
 
-// ---- release.tag template render error surfaces via resolve_release_tag
+// release.tag template render error returned via resolve_release_tag
 
 #[test]
 fn test_release_tag_override_invalid_template_errors() {
@@ -5892,9 +5882,7 @@ fn test_release_tag_override_invalid_template_errors() {
     );
 }
 
-// -----------------------------------------------------------------------
 // Additional run.rs coverage tests
-// -----------------------------------------------------------------------
 
 #[test]
 fn test_dry_run_gitea_skip_tls_verify_true_logs() {
@@ -6464,9 +6452,7 @@ fn compose_release_url_github_always_includes_owner_segment() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // resolve_release_token: per-release-repo token override
-// ---------------------------------------------------------------------------
 
 fn release_cfg_with_token(token: Option<&str>) -> ReleaseConfig {
     ReleaseConfig {
@@ -6558,9 +6544,7 @@ fn resolve_release_token_is_trimmed_and_a_blank_one_falls_back() {
     assert_eq!(crate::resolve_release_token(&ctx, &blank).unwrap(), None);
 }
 
-// ---------------------------------------------------------------------------
 // nightly prerelease / make_latest defaults
-// ---------------------------------------------------------------------------
 
 fn nightly_flags(
     nightly_cfg: Option<anodizer_core::config::NightlyConfig>,

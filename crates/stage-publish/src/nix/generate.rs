@@ -7,9 +7,7 @@
 
 use anyhow::{Context as _, Result};
 
-// ---------------------------------------------------------------------------
 // Nix expression template
-// ---------------------------------------------------------------------------
 
 const NIX_TEMPLATE: &str = r#"{ lib
 , stdenvNoCC
@@ -83,9 +81,7 @@ stdenvNoCC.mkDerivation {
 }
 "#;
 
-// ---------------------------------------------------------------------------
 // NixParams
-// ---------------------------------------------------------------------------
 
 /// Per-platform sourceRoot entry for when different archives have different
 /// `wrap_in_directory` values.
@@ -143,9 +139,7 @@ pub struct NixParams<'a> {
     pub dynamically_linked: bool,
 }
 
-// ---------------------------------------------------------------------------
 // generate_nix_expression
-// ---------------------------------------------------------------------------
 
 /// Generate a Nix derivation expression string.
 pub fn generate_nix_expression(params: &NixParams<'_>) -> Result<String> {
@@ -240,9 +234,7 @@ pub fn generate_nix_expression(params: &NixParams<'_>) -> Result<String> {
     anodizer_core::template::render_static(&tera, "nix", &ctx, "nix")
 }
 
-// ---------------------------------------------------------------------------
 // Nix string escaping
-// ---------------------------------------------------------------------------
 
 /// Escape a value for inclusion inside a double-quoted Nix string literal.
 ///
@@ -282,9 +274,7 @@ pub(super) fn nix_escape_indented_string(s: &str) -> String {
     out.replace("${", "''${")
 }
 
-// ---------------------------------------------------------------------------
 // Maintainer handle validation
-// ---------------------------------------------------------------------------
 
 /// Validate a `meta.maintainers` handle as a bare Nix identifier.
 ///
@@ -326,9 +316,7 @@ pub(super) fn validate_maintainer_handle(handle: &str) -> Result<()> {
     }
 }
 
-// ---------------------------------------------------------------------------
 // License validation
-// ---------------------------------------------------------------------------
 
 /// Known valid Nix license identifiers from `lib.licenses`.
 /// The recognised SPDX license identifiers accepted by nixpkgs.
@@ -649,9 +637,7 @@ pub fn validate_nix_license(license: &str) -> Result<()> {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Nix system mapping
-// ---------------------------------------------------------------------------
 
 /// Map canonical (os, arch) to Nix system string.
 pub(crate) fn nix_system(os: &str, arch: &str) -> Option<String> {

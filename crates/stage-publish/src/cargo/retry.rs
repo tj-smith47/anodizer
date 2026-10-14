@@ -67,7 +67,7 @@ pub(crate) fn is_index_propagation_failure(stderr: &str) -> bool {
 /// same underlying fault across versions and platforms.
 pub(crate) fn is_transient_network_failure(stderr: &str) -> bool {
     const NEEDLES: &[&str] = &[
-        // libcurl transport faults surfaced verbatim by cargo's HTTP stack.
+        // libcurl transport faults reported verbatim by cargo's HTTP stack.
         "error in the http2 framing layer", // the v0.11.3 makeself failure
         "connection reset by peer",
         "connection refused",
@@ -176,7 +176,7 @@ pub(crate) fn run_cargo_publish_with_retry(
             let propagation = is_index_propagation_failure(&stderr);
             let transient_net = is_transient_network_failure(&stderr);
             if !propagation && !transient_net {
-                // Neither recoverable class — surface immediately (no retry).
+                // Neither recoverable class — report immediately (no retry).
                 return RetryStep::Fail(PublishFailure::Exited(output));
             }
             // Name which recoverable class fired so the operator can tell an

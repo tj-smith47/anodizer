@@ -19,10 +19,8 @@ use crate::targets::SnapcraftTarget;
 
 use super::*;
 
-// ---------------------------------------------------------------------------
 // Upload loop, extracted from `Stage::run` so the
 // (attempted, exec_result) injection point is testable in isolation.
-// ---------------------------------------------------------------------------
 
 /// Resolve the version a crate publishes under: its own release tag when one
 /// resolves, else the context's version.

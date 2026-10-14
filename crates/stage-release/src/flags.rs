@@ -8,7 +8,7 @@ use crate::should_mark_prerelease;
 /// Emit once-per-run warnings about workspace-level nightly configuration
 /// combinations that are technically valid but operationally surprising.
 ///
-/// Surfaces the gotcha that `nightly.draft = true`
+/// Reports the gotcha that `nightly.draft = true`
 /// combined with `nightly.keep_single_release = true` leaves no published
 /// nightly release in a non-draft state, because each run replaces the prior
 /// draft before it can be promoted.
@@ -234,7 +234,7 @@ pub(crate) fn resolve_release_flags(
 ///
 /// `nightly.retention` / `nightly.keep_single_release` and
 /// `nightly.publish_repo` are only wired into the GitHub backend's release
-/// sweep. On GitLab / Gitea they would silently no-op, so surface a clear
+/// sweep. On GitLab / Gitea they would silently no-op, so log a clear
 /// reporter warning (not `eprintln!`) rather than let the user assume the old
 /// releases are being pruned.
 pub(crate) fn warn_unsupported_nightly_retention(

@@ -912,7 +912,7 @@ where
 
 /// `npm unpublish <package>@<version> --force` invocation used by rollback.
 /// Within the 72h window this returns Ok; outside it npm returns non-zero and
-/// the call surfaces the "cannot unpublish past 72h" error (warn-only at the
+/// the call reports the "cannot unpublish past 72h" error (warn-only at the
 /// caller).
 pub(crate) fn run_npm_unpublish(
     package: &str,

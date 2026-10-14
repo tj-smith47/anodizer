@@ -64,7 +64,7 @@ fn decode_mcp_targets(extra: &anodizer_core::PublishEvidenceExtra) -> Vec<McpTar
 ///
 /// Re-resolves the auth token at call time by rendering
 /// `ctx.config.mcp.auth.token` — so token rotation between publish and
-/// rollback surfaces as a per-target warn rather than a hard error.
+/// rollback shows up as a per-target warn rather than a hard error.
 ///
 /// Returns `Ok(RollbackOutcome::DegradedToWarn)` when the registry
 /// indicates status mutation is unsupported (501), permissions are
@@ -257,7 +257,7 @@ impl anodizer_core::Publisher for McpPublisher {
         // The publish path returns Some(McpTarget) only on the success
         // path of the POST; dry-run, skip-true, and missing-name all
         // return None so no phantom target ever ends up in evidence. A
-        // mid-publish failure on the POST surfaces as Err and aborts
+        // mid-publish failure on the POST returns Err and aborts
         // before evidence assembly — the rollback contract is therefore
         // "if there's a target in evidence, the version exists on the
         // registry," which is what `anodizer tag rollback` relies on.
@@ -679,7 +679,7 @@ mod publisher_tests {
     #[test]
     fn mcp_rollback_warns_per_target_when_auth_token_template_invalid() {
         // Token re-render at rollback time can fail (e.g. unclosed tera tag).
-        // The per-target failure must be caught and surfaced as a warn so
+        // The per-target failure must be caught and reported as a warn so
         // sibling publishers continue rolling back — not propagated as Err.
         let _g = warn_once_lock();
         let (addr, calls) = spawn_oneshot_http_responder(vec![
@@ -702,9 +702,7 @@ mod publisher_tests {
         );
     }
 
-    // ---------------------------------------------------------------------------
     // Rollback HTTP tests
-    // ---------------------------------------------------------------------------
 
     #[test]
     fn mcp_rollback_patches_status_to_deleted_with_responder() {

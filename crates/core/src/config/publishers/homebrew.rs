@@ -6,9 +6,7 @@ use serde::{Deserialize, Serialize};
 use super::super::{Amd64Variant, StringOrBool, deserialize_string_or_bool_opt};
 use super::{CommitAuthorConfig, RepositoryConfig};
 
-// ---------------------------------------------------------------------------
 // HomebrewConfig / ScoopConfig / TapConfig / BucketConfig
-// ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
@@ -234,13 +232,13 @@ pub struct HomebrewLivecheck {
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct HomebrewCaskConfig {
-    // ----- Identity -----
+    // Identity
     /// Cask name (default: crate / project name).
     pub name: Option<String>,
     /// Alternative cask names (aliases).
     pub alternative_names: Option<Vec<String>>,
 
-    // ----- Tap repository (top-level axis) -----
+    // Tap repository (top-level axis)
     /// Unified repository config for the Homebrew tap.
     pub repository: Option<RepositoryConfig>,
     /// Commit author with optional signing.
@@ -251,11 +249,11 @@ pub struct HomebrewCaskConfig {
     /// Subdirectory in the tap repo for cask placement (default: "Casks").
     pub directory: Option<String>,
 
-    // ----- Artifact selection -----
+    // Artifact selection
     /// Build IDs filter: only include artifacts from builds whose `id` is in this list.
     pub ids: Option<Vec<String>>,
 
-    // ----- Download URL -----
+    // Download URL
     /// Simple URL template for the .dmg/.zip download (per-crate shorthand).
     ///
     /// Cannot be combined with `url.template:` — set one or the other.
@@ -266,7 +264,7 @@ pub struct HomebrewCaskConfig {
     /// Structured download URL configuration (top-level axis).
     pub url: Option<HomebrewCaskURL>,
 
-    // ----- macOS bundle -----
+    // macOS bundle
     /// macOS .app bundle name (e.g. "MyApp.app").
     pub app: Option<String>,
     /// Binary stubs to create in /usr/local/bin.
@@ -290,7 +288,7 @@ pub struct HomebrewCaskConfig {
     #[serde(default, rename = "binary", skip_serializing)]
     pub legacy_binary: Option<String>,
 
-    // ----- Metadata -----
+    // Metadata
     /// Cask description.
     pub description: Option<String>,
     /// Project homepage URL.
@@ -300,14 +298,14 @@ pub struct HomebrewCaskConfig {
     /// Custom caveats shown after install.
     pub caveats: Option<String>,
 
-    // ----- Ruby block -----
+    // Ruby block
     /// Arbitrary Ruby code inserted into the cask block.
     pub custom_block: Option<String>,
     /// Path of a macOS Services bundle (for example `MyTool.workflow`) inside
     /// the download, written as `service "<path>"`.
     pub service: Option<String>,
 
-    // ----- Livecheck -----
+    // Livecheck
     /// `livecheck` stanza configuration for the cask. When unset, the cask
     /// emits `livecheck do\n  skip "Auto-generated on release."\nend` (a
     /// binary cask's download URL/sha256 are rewritten on every release, so
@@ -317,7 +315,7 @@ pub struct HomebrewCaskConfig {
     /// type; an active cask livecheck with no `url:` reads `url :url`.
     pub livecheck: Option<HomebrewLivecheck>,
 
-    // ----- Completions / manpages -----
+    // Completions / manpages
     /// Manual page references to install.
     pub manpages: Option<Vec<String>>,
     /// Deprecated singular spelling of [`Self::manpages`]. The upstream replaced
@@ -335,7 +333,7 @@ pub struct HomebrewCaskConfig {
     /// Auto-generate shell completions from an executable.
     pub generate_completions_from_executable: Option<HomebrewCaskGeneratedCompletions>,
 
-    // ----- Dependencies / conflicts -----
+    // Dependencies / conflicts
     /// Cask dependencies (other casks or formulae). Rendered casks first,
     /// then formulae, each group sorted by name without regard to case
     /// with the names written as given, the order `brew style` requires.
@@ -462,17 +460,17 @@ pub struct HomebrewCaskConfig {
     /// renders no dependency and places a flat download inside `on_macos`.
     pub depends_on_macos: Option<bool>,
 
-    // ----- Lifecycle hooks -----
+    // Lifecycle hooks
     /// Pre/post install/uninstall hooks.
     pub hooks: Option<HomebrewCaskHooks>,
 
-    // ----- Uninstall / zap -----
+    // Uninstall / zap
     /// Structured uninstall stanza configuration.
     pub uninstall: Option<HomebrewCaskUninstall>,
     /// Deep uninstall (zap) stanza configuration.
     pub zap: Option<HomebrewCaskUninstall>,
 
-    // ----- Publishing control -----
+    // Publishing control
     /// Skip publishing the cask. `"true"` always skips; `"auto"` skips
     /// for prerelease versions. Accepts bool or template string.
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]

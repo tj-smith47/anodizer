@@ -4,7 +4,7 @@ use anyhow::Result;
 
 use crate::{compose_release_url, populate_artifact_download_urls, resolve_release_repo};
 
-/// Per-release summary fields surfaced in dry-run output.
+/// Per-release summary fields shown in dry-run output.
 ///
 /// Bundles the long argument list for [`handle_dry_run`] so the signature
 /// stays under clippy's threshold and the call site reads like a struct

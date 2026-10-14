@@ -6,9 +6,7 @@ use crate::util;
 
 use super::*;
 
-// ---------------------------------------------------------------------------
 // KrewPublisher — Publisher trait wrapper (close-PR rollback)
-// ---------------------------------------------------------------------------
 
 // Krew plugin-index publisher. Each successful per-crate publish opens a
 // PR against an upstream `krew-index`-style repo from a fork. The rollback
@@ -20,7 +18,7 @@ use super::*;
 // branch name the publish path pushed to are recorded. At rollback time
 // open PRs filtered by `head=<fork_owner>:<branch>` are listed and each
 // match is closed. This sidesteps modifying the unchanged
-// `publish_to_krew` body to surface the new PR number, and stays robust
+// `publish_to_krew` body to report the new PR number, and stays robust
 // against a stale evidence file stitched in from an older run.
 //
 // CREDENTIAL HANDLING: `KrewPrTarget` stores `token_env_var` — the
@@ -476,7 +474,7 @@ impl anodizer_core::Publisher for KrewPublisher {
                 Ok(v) => v,
                 Err(e) => {
                     // Auth-failure / repo-not-found / transport problems
-                    // surface as actionable warns naming the actual
+                    // show up as actionable warns naming the actual
                     // failure mode — not the misleading "no PR found,
                     // verify manually" that previously fired here.
                     log.warn(&format!(
@@ -519,7 +517,7 @@ impl anodizer_core::Publisher for KrewPublisher {
         // the PATCH means the desired end-state ("PR not open") is
         // already true (maintainer closed it, repo renamed, PR
         // deleted). Re-running anodizer tag rollback after a partial
-        // success must NOT surface those as failures.
+        // success must NOT report those as failures.
         let counts = std::sync::Mutex::new((0usize, 0usize, 0usize));
         let retry_scope = anodizer_core::retry::current_scope();
         for chunk in jobs.chunks(crate::util::ROLLBACK_PARALLELISM) {

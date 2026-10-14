@@ -15,7 +15,7 @@
 //! balance + required-attr scanning) and, when `nix-instantiate` is on `PATH`,
 //! a real `nix-instantiate --parse` of each file. A structural defect (a
 //! missing required attribute, an unbalanced template that produced broken
-//! Nix) surfaces in the emission-validate pass rather than after a pushed
+//! Nix) shows up in the emission-validate pass rather than after a pushed
 //! overlay fails `nix build` for every installer.
 
 use anodizer_core::context::Context;
@@ -502,9 +502,7 @@ mod tests {
         });
     }
 
-    // -----------------------------------------------------------------
     // (a) single-crate mode — every option, zero findings + the attrs appear.
-    // -----------------------------------------------------------------
 
     #[test]
     fn single_crate_every_option_validates_and_lands_in_attrs() {
@@ -573,9 +571,7 @@ mod tests {
         );
     }
 
-    // -----------------------------------------------------------------
     // (b) workspace-lockstep mode — shared version.
-    // -----------------------------------------------------------------
 
     #[test]
     fn workspace_lockstep_every_option_validates() {
@@ -615,9 +611,7 @@ mod tests {
         );
     }
 
-    // -----------------------------------------------------------------
     // (c) workspace per-crate mode — each crate its own tag/version.
-    // -----------------------------------------------------------------
 
     #[test]
     fn workspace_per_crate_every_option_stamps_own_version() {
@@ -691,9 +685,7 @@ mod tests {
         );
     }
 
-    // -----------------------------------------------------------------
     // shard-tolerance + skip + present-but-broken artifact.
-    // -----------------------------------------------------------------
 
     /// A TARGET-RESTRICTED determinism shard that built no Nix-mappable archive
     /// for a nix-configured crate must SKIP it (zero findings, no error) rather
@@ -730,7 +722,7 @@ mod tests {
     /// The counterpart: on a FULL build (neither `partial_target` nor
     /// `single_target`) a nix-configured crate that produced NO Linux/Darwin
     /// archive is a genuine misconfiguration — the same "no Linux/Darwin archive
-    /// artifacts found" bail the live publish hits must surface at
+    /// artifacts found" bail the live publish hits must show up at
     /// `check`/`--snapshot` rather than being silently skipped (the
     /// failure-hiding class this closes).
     #[test]
@@ -844,9 +836,7 @@ mod tests {
         );
     }
 
-    // -----------------------------------------------------------------
     // biting negatives — the floor must bite, fixes must clear.
-    // -----------------------------------------------------------------
 
     /// A conforming hand-written derivation clears the derivation floor; this
     /// anchors the biting negatives below (they all mutate THIS baseline).
@@ -1059,9 +1049,7 @@ stdenvNoCC.mkDerivation {
         );
     }
 
-    // -----------------------------------------------------------------
     // gated nix-instantiate layer — skips here (tool absent).
-    // -----------------------------------------------------------------
 
     /// When `nix-instantiate` is on `PATH`, the gated layer parses the
     /// derivation; absent (as in this sandbox), it returns no findings and the
@@ -1070,7 +1058,7 @@ stdenvNoCC.mkDerivation {
     #[test]
     fn nix_instantiate_layer_is_tool_gated() {
         let log = StageLogger::new("publish", anodizer_core::log::Verbosity::Quiet);
-        // A probe ERROR is not a definitive "absent": surface why so a skip
+        // A probe ERROR is not a definitive "absent": report why so a skip
         // records the broken probe rather than masquerading it as a clean miss.
         let available = match anodizer_core::tool_detect::runs("nix-instantiate") {
             anodizer_core::tool_detect::ToolProbe::Available => true,
@@ -1144,9 +1132,7 @@ stdenvNoCC.mkDerivation {
         );
     }
 
-    // -----------------------------------------------------------------
     // stderr parser — line number extraction.
-    // -----------------------------------------------------------------
 
     #[test]
     fn nix_instantiate_stderr_extracts_line_number() {

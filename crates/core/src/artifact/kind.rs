@@ -1,7 +1,7 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum ArtifactKind {
-    // --- Build outputs ---
+    // Build outputs
     Binary,
     /// Binary marked for upload (checksummed, signed, released).
     /// Distinct from Binary which is a raw build output.
@@ -13,33 +13,33 @@ pub enum ArtifactKind {
     CShared,
     Wasm,
 
-    // --- Packaged archives ---
+    // Packaged archives
     Archive,
     SourceArchive,
     Makeself,
     AppImage,
     InstallScript,
 
-    // --- Linux packages ---
+    // Linux packages
     LinuxPackage,
     Snap,
     PublishableSnapcraft,
     Flatpak,
     SourceRpm,
 
-    // --- macOS/Windows installers ---
+    // macOS/Windows installers
     DiskImage,
     Installer,
     MacOsPackage,
 
-    // --- Container images ---
+    // Container images
     DockerImage,
     DockerImageV2,
     PublishableDockerImage,
     DockerManifest,
     DockerDigest,
 
-    // --- Publisher manifests ---
+    // Publisher manifests
     BrewFormula,
     BrewCask,
     Nixpkg,
@@ -54,7 +54,7 @@ pub enum ArtifactKind {
     SourceSrcInfo,
     KrewPluginManifest,
 
-    // --- Integrity/metadata ---
+    // Integrity/metadata
     Checksum,
     Signature,
     Certificate,

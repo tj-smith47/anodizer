@@ -3,9 +3,7 @@ use serde::{Deserialize, Serialize};
 
 use super::{StringOrBool, deserialize_string_or_bool_opt};
 
-// ---------------------------------------------------------------------------
 // TemplateFileConfig
-// ---------------------------------------------------------------------------
 
 /// Configuration for a template file that is rendered through the template
 /// engine and placed in the dist directory as a release artifact.

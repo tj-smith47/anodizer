@@ -1,4 +1,4 @@
-//! The MCP tool surface anodizer exposes through brontes.
+//! The MCP tools anodizer exposes through brontes.
 //!
 //! Lives outside `main.rs` because the annotation, grouping and task-mode
 //! tables are per-command data rather than control flow.

@@ -38,7 +38,7 @@ fn catalog_with(entries: &[Value]) -> String {
     .unwrap()
 }
 
-// --- plan_schema (pure) ---------------------------------------------
+// plan_schema (pure)
 
 #[test]
 fn plan_external_uses_entry_url_and_no_vendor_file() {
@@ -158,7 +158,7 @@ fn plan_versioned_vendor_carries_prior_versions_despite_name_case_drift() {
     assert!(versions.contains_key("0.4.2"), "new version added");
 }
 
-// --- allowlist key derivation ---------------------------------------
+// allowlist key derivation
 
 #[test]
 fn allowlist_key_is_vendor_filename_with_json_extension() {
@@ -190,7 +190,7 @@ fn allowlist_key_is_versioned_vendor_filename() {
     assert_eq!(allowlist_name_for(&plan).unwrap(), "cfgd-module-0.4.2.json");
 }
 
-// --- verdict against a fixture catalog ------------------------------
+// verdict against a fixture catalog
 
 #[test]
 fn plan_verdict_is_add_when_absent() {
@@ -257,7 +257,7 @@ fn plan_verdict_is_update_when_description_differs() {
     assert_eq!(plan.verdict, Some(catalog::Verdict::Update));
 }
 
-// --- schema_change_needed (pure, shared by probe + run_real) --------
+// schema_change_needed (pure, shared by probe + run_real)
 //
 // This is the SINGLE change-decision both the pre-clone probe and
 // `run_real` gate on. Its no-op result must be CERTAIN: every uncertainty
@@ -456,7 +456,7 @@ fn change_needed_malformed_catalog_is_conservative_change() {
     );
 }
 
-// --- dry-run run_publish (NO network) -------------------------------
+// dry-run run_publish (NO network)
 
 #[test]
 fn dry_run_external_logs_planned_line_and_opens_no_pr() {
@@ -566,7 +566,7 @@ fn empty_effective_set_returns_empty_evidence_and_logs_no_schemas() {
     );
 }
 
-// --- resolve_description (both branches) ----------------------------
+// resolve_description (both branches)
 
 #[test]
 fn resolve_description_derives_from_project_metadata_when_unset() {
@@ -596,7 +596,7 @@ fn resolve_description_bails_when_nothing_derivable() {
     );
 }
 
-// --- PR body distinguishes vendor/versioned -------------------------
+// PR body distinguishes vendor/versioned
 
 #[test]
 fn pr_body_labels_external_vendor_and_versioned_distinctly() {
@@ -619,11 +619,11 @@ fn pr_body_labels_external_vendor_and_versioned_distinctly() {
         );
 }
 
-// --- per-crate version scope across config modes --------------------
+// per-crate version scope across config modes
 //
 // A versioned vendor schema stamps `<VER>` from the SCHEMA'S OWN crate's
 // tag — never crate[0]'s — in every config mode. The all-config-modes axis
-// is the canonical anodizer bug surface (flat/clobbering/first-crate
+// is the canonical anodizer bug source (flat/clobbering/first-crate
 // resolution), so each mode gets an executable proof. `plan_schema_scoped`
 // drives the real `with_published_crate_scope` → `resolve_crate_tag` path
 // against a git fixture, so a regression of the scope to crate[0] would
@@ -765,7 +765,7 @@ fn lockstep_mode_stamps_shared_version_regardless_of_named_crate() {
     );
 }
 
-// --- evidence shape -------------------------------------------------
+// evidence shape
 
 #[test]
 fn schemastore_evidence_carries_pr_target_with_env_var_name_not_value() {
@@ -785,19 +785,17 @@ fn schemastore_evidence_carries_pr_target_with_env_var_name_not_value() {
     }
 }
 
-// ===================================================================
 // I/O shell: the PUBLISH flow that touches git + the filesystem.
 //
 // These exercise the helpers `run_real` orchestrates — the file
 // read/format/write points, the upstream-sync git plumbing, and the
 // pre-clone guards — against a local bare repo (no network). The
 // pattern mirrors `util/pr.rs`: a `file://`-equivalent local git repo
-// reached through `repository.git.url`, a failing `gh`/network surface
+// reached through `repository.git.url`, a failing `gh`/network path
 // forced by a non-resolvable upstream, and `StageLogger::with_capture`
 // for status-line assertions. Fixture git commits carry a
 // per-invocation identity (`git_test_ok`), so no test here needs
 // serialization.
-// ===================================================================
 
 /// Quiet logger paired with an in-memory capture so the helper's status
 /// lines can be asserted without a Context.
@@ -809,7 +807,7 @@ fn quiet_log() -> StageLogger {
     StageLogger::new("schemastore", anodizer_core::log::Verbosity::Quiet)
 }
 
-// --- read_local_vendor_schema --------------------------------------
+// read_local_vendor_schema
 
 #[test]
 fn read_local_vendor_schema_reads_and_reformats_from_project_root() {
@@ -870,7 +868,7 @@ fn read_local_vendor_schema_errors_when_file_absent_on_disk() {
     );
 }
 
-// --- read_cloned_vendor_file / read_cloned_jsonc -------------------
+// read_cloned_vendor_file / read_cloned_jsonc
 
 #[test]
 fn read_cloned_vendor_file_returns_content_when_present_else_none() {
@@ -917,7 +915,7 @@ fn read_cloned_jsonc_returns_allowlist_when_present_else_none() {
     );
 }
 
-// --- write_vendor_schema -------------------------------------------
+// write_vendor_schema
 
 #[test]
 fn write_vendor_schema_creates_parent_dirs_and_writes_formatted_bytes() {
@@ -1020,7 +1018,7 @@ fn write_vendor_schema_errors_when_plan_has_no_path() {
     );
 }
 
-// --- raw_dialect (classifier off raw bytes) ------------------------
+// raw_dialect (classifier off raw bytes)
 
 #[test]
 fn raw_dialect_classifies_too_high_ok_and_unknown_from_schema_field() {
@@ -1032,7 +1030,7 @@ fn raw_dialect_classifies_too_high_ok_and_unknown_from_schema_field() {
     assert_eq!(raw_dialect("not json at all"), Dialect::Unknown);
 }
 
-// --- sync_to_upstream (git plumbing) -------------------------------
+// sync_to_upstream (git plumbing)
 //
 // Real contract: `git remote add upstream` is best-effort (`let _ =`,
 // tolerating "already exists"), but the `git fetch` and `git reset
@@ -1049,7 +1047,7 @@ fn sync_to_upstream_propagates_fetch_error_in_a_non_repo_dir() {
     // A dir with no `.git`: `git remote add upstream` fails (ignored,
     // best-effort), then `git fetch --depth=1 upstream master` fails
     // because the cwd is not a repository — purely local, no network —
-    // and the `?` surfaces it so `run_real` aborts before splicing.
+    // and the `?` reports it so `run_real` aborts before splicing.
     let not_a_repo = tempfile::tempdir().expect("scratch dir");
 
     let err = sync_to_upstream(not_a_repo.path(), &quiet_log())
@@ -1061,7 +1059,7 @@ fn sync_to_upstream_propagates_fetch_error_in_a_non_repo_dir() {
     );
 }
 
-// --- run_real pre-clone guards (no network reached) ----------------
+// run_real pre-clone guards (no network reached)
 
 /// A schemastore config whose single effective schema is `external_entry`,
 /// optionally carrying a `repository`. Drives `run_real` through its
@@ -1171,7 +1169,7 @@ fn run_real_aborts_when_fork_clone_fails() {
     );
 }
 
-// --- commit / PR text builders -------------------------------------
+// commit / PR text builders
 
 #[test]
 fn schemastore_branch_keys_on_version() {
@@ -1182,7 +1180,7 @@ fn schemastore_branch_keys_on_version() {
 #[test]
 fn commit_msg_and_pr_title_name_every_applied_schema() {
     // Plans built with `None` catalog carry `verdict: None`, which the
-    // summary treats as an add — so both surfaces read "Add ...".
+    // summary treats as an add — so both strings read "Add ...".
     let a = plan_schema(&external_entry(), "Anodizer config", false, None, None).unwrap();
     let b = plan_schema(&vendor_entry(), "cfgd machine config", false, None, None).unwrap();
     let applied = vec![a, b];
@@ -1235,7 +1233,7 @@ fn summary_derives_verb_from_each_plans_verdict() {
     );
 }
 
-// --- planned_line: every verdict arm renders a distinct verb ---------
+// planned_line: every verdict arm renders a distinct verb
 //
 // The dry-run path leaves `verdict: None` ("register/refresh"); the
 // real path resolves Add/Update/NoOp. `planned_line` must map each to
@@ -1331,12 +1329,12 @@ fn planned_line_vendor_appends_versioned_file_path() {
     );
 }
 
-// --- plan_schema error arm: versioned vendor needs a version ---------
+// plan_schema error arm: versioned vendor needs a version
 
 #[test]
 fn plan_versioned_vendor_without_version_errors() {
     // A versioned vendor entry needs a resolved crate version to stamp
-    // `<VER>`; passing `version: None` must surface an actionable error
+    // `<VER>`; passing `version: None` must report an actionable error
     // naming the entry, never silently emit a bare `-.json` file.
     let err = plan_schema(&vendor_entry(), "cfgd machine config", true, None, None)
         .expect_err("versioned vendor without a version must error");
@@ -1347,12 +1345,12 @@ fn plan_versioned_vendor_without_version_errors() {
     );
 }
 
-// --- upstream_versions: malformed catalog surfaces an Err ------------
+// upstream_versions: malformed catalog returns an Err
 
 #[test]
 fn upstream_versions_returns_err_on_malformed_catalog() {
     // A versioned vendor plan reads prior versions off the upstream
-    // catalog; a malformed catalog must surface as `Some(Err)` (which
+    // catalog; a malformed catalog must show up as `Some(Err)` (which
     // `plan_schema` `?`-propagates) rather than silently dropping the
     // carry-forward and orphaning older versioned files.
     let got =
@@ -1408,7 +1406,7 @@ fn plan_versioned_vendor_carry_forward_propagates_malformed_catalog() {
     );
 }
 
-// --- allowlist_name_for: no-vendor-path arm --------------------------
+// allowlist_name_for: no-vendor-path arm
 
 #[test]
 fn allowlist_name_for_errors_for_external_plan_without_path() {
@@ -1428,7 +1426,7 @@ fn allowlist_name_for_errors_for_external_plan_without_path() {
 #[test]
 fn allowlist_name_for_errors_when_vendor_path_has_no_file_name() {
     // A bare root path ("/") is `Some` but has no basename, so `file_name()`
-    // returns `None`. The function must surface a "no file name" error naming
+    // returns `None`. The function must report a "no file name" error naming
     // the entry rather than unwrap-panicking on the missing basename.
     let plan = SchemaPlan {
         name: "Rooty".into(),
@@ -1446,7 +1444,7 @@ fn allowlist_name_for_errors_when_vendor_path_has_no_file_name() {
     );
 }
 
-// --- resolve_description: crate-bound derivation branch --------------
+// resolve_description: crate-bound derivation branch
 
 #[test]
 fn resolve_description_derives_from_bound_crate_metadata() {
@@ -1468,11 +1466,11 @@ fn resolve_description_derives_from_bound_crate_metadata() {
     assert_eq!(desc, "crate-derived description");
 }
 
-// --- effective_schemas: a malformed `if:` propagates -----------------
+// effective_schemas: a malformed `if:` propagates
 
 #[test]
 fn run_publish_propagates_malformed_if_render_error() {
-    // A malformed `if:` template (unterminated Tera) must surface as an
+    // A malformed `if:` template (unterminated Tera) must show up as an
     // Err out of the effective-set resolution — never silently keep or
     // drop the entry. Dry-run so the failure is reached before any
     // network/clone path.
@@ -1491,7 +1489,7 @@ fn run_publish_propagates_malformed_if_render_error() {
     );
 }
 
-// --- effective_schemas: cross-leg crate filtering ---------------------
+// effective_schemas: cross-leg crate filtering
 //
 // Per-crate / workspace-split publish runs each leg with a `ctx.config`
 // whose crate universe holds only that leg's crates. A schema entry bound
@@ -1578,7 +1576,7 @@ fn effective_schemas_all_cross_leg_yields_empty() {
     );
 }
 
-// --- plan_schema_scoped: versioned vendor with no crate to bind ------
+// plan_schema_scoped: versioned vendor with no crate to bind
 
 #[test]
 fn plan_schema_scoped_versioned_vendor_no_crate_errors() {
@@ -1598,7 +1596,7 @@ fn plan_schema_scoped_versioned_vendor_no_crate_errors() {
     );
 }
 
-// --- fetch_raw_required / fetch_raw_optional (HTTP-mock, local TCP) --
+// fetch_raw_required / fetch_raw_optional (HTTP-mock, local TCP)
 //
 // These take a `client` + `url` directly, so a local scripted responder
 // exercises the success / 404 / non-success / status-mapping branches
@@ -1694,7 +1692,7 @@ fn fetch_raw_optional_errors_on_non_404_non_success() {
     );
 }
 
-// --- probe request budget (HTTP-mock, local TCP) ---------------------
+// probe request budget (HTTP-mock, local TCP)
 
 /// The catalog route every probe pin needs, answering with a catalog that
 /// already holds the external entry so the probe resolves NoOp.
@@ -1790,7 +1788,7 @@ fn a_probe_with_a_vendor_entry_still_requests_the_dialect_allowlist() {
     );
 }
 
-// --- run_real I/O shell: post-clone splice/write/idempotency ---------
+// run_real I/O shell: post-clone splice/write/idempotency
 //
 // `run_real` clones the fork, then `sync_to_upstream` fetches the
 // hardcoded PUBLIC github.com/SchemaStore upstream (network). The
@@ -1975,7 +1973,7 @@ fn write_vendor_schema_propagates_allowlist_error_on_missing_array() {
     );
 }
 
-// --- per-file validator options (`schema-validation.jsonc` `options`) ---
+// per-file validator options (`schema-validation.jsonc` `options`)
 //
 // The fixtures model cfgd's real upstream state: a `cfgd-config-0.5.0.json`
 // options block written by the previous release's PR, and a schema whose

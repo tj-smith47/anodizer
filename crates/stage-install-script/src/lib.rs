@@ -533,7 +533,7 @@ fn single_pass_replace(template: &str, map: &[(&str, &str)]) -> String {
 
 /// Derive the default `owner/name` repo slug from the git `origin` remote,
 /// returning `None` when detection fails (no remote / not a repo / a
-/// non-GitHub host) so a config without an explicit `repo:` surfaces a clear
+/// non-GitHub host) so a config without an explicit `repo:` reports a clear
 /// error instead. The generated script talks only to `github.com` /
 /// `api.github.com` by default, so a GitHub-aware resolver is used
 /// deliberately: a GitLab/Gitea origin fails closed (forcing an explicit

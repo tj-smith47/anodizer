@@ -5,9 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use super::{ExtraFileSpec, StringOrBool, deserialize_string_or_bool_opt};
 
-// ---------------------------------------------------------------------------
 // Artifactory publisher
-// ---------------------------------------------------------------------------
 
 /// Artifactory upload configuration.
 /// Uploads artifacts to JFrog Artifactory repositories.

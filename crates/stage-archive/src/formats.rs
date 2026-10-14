@@ -14,9 +14,7 @@ use flate2::write::GzEncoder;
 
 use crate::archive_log;
 
-// ---------------------------------------------------------------------------
 // parse_mtime
-// ---------------------------------------------------------------------------
 
 /// Parse an mtime string as either RFC3339 or a raw unix timestamp (u64).
 /// Returns the unix timestamp as `u64`, or `None` if neither format matches.
@@ -27,9 +25,7 @@ pub(crate) fn parse_mtime(s: &str) -> Option<u64> {
     s.parse::<u64>().ok()
 }
 
-// ---------------------------------------------------------------------------
 // tar entry helpers
-// ---------------------------------------------------------------------------
 
 /// Apply `ArchiveFileInfo` overrides (mode, owner, group) to a tar header.
 fn apply_file_info_to_header(
@@ -135,7 +131,7 @@ pub(crate) fn write_tar_entries<W: std::io::Write>(
     Ok(())
 }
 
-/// Flush the finished archive to the OS and surface any write-back error.
+/// Flush the finished archive to the OS and return any write-back error.
 ///
 /// A format writer's `finish()` only guarantees the bytes reached the file
 /// descriptor. Dropping the `File` afterwards discards the close-time error a
@@ -146,9 +142,7 @@ pub(crate) fn finish_archive_file(file: File, label: &str, output: &Path) -> Res
         .with_context(|| format!("{label}: failed to close archive file {}", output.display()))
 }
 
-// ---------------------------------------------------------------------------
 // tar / zip container open + close
-// ---------------------------------------------------------------------------
 
 /// A tar container's codec, closed down to the `File` underneath it.
 ///
@@ -296,9 +290,7 @@ impl TarEntries for FileEntries<'_> {
     }
 }
 
-// ---------------------------------------------------------------------------
 // tar.gz / tar.xz / tar.zst / tar / gz / zip / binary writers
-// ---------------------------------------------------------------------------
 
 /// Create a tar.gz archive containing the given files.
 /// Each file is stored under its own filename (no directory prefix) unless

@@ -58,7 +58,7 @@ pub fn render_ignore_patterns(
 /// `…-{{ ShortCommit }}-nightly`, nushell-style `…-nightly.{{ NightlyBuild }}+…`).
 ///
 /// Nightly tags are an implementation detail of the nightly pipeline, never a
-/// user release signal, so stable-release surfaces (crate selection from
+/// user release signal, so stable-release code paths (crate selection from
 /// tags-at-HEAD, latest-tag / previous-tag resolution) exclude them
 /// UNCONDITIONALLY — a stranded tag from a failed nightly run must not poison
 /// the next stable release regardless of `git.ignore_tags` config. A leading
@@ -409,7 +409,7 @@ pub fn compose_prefix(prefix: &str, value: &str) -> String {
 /// `tag_template`, falling back to the `<name>-v` convention when the
 /// template is empty or carries no recognised version placeholder.
 ///
-/// Every surface that scans or creates per-crate tags (`tag`, `bump` range
+/// Every command that scans or creates per-crate tags (`tag`, `bump` range
 /// inference, `changelog` tag-owner resolution and crate selection) must
 /// resolve the SAME family from the same inputs: a drifted fallback makes
 /// the last-tag probe come up empty and silently widens the commit range

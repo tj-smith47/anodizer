@@ -12,7 +12,7 @@
 //!
 //! [`check`] runs at the point in the pipeline where the binary artifact
 //! set for each in-scope crate is known, and errors when a crate declares
-//! a binary-requiring surface but no compiled-binary artifact
+//! a binary-requiring output but no compiled-binary artifact
 //! ([`ArtifactKind::Binary`] / [`ArtifactKind::UploadableBinary`] /
 //! [`ArtifactKind::UniversalBinary`], or the per-target
 //! [`ArtifactKind::Archive`] that wraps one) exists for it.
@@ -33,7 +33,7 @@ const BINARY_PRESENCE_KINDS: &[ArtifactKind] = &[
 ];
 
 /// Validate that every in-scope crate which configures a binary-requiring
-/// surface actually has a compiled-binary artifact in `artifacts`.
+/// output actually has a compiled-binary artifact in `artifacts`.
 ///
 /// `selected_crates` follows the pipeline-wide convention: empty means
 /// "all configured crates are in scope"; otherwise only the named crates
@@ -51,7 +51,7 @@ const BINARY_PRESENCE_KINDS: &[ArtifactKind] = &[
 ///   guard exists to catch).
 ///
 /// Returns the first offending crate as an error (named, with the
-/// configured surfaces and the likely causes) so the release aborts at
+/// configured outputs and the likely causes) so the release aborts at
 /// build time instead of mid-publish.
 pub fn check(
     config: &Config,
@@ -92,12 +92,12 @@ pub fn check(
     Ok(())
 }
 
-/// Collect the names of the binary-requiring surfaces configured on a
+/// Collect the names of the binary-requiring outputs configured on a
 /// single crate, in a stable declaration order. Empty when the crate is
 /// library-shaped (only `source:`-style / non-binary publishers, or no
 /// binary-consuming packagers at all).
 ///
-/// Only per-crate surfaces are considered: project-wide `makeselfs:` and
+/// Only per-crate outputs are considered: project-wide `makeselfs:` and
 /// `homebrew_casks:` bind to crates by id / artifact filter rather than a
 /// crate name, so attributing their binary requirement to one specific
 /// crate would risk a false positive and they are intentionally excluded.
@@ -171,14 +171,14 @@ fn binary_requiring_publishers(publish: &PublishConfig) -> Vec<&'static str> {
 }
 
 /// `true` when an optional list field carries at least one entry. A
-/// present-but-empty list (`dockers_v2: []`) declares no surface and must
+/// present-but-empty list (`dockers_v2: []`) declares no output and must
 /// not arm the guard.
 fn has_entries<T>(field: &Option<Vec<T>>) -> bool {
     field.as_ref().is_some_and(|v| !v.is_empty())
 }
 
 /// `true` when a crate's `binstall:` block is present and `enabled: true`. A
-/// missing block, or one with `enabled` unset / `false`, declares no surface
+/// missing block, or one with `enabled` unset / `false`, declares no output
 /// and must not arm the guard.
 fn binstall_enabled(krate: &CrateConfig) -> bool {
     krate
@@ -257,7 +257,7 @@ mod tests {
 
     #[test]
     fn ok_for_library_crate_with_no_binary_surface() {
-        // Only a source archive, no binary-requiring surface configured —
+        // Only a source archive, no binary-requiring output configured —
         // the inverse of the failure case: must NOT trip the guard.
         let config = config_with(crate_named("libonly"));
 
@@ -304,7 +304,7 @@ mod tests {
 
     #[test]
     fn empty_surface_list_does_not_arm_guard() {
-        // `dockers_v2: []` is present-but-empty: it declares no surface and
+        // `dockers_v2: []` is present-but-empty: it declares no output and
         // must not fire even though the field is `Some`.
         let mut krate = crate_named("svc");
         krate.dockers_v2 = Some(vec![]);
@@ -370,7 +370,7 @@ mod tests {
     fn errors_when_binstall_enabled_but_no_binary() {
         // A binstall-enabled crate with no produced binary would write
         // pkg-url / overrides for assets the release never uploads (404).
-        // The guard must catch it like any other binary-requiring surface.
+        // The guard must catch it like any other binary-requiring output.
         let mut krate = crate_named("tool");
         krate.binstall = Some(BinstallConfig {
             enabled: Some(true),
@@ -406,7 +406,7 @@ mod tests {
 
     #[test]
     fn binstall_disabled_does_not_arm_guard() {
-        // `enabled: false` (or unset) declares no binstall surface; a
+        // `enabled: false` (or unset) declares no binstall output; a
         // library-shaped crate with a disabled binstall block must pass.
         let mut krate = crate_named("lib");
         krate.binstall = Some(BinstallConfig {

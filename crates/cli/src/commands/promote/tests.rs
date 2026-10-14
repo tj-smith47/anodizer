@@ -67,7 +67,7 @@ fn default_selection_includes_configured_snapcraft_single_crate() {
 
 #[test]
 fn default_selection_includes_configured_snapcraft_workspace_mode() {
-    // The crate-universe union must surface a snapcraft config declared only
+    // The crate-universe union must include a snapcraft config declared only
     // under workspaces[].crates — promotion works in per-crate / lockstep modes.
     let ctx = ctx_workspace();
     let selected = select_publishers(&ctx, &[]).expect("selection");

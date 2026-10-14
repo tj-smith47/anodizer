@@ -3,9 +3,7 @@ use serde::{Deserialize, Serialize};
 
 use super::{ExtraFileSpec, StringOrBool, TemplatedExtraFile, deserialize_string_or_bool_opt};
 
-// ---------------------------------------------------------------------------
 // PublisherConfig
-// ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default, deny_unknown_fields)]

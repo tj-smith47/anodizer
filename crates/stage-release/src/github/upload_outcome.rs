@@ -5,7 +5,7 @@
 //! `already_exists` 422, secondary rate-limit, primary rate-limit, plain
 //! transport flake, ...). Each mode demands a different action (delete &
 //! retry, sleep the secondary-RL backoff, probe `/rate_limit`, sleep an
-//! exponential-backoff slot, surface the error). The decision itself —
+//! exponential-backoff slot, return the error). The decision itself —
 //! "given this `octocrab::Error`, what kind of attempt outcome is it?" —
 //! is a pure function of the error shape, independent of the surrounding
 //! stateful machinery (`last_err`, `replaced`, `sleep`s,
@@ -77,12 +77,12 @@ pub(crate) enum UploadAttemptOutcome {
     /// `Serde`/`Json` are classified as transient because GitHub will
     /// occasionally return an HTML 502/503 page from an upstream proxy
     /// while octocrab's error mapping expects a JSON body; treating
-    /// those as fatal would surface bogus parse errors on otherwise
+    /// those as fatal would report bogus parse errors on otherwise
     /// transient failures.
     TransientRetry,
     /// Any other error — validation 4xx other than 422 already-exists,
     /// a 403 auth denial with no rate-limit signal, or an unrecognised
-    /// variant. The loop surfaces the error immediately.
+    /// variant. The loop returns the error immediately.
     Fatal,
 }
 

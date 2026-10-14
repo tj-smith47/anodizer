@@ -245,7 +245,7 @@ impl TufInitLock {
 impl Drop for TufInitLock {
     fn drop(&mut self) {
         // Best-effort: the OS releases the lock on fd close / process exit
-        // regardless, so an unlock error is not worth surfacing.
+        // regardless, so an unlock error is not worth reporting.
         let _ = fs4::FileExt::unlock(&self.file);
     }
 }

@@ -208,7 +208,7 @@ pub fn send_reddit(post: &RedditPost<'_>, log: &StageLogger, policy: &RetryPolic
     Ok(())
 }
 
-/// Surface Reddit's `X-Ratelimit-*` headers so users see throttle pressure
+/// Log Reddit's `X-Ratelimit-*` headers so users see throttle pressure
 /// before it turns into 429s on the next release.
 fn log_rate_limit(headers: &reqwest::header::HeaderMap, log: &StageLogger) {
     let used = header_str(headers, "x-ratelimit-used");
@@ -348,7 +348,7 @@ mod tests {
     #[serial_test::serial(announce_env)]
     fn send_reddit_token_fetch_failure_aborts_before_submit() {
         let _g = env_mutex().lock().unwrap_or_else(|e| e.into_inner());
-        // A 401 on the token leg must surface and NOT fire the submit POST.
+        // A 401 on the token leg must be reported and NOT fire the submit POST.
         let (addr, log) = spawn_scripted_responder(vec![ScriptedRoute {
             method: "POST",
             path_pattern: "/api/v1/access_token",
@@ -372,7 +372,7 @@ mod tests {
     fn send_reddit_submit_json_errors_surface() {
         let _g = env_mutex().lock().unwrap_or_else(|e| e.into_inner());
         // Reddit returns HTTP 200 even on a logical submit rejection; a
-        // non-empty `json.errors` array must be surfaced as an error.
+        // non-empty `json.errors` array must be returned as an error.
         let (addr, _log) = spawn_scripted_responder(vec![
             ScriptedRoute {
                 method: "POST",

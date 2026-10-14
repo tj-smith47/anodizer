@@ -8,7 +8,7 @@
 //!   PR numbers of every match, following `Link: rel="next"` pagination
 //!   up to a sanity cap of 10 pages (1000 PRs). Distinguishes
 //!   auth-failure / repo-not-found from genuine empty results via
-//!   [`FindPrError`] so callers can surface actionable warns at
+//!   [`FindPrError`] so callers can report actionable warns at
 //!   `anodizer tag rollback` time.
 //! - [`close_pr_via_api_with_env`] — `PATCH /repos/{owner}/{repo}/pulls/{n}` with
 //!   `{"state": "closed"}`. Returns a [`CloseOutcome`] enum: `Closed`
@@ -22,7 +22,7 @@
 //! `GitHubClient` is a trait bound on release operations (create/list/
 //! delete release, upload asset). Adding PR ops would muddy that
 //! contract for the one publisher group that needs it. The raw
-//! helper keeps the surface narrow and the dependency direction
+//! helper keeps the API narrow and the dependency direction
 //! correct (`stage-publish` → `core::http`, not vice versa).
 //!
 //! Bearer-auth convention: both helpers send `Authorization: Bearer
@@ -38,9 +38,7 @@ use anyhow::Context as _;
 
 use anodizer_core::http::github_api_base;
 
-// ---------------------------------------------------------------------------
 // CloseOutcome — bucket the close-PR PATCH response
-// ---------------------------------------------------------------------------
 
 /// Outcome of one `PATCH /pulls/{n} {"state":"closed"}` attempt against
 /// a single upstream PR. Returned by [`close_pr_via_api_with_env`] so the per-PR
@@ -50,7 +48,7 @@ use anodizer_core::http::github_api_base;
 /// [`crate::artifactory::DeleteOutcome`] — `AlreadyClosed` is a
 /// **success bucket** because the desired end-state (PR not open) is
 /// already true. Re-running `anodizer tag rollback` after a partial success
-/// must not surface `AlreadyClosed` PRs as failures; that's how the
+/// must not report `AlreadyClosed` PRs as failures; that's how the
 /// operator confirms the rollback was complete.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum CloseOutcome {
@@ -74,7 +72,7 @@ pub(crate) enum CloseOutcome {
 /// through [`close_pr_via_api_with_env`].
 ///
 /// `body` is only consulted for the `Failed(_)` carrier-string;
-/// success / already-closed buckets do not surface the body.
+/// success / already-closed buckets do not report the body.
 pub(crate) fn classify_close_status(status: reqwest::StatusCode, body: &str) -> CloseOutcome {
     if status.is_success() {
         return CloseOutcome::Closed;
@@ -88,9 +86,7 @@ pub(crate) fn classify_close_status(status: reqwest::StatusCode, body: &str) -> 
     CloseOutcome::Failed(format!("HTTP {}: {}", status, body))
 }
 
-// ---------------------------------------------------------------------------
 // FindPrError — auth-vs-empty-result discrimination
-// ---------------------------------------------------------------------------
 
 /// Failure modes for [`find_open_pr_numbers_for_head_with_env`].
 ///
@@ -243,7 +239,7 @@ pub(crate) fn classify_find_pr_status(
 /// `Ok(Vec::new())` is a genuine "no open pull request matches";
 /// `Err(FindPrError)` is every failure, and `env_hint` is the name of the
 /// token variable the auth variants put in their message so the warn names
-/// what to fix. Callers surface the variant; collapsing an `Err` to an empty
+/// what to fix. Callers report the variant; collapsing an `Err` to an empty
 /// list reads a rotated token as "nothing to close". Pagination follows
 /// `Link: rel="next"` up to 10 pages: the first 1000 matches are returned
 /// and any beyond them are not listed.
@@ -419,7 +415,7 @@ pub(crate) fn parse_link_header_next(header: &str) -> Option<String> {
 /// Returns a [`CloseOutcome`] enum: `Closed` for fresh-close 2xx,
 /// `AlreadyClosed` for 404 / 410 / 422 (desired end-state already
 /// true), `Failed` for anything else. Callers should bucket
-/// outcomes into closed/already-closed/failed counters and surface
+/// outcomes into closed/already-closed/failed counters and report
 /// per-failure warns on `Failed` only.
 ///
 /// The GitHub API base is read through `env` (honoring
@@ -465,7 +461,7 @@ pub(crate) fn close_pr_via_api_with_env<E: EnvSource + ?Sized>(
 mod tests {
     use super::*;
 
-    /// The lookup must surface an `Err` variant (not panic, not silently
+    /// The lookup must return an `Err` variant (not panic, not silently
     /// return `Ok(Vec::new())`) when the request fails — auth-blindness
     /// (the bug `FindPrError` exists to prevent) must never collapse to
     /// `Ok(empty)`. Driven through the `_with_env` point with the API base
@@ -515,9 +511,7 @@ mod tests {
         assert!(matches!(result, CloseOutcome::Failed(_)));
     }
 
-    // -----------------------------------------------------------------
     // classify_close_status — unit-tested without firing HTTP
-    // -----------------------------------------------------------------
 
     #[test]
     fn close_pr_via_api_treats_2xx_as_closed() {
@@ -577,10 +571,8 @@ mod tests {
         }
     }
 
-    // -----------------------------------------------------------------
     // classify_find_pr_status — auth-vs-empty-result discrimination
     // unit-tested without firing HTTP
-    // -----------------------------------------------------------------
 
     #[test]
     fn find_open_pr_numbers_returns_auth401_on_401_response() {
@@ -658,7 +650,7 @@ mod tests {
         }
     }
 
-    /// A rate-limited 403 must NOT surface the "fix your token scope"
+    /// A rate-limited 403 must NOT report the "fix your token scope"
     /// remediation — the token may be fine. The header verdict (computed
     /// by the shared core check at the call site) routes it to the
     /// transient RateLimited variant instead.
@@ -704,9 +696,7 @@ mod tests {
         assert!(!msg.contains("scope"), "{msg}");
     }
 
-    // -----------------------------------------------------------------
     // parse_link_header_next — RFC-5988 parsing without HTTP
-    // -----------------------------------------------------------------
 
     #[test]
     fn parse_link_header_next_returns_next_url() {

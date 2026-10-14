@@ -1,5 +1,5 @@
 //! Generic external-tool detection. The one module answering both
-//! availability questions, each right for a different surface:
+//! availability questions, each right for a different caller:
 //!
 //! - [`on_path`] — "is `<tool>` reachable on `PATH`?" A pure lookup with no
 //!   exec. The right question for **existence gating** (can a stage spawn
@@ -40,7 +40,7 @@ pub enum ToolProbe {
     Unavailable,
     /// The probe itself failed for a non-`NotFound` reason (permission
     /// denied, exec-format error, …): presence is UNKNOWN, not "absent".
-    /// Callers must surface the error rather than collapse it to
+    /// Callers must report the error rather than collapse it to
     /// [`ToolProbe::Unavailable`].
     ProbeFailed(io::Error),
 }
@@ -107,7 +107,7 @@ fn version_flag(name: &str) -> &'static str {
 /// A missing-on-`PATH` binary (spawn `NotFound`) is folded together with a
 /// ran-but-exited-non-zero probe into [`ToolProbe::Unavailable`] — the one
 /// place that fold happens. Any other spawn error is
-/// [`ToolProbe::ProbeFailed`] and must be surfaced by the caller.
+/// [`ToolProbe::ProbeFailed`] and must be reported by the caller.
 /// stdout/stderr are silenced so a missing tool doesn't pollute the log.
 pub fn runs(name: &str) -> ToolProbe {
     match Command::new(name)

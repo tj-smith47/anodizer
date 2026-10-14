@@ -990,15 +990,15 @@ mod tests {
     }
 
     /// A publisher whose own name is prefixed by a neighbour's is not
-    /// covered by that neighbour: the rule that pairs a label to an evaluator
-    /// is the rule that collects it, so `homebrew-core` skips reaching no
-    /// `evaluate_entry_skips` call of their own are reported by nobody rather
-    /// than looking covered by homebrew's.
+    /// covered by that neighbour. The rule that pairs a label with an
+    /// evaluator is the rule that collects it, so a `homebrew-core` skip that
+    /// reaches no `evaluate_entry_skips` call of its own is reported by no
+    /// one, and homebrew's call does not appear to cover it.
     #[test]
     fn a_publisher_named_like_a_sub_label_is_not_covered_by_its_neighbours_evaluator() {
         assert!(
             !skip_label_belongs_to("homebrew-core", "homebrew"),
-            "homebrew-core is a publisher token and no homebrew sub-label"
+            "homebrew-core is a publisher token of its own; homebrew's sub-labels are homebrew-cask"
         );
         let ctx = anodizer_core::test_helpers::TestContextBuilder::new().build();
         ctx.remember_skip("homebrew-core", "widget", "no formula path");
@@ -1043,7 +1043,7 @@ mod tests {
                 "no cask repository".to_string(),
                 "no tap repository".to_string()
             ],
-            "homebrew-core is a publisher and no homebrew sub-label"
+            "homebrew-core is a publisher of its own; its skips stay out of homebrew's list"
         );
         assert_eq!(
             entry_skip_reasons(&ctx, "homebrew-core"),

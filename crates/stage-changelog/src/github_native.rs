@@ -44,7 +44,7 @@ pub(crate) fn generate_release_notes(
 ) -> Result<String> {
     // `tag_name` is a required field on `POST /repos/{owner}/{repo}/releases/
     // generate-notes` per the GitHub REST docs (Releases > Generate release
-    // notes content for a release). Submitting an empty string surfaces as
+    // notes content for a release). Submitting an empty string comes back as
     // a 422 (`tag_name is too short`) that hides the real cause: the
     // template rendered empty because `ctx.template_vars["Tag"]` was unset
     // on the snapshot / dry-run path.
@@ -333,7 +333,7 @@ pub(crate) fn handle_github_native_changelog(
     // (e.g. a direct-push workflow). Point the operator at `changelog.use:
     // git` (or github/gitlab/gitea) for commit-based notes instead. Warn —
     // not status — because shipping silent empty release notes is exactly the
-    // failure this surfaces.
+    // failure this reports.
     if !empty_github_body.is_empty() {
         log.warn(&format!(
             "use=github-native produced an EMPTY release body for {}: {}. \

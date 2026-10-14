@@ -9,9 +9,7 @@ use anodizer_core::context::Context;
 use anodizer_core::hooks::{HookRunContext, run_hooks};
 use anodizer_core::tool_detect::on_path;
 
-// ---------------------------------------------------------------------------
 // build_universal_binary — run `lipo` to combine arm64 + x86_64 macOS binaries
-// ---------------------------------------------------------------------------
 
 /// Resolve the default `ids` filter for a `universal_binaries[]` entry.
 ///

@@ -36,9 +36,7 @@ mod test_support;
 #[cfg(test)]
 mod tests;
 
-// ---------------------------------------------------------------------------
 // classify_asset_conflict — shared release-asset overwrite decision
-// ---------------------------------------------------------------------------
 
 /// The decision for a release asset whose name already exists (or may exist)
 /// on the remote, derived from a byte-size probe plus the user's
@@ -62,7 +60,7 @@ pub(crate) enum AssetConflict {
     /// stale asset, then upload.
     ReplaceDiffering,
     /// Remote asset is present, differs from the local file, and overwrites are
-    /// forbidden (`replace_existing_artifacts: false`): surface the conflict
+    /// forbidden (`replace_existing_artifacts: false`): report the conflict
     /// instead of mutating published bytes.
     ConflictForbidden,
     /// No conflicting remote asset to reconcile: upload as-is.
@@ -100,9 +98,7 @@ pub(crate) fn classify_asset_conflict(
     }
 }
 
-// ---------------------------------------------------------------------------
 // retry_upload — shared exponential-backoff retry for upload operations
-// ---------------------------------------------------------------------------
 
 /// Retry an async upload operation with exponential backoff.
 /// 10 attempts, 50ms initial delay, 30s cap.
@@ -114,7 +110,7 @@ pub(crate) fn classify_asset_conflict(
 /// already-retrying calls in `retry_upload` (here) produces nested-retry
 /// behavior: the inner helper exhausts its policy first, then this outer
 /// loop retries up to its own 10 attempts. This is intentional — the
-/// per-publisher inner policy gives the user a configurable surface, and the
+/// per-publisher inner policy gives the user a configurable setting, and the
 /// outer loop stays as the safety net — but the two ladders MULTIPLY, so
 /// `deadline` (the invocation's wall-clock budget, the same value the inner
 /// calls thread) bounds the product. Without it a wedged forge would spend
@@ -162,9 +158,7 @@ where
     .with_context(|| format!("{operation_name}: retry exhausted"))
 }
 
-// ---------------------------------------------------------------------------
 // download-URL derivation — shared with emission-validate via core
-// ---------------------------------------------------------------------------
 
 // Moved to `anodizer_core::download_url` so the emission-validate pass
 // (stage-publish) can seed the identical derivation before the publisher
@@ -289,9 +283,7 @@ pub(crate) fn compose_compare_url(
     }
 }
 
-// ---------------------------------------------------------------------------
 // should_mark_prerelease
-// ---------------------------------------------------------------------------
 
 /// Decide whether the GitHub Release should be marked as a pre-release.
 ///
@@ -326,9 +318,7 @@ pub(crate) fn should_mark_prerelease(config: &Option<PrereleaseConfig>, tag: &st
 // resolve_release_tag live in `release_body.rs`. Mode-resolution is on
 // `ReleaseConfig::resolved_mode` (lazy-defaults policy).
 
-// ---------------------------------------------------------------------------
 // populate_checksums_var
-// ---------------------------------------------------------------------------
 
 /// Populate the `{{ .Checksums }}` template variable from the registered
 /// `ArtifactKind::Checksum` artifacts.
@@ -439,9 +429,7 @@ pub(crate) fn populate_checksums_var(ctx: &mut Context) -> anyhow::Result<()> {
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
 // ReleaseStage
-// ---------------------------------------------------------------------------
 
 pub struct ReleaseStage;
 

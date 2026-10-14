@@ -26,9 +26,7 @@ pub(crate) use anthropic::AnthropicProvider;
 pub(crate) use ollama::OllamaProvider;
 pub(crate) use openai::OpenAiProvider;
 
-// ---------------------------------------------------------------------------
 // Default prompt
-// ---------------------------------------------------------------------------
 
 /// Default AI prompt used when `changelog.ai.prompt` is not configured.
 ///
@@ -49,9 +47,7 @@ Here's the changelog:
 
 {{ ReleaseNotes }}"#;
 
-// ---------------------------------------------------------------------------
 // AiProvider trait
-// ---------------------------------------------------------------------------
 
 /// A pluggable AI provider for changelog enhancement.
 ///
@@ -68,9 +64,7 @@ pub(crate) trait AiProvider {
     fn default_model(&self) -> &str;
 }
 
-// ---------------------------------------------------------------------------
 // Shared HTTP transport
-// ---------------------------------------------------------------------------
 
 /// POST `body` as JSON to `url` and return the parsed response JSON.
 ///
@@ -80,9 +74,9 @@ pub(crate) trait AiProvider {
 /// `headers` carries provider-specific auth / content-type pairs; the JSON
 /// `content-type` is the provider's responsibility to include if required.
 ///
-/// A non-2xx status is surfaced as an error including the status and the
+/// A non-2xx status is returned as an error including the status and the
 /// (decoded) response body so an API error message reaches the operator.
-/// A body that fails to decode is surfaced as an error (rather than being
+/// A body that fails to decode is returned as an error (rather than being
 /// swallowed behind a placeholder string), since a body the transport could
 /// not read is itself a transport failure worth reporting.
 fn post_for_json(
@@ -114,9 +108,7 @@ fn post_for_json(
     serde_json::from_str(&text).with_context(|| format!("{label}: parse response JSON: {text}"))
 }
 
-// ---------------------------------------------------------------------------
 // Provider dispatch
-// ---------------------------------------------------------------------------
 
 /// Construct the appropriate [`AiProvider`] for `provider_name`.
 ///
@@ -138,9 +130,7 @@ fn make_provider(provider_name: &str, env: Arc<dyn EnvSource>) -> Result<Box<dyn
     }
 }
 
-// ---------------------------------------------------------------------------
 // Prompt resolution
-// ---------------------------------------------------------------------------
 
 /// Fetch the raw prompt text from the configured source.
 ///
@@ -207,9 +197,7 @@ fn resolve_raw_prompt(cfg: &ChangelogAiConfig, env: &dyn EnvSource) -> Result<St
     }
 }
 
-// ---------------------------------------------------------------------------
 // Tera render with injected ReleaseNotes var
-// ---------------------------------------------------------------------------
 
 /// Render `template` through Tera, injecting `ReleaseNotes = notes` into a
 /// one-shot context so this var does NOT pollute the global template var table.
@@ -220,9 +208,7 @@ fn render_prompt(template: &str, notes: &str, ctx: &Context) -> Result<String> {
     anodizer_core::template::render(template, &vars).context("changelog.ai: render prompt template")
 }
 
-// ---------------------------------------------------------------------------
 // Public entry point
-// ---------------------------------------------------------------------------
 
 /// Enhance `body` via the configured AI provider.
 ///

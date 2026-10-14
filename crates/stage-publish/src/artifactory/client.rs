@@ -1,8 +1,6 @@
 use super::*;
 
-// ---------------------------------------------------------------------------
 // build_reqwest_client
-// ---------------------------------------------------------------------------
 
 /// Build a reqwest blocking client with optional mTLS and trusted CA certs.
 pub fn build_reqwest_client(
@@ -67,9 +65,7 @@ pub fn build_reqwest_client(
         .context("artifactory: failed to build HTTP client")
 }
 
-// ---------------------------------------------------------------------------
 // render_artifact_url
-// ---------------------------------------------------------------------------
 
 /// Render a target URL template with the artifact context bound
 /// (Os, Arch, Target, ArtifactName, ArtifactExt).

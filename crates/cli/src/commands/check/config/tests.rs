@@ -120,7 +120,7 @@ fn check_workspace_membership_direct_missing_dep_names_both_crates() {
     );
 }
 
-// ---- single-crate mode: exactly one top-level `crates:` entry ----
+// single-crate mode: exactly one top-level `crates:` entry
 
 #[test]
 fn check_workspace_membership_single_crate_mode_missing_dep_fails() {
@@ -180,7 +180,7 @@ fn check_workspace_membership_single_crate_mode_complete_passes() {
     );
 }
 
-// ---- lockstep mode: multiple top-level `crates:` entries, one version ----
+// lockstep mode: multiple top-level `crates:` entries, one version
 
 #[test]
 fn check_workspace_membership_lockstep_multi_crate_missing_dep_fails() {
@@ -263,7 +263,7 @@ fn check_workspace_membership_lockstep_multi_crate_complete_passes() {
     );
 }
 
-// ---- per-crate mode: nested `workspaces:` groups, independent cadence ----
+// per-crate mode: nested `workspaces:` groups, independent cadence
 
 #[test]
 fn check_workspace_membership_per_crate_workspace_missing_dep_fails() {
@@ -333,7 +333,7 @@ fn check_workspace_membership_per_crate_workspace_complete_passes() {
     );
 }
 
-// ---- publisher-gating: only crates with an active cargo publisher are checked ----
+// publisher-gating: only crates with an active cargo publisher are checked
 
 #[test]
 fn check_workspace_membership_no_active_publisher_skips_check() {
@@ -416,7 +416,7 @@ fn check_workspace_membership_dep_with_cargo_skip_still_errors() {
     );
 }
 
-// ---- multi-root: `workspaces:` spanning distinct physical Cargo workspaces ----
+// multi-root: `workspaces:` spanning distinct physical Cargo workspaces
 
 #[test]
 fn check_workspace_membership_discriminates_distinct_cargo_workspace_roots() {
@@ -565,7 +565,7 @@ workspaces:
     assert!(err.to_string().contains("validation failed"), "got: {err}");
 }
 
-// ---- Cycle detection tests ----
+// Cycle detection tests
 
 #[test]
 fn test_no_cycle_linear() {
@@ -609,7 +609,7 @@ fn test_no_cycle_diamond() {
     assert!(find_cycle(&crates).is_none());
 }
 
-// ---- tag_template validation tests ----
+// tag_template validation tests
 
 #[test]
 fn test_tag_template_valid() {
@@ -633,7 +633,7 @@ fn test_tag_template_empty_skipped() {
     assert!(run_checks(&config, false, &test_logger(), Path::new(NO_WORKSPACE_BASE)).is_ok());
 }
 
-// ---- depends_on reference tests ----
+// depends_on reference tests
 
 #[test]
 fn test_depends_on_missing_crate() {
@@ -659,7 +659,7 @@ fn test_depends_on_cycle_fails() {
     assert!(result.is_err());
 }
 
-// ---- copy_from tests ----
+// copy_from tests
 
 #[test]
 fn test_copy_from_valid() {
@@ -694,7 +694,7 @@ fn test_copy_from_invalid() {
     assert!(result.is_err());
 }
 
-// ---- Contradictory config warning tests ----
+// Contradictory config warning tests
 
 #[test]
 fn test_check_changelog_disabled_with_other_fields_passes() {
@@ -734,7 +734,7 @@ fn test_check_checksum_disabled_with_other_fields_passes() {
     assert!(run_checks(&config, false, &test_logger(), Path::new(NO_WORKSPACE_BASE)).is_ok());
 }
 
-// ---- Empty crate name validation tests ----
+// Empty crate name validation tests
 
 #[test]
 fn test_empty_crate_name_fails() {
@@ -760,7 +760,7 @@ fn test_whitespace_only_crate_name_fails() {
     );
 }
 
-// ---- tag_template compact spacing variant tests ----
+// tag_template compact spacing variant tests
 
 #[test]
 fn test_tag_template_compact_version_accepted() {
@@ -799,7 +799,7 @@ fn test_tag_template_missing_version_with_other_placeholder() {
     );
 }
 
-// ---- Multiple validation errors test ----
+// Multiple validation errors test
 
 #[test]
 fn test_multiple_validation_errors_reported() {
@@ -834,7 +834,7 @@ fn test_check_per_crate_checksum_disabled_with_other_fields_passes() {
     assert!(run_checks(&config, false, &test_logger(), Path::new(NO_WORKSPACE_BASE)).is_ok());
 }
 
-// ---- Workspace validation tests ----
+// Workspace validation tests
 
 #[test]
 fn workspace_only_crates_flag_tool_needs() {
@@ -1034,7 +1034,7 @@ fn test_workspace_depends_on_valid_passes() {
     );
 }
 
-// ---- Source/SBOM format validation tests ----
+// Source/SBOM format validation tests
 
 #[test]
 fn test_invalid_source_format_fails() {
@@ -1112,9 +1112,7 @@ fn test_valid_sbom_artifacts_pass() {
     }
 }
 
-// -----------------------------------------------------------------------
 // Blob config validation tests
-// -----------------------------------------------------------------------
 
 #[test]
 fn test_blob_config_valid_provider() {
@@ -1195,9 +1193,7 @@ fn test_blob_config_id_in_error_label() {
     assert!(msg.contains("validation failed"), "got: {}", msg);
 }
 
-// -----------------------------------------------------------------------
 // Announce secret-exposure lint tests
-// -----------------------------------------------------------------------
 
 use anodizer_core::config::{
     AnnounceConfig, BlueskyAnnounce, DiscourseAnnounce, EmailAnnounce, SlackAnnounce,
@@ -1393,7 +1389,7 @@ fn test_announce_secret_warns_on_both_refs_in_one_block() {
     );
 }
 
-// ---- Sign artifact-filter validation tests ----
+// Sign artifact-filter validation tests
 
 fn config_with_sign_artifacts(filter: &str) -> Config {
     Config {
@@ -3199,7 +3195,7 @@ fn binary_signs_entries_that_write_two_files_warn_nothing() {
     }
 }
 
-// ---- Target-triple validation tests ----
+// Target-triple validation tests
 
 #[test]
 fn target_triple_warns_on_unrecognized_in_defaults() {
@@ -3263,7 +3259,7 @@ fn target_triple_silent_on_known_triples() {
     );
 }
 
-// ---- Changelog `use` validation tests ----
+// Changelog `use` validation tests
 
 #[test]
 fn changelog_use_warns_on_unrecognized_value() {
@@ -3312,7 +3308,7 @@ fn changelog_use_silent_on_every_forge_source() {
     }
 }
 
-// ---- Checksum-algorithm validation tests ----
+// Checksum-algorithm validation tests
 
 #[test]
 fn checksum_algorithm_warns_on_unrecognized_in_defaults() {
@@ -3370,7 +3366,7 @@ fn checksum_algorithm_silent_on_known_algorithm() {
     assert!(warnings.is_empty(), "blake2b is valid: {warnings:?}");
 }
 
-// ---- SBOM artifacts validation tests ----
+// SBOM artifacts validation tests
 
 #[test]
 fn sbom_artifacts_errors_on_unrecognized_value() {
@@ -3407,7 +3403,7 @@ fn sbom_artifacts_silent_on_known_value() {
     );
 }
 
-// ---- Announce secret-exposure: remaining channels ----
+// Announce secret-exposure: remaining channels
 
 #[test]
 fn announce_secret_warns_across_all_remaining_channels() {
@@ -3566,7 +3562,7 @@ fn slack_secret_lint_reads_the_flattened_block_and_attachment_fields() {
     );
 }
 
-// ---- Signing-tool availability warnings ----
+// Signing-tool availability warnings
 
 #[test]
 fn signing_tools_warns_on_missing_sign_cmd() {

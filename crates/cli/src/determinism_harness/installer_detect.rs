@@ -34,7 +34,7 @@ use anodizer_core::tool_detect::on_path;
 ///
 /// `available` carries the stages whose backing tools are reachable
 /// on `PATH`; `skipped` carries the (stage, missing-tool-name) pairs
-/// the harness will surface to stderr so the operator can install the
+/// the harness will print to stderr so the operator can install the
 /// missing tool.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub(super) struct InstallerToolGate {
@@ -56,7 +56,7 @@ pub(super) struct InstallerToolGate {
 /// `nfpm` / `makeself` / `snapcraft` / `rpmbuild` / `makensis` are
 /// single-binary stages, so the list has one entry each. `dmg` / `pkg` have
 /// platform-conditional primaries, picked to match the binary the
-/// stage's spawn surface actually invokes on the current host. (The
+/// stage's spawn code actually invokes on the current host. (The
 /// `msi` stage is NOT in this table: its required tool depends on the
 /// resolved WiX *version* — v3 runs `candle`+`light`, v4 runs `wix`,
 /// the Linux path runs `wixl` — so a host-static guess would drift
@@ -70,7 +70,7 @@ pub(super) struct InstallerToolGate {
 ///
 /// The harness's missing-tool detection is best-effort: when a
 /// secondary path is the only one installed on a host, the stage will
-/// still attempt to run and either succeed or surface the failure at
+/// still attempt to run and either succeed or report the failure at
 /// `Command::new` time.
 fn stage_primary_tool(stage: StageId) -> Option<&'static str> {
     match stage {
@@ -88,7 +88,7 @@ fn stage_primary_tool(stage: StageId) -> Option<&'static str> {
         // snapcraft is a config-gated (`snapcrafts:`) host-default Linux
         // producer, single-binary like nfpm/makeself. Gating it here makes a
         // missing `snapcraft` warn-skip in dev and hard-fail with the gate's
-        // remediation message under `--require-tools`, instead of surfacing as
+        // remediation message under `--require-tools`, instead of appearing as
         // a raw `Command::new` spawn failure deep in the child release run.
         StageId::Snapcraft => Some("snapcraft"),
         StageId::Dmg => Some(if cfg!(target_os = "macos") {
@@ -115,13 +115,13 @@ fn stage_primary_tool(stage: StageId) -> Option<&'static str> {
 }
 
 /// Every installer-family stage the harness recognises. Order matches
-/// the surface defined in the module docstring (nfpm before makeself
+/// the order defined in the module docstring (nfpm before makeself
 /// before msi etc.) so the umbrella `--stages=installers` selection
 /// produces a stable order in the report's `stages_under_test` array.
 ///
 /// Re-exported under [`super::installer_stages`] so the CLI parser
 /// can expand `--stages=installers` against the same source of truth
-/// the harness consults — no risk of the two surfaces drifting.
+/// the harness consults — no risk of the two lists drifting.
 pub fn installer_stages() -> Vec<StageId> {
     vec![
         StageId::Nfpm,
@@ -214,7 +214,7 @@ pub(super) fn missing_tool_error(skipped: &[(StageId, String)], require_tools: b
 /// usage and exit non-zero on `--version`. A `--version` probe therefore
 /// reports a present tool as missing and hard-fails the shard (the macOS
 /// dmg/pkg gate did exactly this). A binary that is on `PATH` but genuinely
-/// broken still surfaces at `Command::new` time, so PATH-existence is both
+/// broken still fails at `Command::new` time, so PATH-existence is both
 /// correct for the gate and strictly safer than the version probe.
 /// [`super::Harness::run`] injects this into
 /// [`super::Harness::gate_installer_stages`]; tests inject a stub.

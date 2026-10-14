@@ -71,7 +71,7 @@ fn ci(raw_message: &str, kind: &str, description: &str, hash: &str) -> CommitInf
     }
 }
 
-// ---- extract_co_authors tests ----
+// extract_co_authors tests
 
 #[test]
 fn test_extract_co_authors_basic() {
@@ -105,7 +105,7 @@ fn test_extract_co_authors_no_trailers() {
     assert!(extract_co_authors("feat: just a commit\n\nsome body").is_empty());
 }
 
-// ---- parse_commit_message tests ----
+// parse_commit_message tests
 
 #[test]
 fn test_parse_conventional_commit() {
@@ -678,9 +678,7 @@ fn test_changelog_snapshot_runs_when_opt_in_true() {
     );
 }
 
-// -----------------------------------------------------------------------
 // Tests for include filters
-// -----------------------------------------------------------------------
 
 #[test]
 fn test_apply_include_filters_matching() {
@@ -736,9 +734,7 @@ fn test_apply_include_filters_all_invalid_keeps_everything() {
     assert_eq!(result.len(), 1, "all-invalid include is treated as no-op");
 }
 
-// -----------------------------------------------------------------------
 // Tests for abbrev
-// -----------------------------------------------------------------------
 
 #[test]
 fn test_abbrev_controls_hash_length() {
@@ -841,9 +837,7 @@ fn test_abbrev_default_is_seven() {
     );
 }
 
-// -----------------------------------------------------------------------
 // Tests for config parsing (include, use_source, abbrev)
-// -----------------------------------------------------------------------
 
 #[test]
 fn test_config_parse_filters_include() {
@@ -883,9 +877,7 @@ abbrev: 10
     assert_eq!(cfg.abbrev, Some(10));
 }
 
-// -----------------------------------------------------------------------
 // Test github-native produces empty changelog
-// -----------------------------------------------------------------------
 
 #[test]
 // The stage spawns git in the process cwd, so a test running it contends with every cwd swapper.
@@ -1084,9 +1076,7 @@ fn test_changelog_github_native_aggregates_missing_release_github_warnings() {
     );
 }
 
-// -----------------------------------------------------------------------
 // Test include + exclude together
-// -----------------------------------------------------------------------
 
 #[test]
 fn test_include_and_exclude_are_mutually_exclusive() {
@@ -1121,9 +1111,7 @@ fn test_include_and_exclude_are_mutually_exclusive() {
     assert_eq!(excluded.len(), 3); // feat, fix, docs (WIP excluded)
 }
 
-// -----------------------------------------------------------------------
 // Deep integration tests: full pipeline with realistic commit data
-// -----------------------------------------------------------------------
 
 /// Simulate what ChangelogStage.run does internally: parse commits,
 /// apply filters, sort, group, and render, using realistic conventional
@@ -1448,9 +1436,7 @@ fn test_integration_changelog_empty_after_filters() {
     );
 }
 
-// -----------------------------------------------------------------------
 // Integration test with real git history
-// -----------------------------------------------------------------------
 
 #[test]
 #[serial(cwd)]
@@ -1843,9 +1829,7 @@ fn test_changelog_dist_write_gated_on_preview_flag() {
     }
 }
 
-// -----------------------------------------------------------------------
 // Additional behavior tests — config fields actually do things
-// -----------------------------------------------------------------------
 
 #[test]
 fn test_header_appears_before_changelog_body() {
@@ -2076,7 +2060,7 @@ fn test_changelog_written_to_correct_output_location() {
     );
 }
 
-// ---- Error path tests: malformed inputs / regex / config ----
+// Error path tests: malformed inputs / regex / config
 
 #[test]
 fn test_invalid_exclude_regex_is_warned_and_skipped() {
@@ -2445,9 +2429,7 @@ fn test_changelog_dry_run_writes_nothing_to_dist() {
     );
 }
 
-// -----------------------------------------------------------------------
 // Tests for changelog format template
-// -----------------------------------------------------------------------
 
 #[test]
 fn test_custom_format_template_renders_correctly() {
@@ -2520,9 +2502,7 @@ format: "{{ ShortSHA }} {{ Message }} by {{ AuthorName }}"
     );
 }
 
-// ---------------------------------------------------------------------------
 // Empty/none sort preserves original git log order
-// ---------------------------------------------------------------------------
 
 #[test]
 fn test_sort_empty_preserves_order() {
@@ -2575,9 +2555,7 @@ fn test_sort_desc_still_works() {
     assert_eq!(commits[2].raw_message, "a");
 }
 
-// ---------------------------------------------------------------------------
 // Header/footer template rendering
-// ---------------------------------------------------------------------------
 
 #[test]
 // The stage spawns git in the process cwd, so a test running it contends with every cwd swapper.
@@ -2626,9 +2604,7 @@ fn test_header_with_plain_string_passes_through() {
     assert_eq!(rendered, "# Plain Header");
 }
 
-// -----------------------------------------------------------------------
 // Parity tests: StringOrBool disable, abbrev -1, nested subgroups, Logins
-// -----------------------------------------------------------------------
 
 #[test]
 fn test_config_parse_disable_template_string() {
@@ -3097,9 +3073,7 @@ fn test_abbrev_zero_custom_format_shows_full_sha() {
     );
 }
 
-// -----------------------------------------------------------------------
 // Title, Divider, Paths (Pro features)
-// -----------------------------------------------------------------------
 
 #[test]
 fn test_custom_title() {
@@ -3420,9 +3394,7 @@ fn test_group_depth_with_title() {
     assert!(md.contains("#### UI"), "subgroups at depth 4: {md}");
 }
 
-// -----------------------------------------------------------------------
 // Tests for gitlab and gitea use sources
-// -----------------------------------------------------------------------
 
 #[test]
 fn test_config_parse_use_source_gitlab() {
@@ -3552,9 +3524,7 @@ fn test_changelog_stage_gitea_falls_back_to_git_no_token() {
     );
 }
 
-// -----------------------------------------------------------------------
 // C-new-19: SCM mode pre-empts to git fallback when no previous tag
-// -----------------------------------------------------------------------
 
 #[test]
 fn test_should_preempt_scm_to_git_github_no_prev_tag() {
@@ -4097,7 +4067,7 @@ fn test_render_changelog_gitea_default_format_with_login() {
     );
 }
 
-// ---- AuthorsList / LoginsList structured per-entry vars ----
+// AuthorsList / LoginsList structured per-entry vars
 
 #[test]
 fn test_render_authors_list_structured_for_iteration() {
@@ -4221,7 +4191,7 @@ fn test_render_logins_list_with_english_join_filter() {
     );
 }
 
-// ---- Keep-a-Changelog merge tests ----
+// Keep-a-Changelog merge tests
 
 use crate::render::{MergeArgs, merge_into_changelog};
 
@@ -4683,9 +4653,7 @@ fn non_kac_file_behavior_unchanged() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // Bullet de-duplication + Login/AuthorUsername fallback (local-git render path).
-// ---------------------------------------------------------------------------
 
 /// One default-format commit gets exactly one leading `* ` bullet.
 #[test]
@@ -5030,10 +4998,8 @@ fn anodizer_shaped_format_single_bullet_and_named_author() {
     assert_eq!(line, "* ef88059e close audit gaps (TJ Smith)", "{md:?}");
 }
 
-// ---------------------------------------------------------------------------
 // refresh_*_unreleased + render_changelog_json — generate-only [Unreleased]
 // regeneration and JSON serialization over a real git repo.
-// ---------------------------------------------------------------------------
 
 mod refresh_unreleased_tests {
     use std::path::Path;
@@ -5470,7 +5436,7 @@ line two\n\
         std::fs::write(root.join("a.txt"), "x").unwrap();
         commit(root, "feat: a real commit");
 
-        // A typo'd upper bound must surface as an error rather than a
+        // A typo'd upper bound must be reported as an error rather than a
         // silently-empty changelog.
         let result = refresh_crate_unreleased(root, "mylib", root, None, Some("nope-not-a-ref"));
         let err = result.expect_err("nonexistent to_ref must be an error");
@@ -5598,7 +5564,7 @@ line two\n\
         );
     }
 
-    // -- Multitrack root aggregate (PerCrate) -------------------------------
+    // Multitrack root aggregate (PerCrate)
     //
     // These exercise the topology-driven root aggregate: a fresh/empty/foreign
     // root must NOT lose any crate's commits (R3), must omit empty crates (R4),
@@ -5936,7 +5902,7 @@ line two\n\
         assert!(text.contains("[v0.2.0]: https://github.com/o/r/releases/tag/v0.2.0"));
     }
 
-    // -- H1 title rules ----------------------------------------------------
+    // H1 title rules
     //
     // ROOT changelog H1 = the project header (`# Changelog`, or the configured
     // `changelog.header` rendered with `{{ ProjectName }}`), NEVER a crate name.

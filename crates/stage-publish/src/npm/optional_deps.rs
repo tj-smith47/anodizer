@@ -443,7 +443,7 @@ fn npm_name_part_ok(part: &str) -> bool {
 /// Validate a configured `scope:` shape once up front: `@` followed by a
 /// legal npm name part. Errors blame the scope itself, so a bad scope is
 /// caught identically on the default and template naming paths at config
-/// time instead of surfacing as a registry 4xx (or a confusing rendered-name
+/// time instead of showing up as a registry 4xx (or a confusing rendered-name
 /// error) mid-release.
 fn validate_npm_scope(scope: &str) -> Result<()> {
     let ok = scope

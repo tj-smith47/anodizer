@@ -9,9 +9,7 @@ use crate::EnvSource;
 use crate::config::PartialConfig;
 use crate::target;
 
-// ---------------------------------------------------------------------------
 // PartialTarget — resolved target filter
-// ---------------------------------------------------------------------------
 
 /// A resolved partial build target filter.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -158,9 +156,7 @@ impl PartialTarget {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Target resolution — env vars → host detection
-// ---------------------------------------------------------------------------
 
 /// Resolve the partial build target from environment variables and config.
 ///
@@ -390,9 +386,7 @@ fn synthesize_triple_with_overrides(
     }
 }
 
-// ---------------------------------------------------------------------------
 // Host-buildable target filtering (--host-targets)
-// ---------------------------------------------------------------------------
 
 /// Why a configured target cannot be built on the current host. Each
 /// variant maps to a cross-compile case anodizer's cargo-zigbuild path
@@ -558,9 +552,7 @@ pub fn suggest_runner(os: &str) -> &'static str {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
@@ -568,9 +560,7 @@ mod tests {
     use crate::config::PartialConfig;
     use serial_test::serial;
 
-    // -----------------------------------------------------------------------
     // PartialTarget filtering
-    // -----------------------------------------------------------------------
 
     #[test]
     fn test_exact_filter_matches_one() {
@@ -664,9 +654,7 @@ mod tests {
         );
     }
 
-    // -----------------------------------------------------------------------
     // Dist subdirectory naming
-    // -----------------------------------------------------------------------
 
     #[test]
     fn test_dist_subdir_exact() {
@@ -716,9 +704,7 @@ mod tests {
         assert_ne!(target.dist_subdir(), "linux_amd64");
     }
 
-    // -----------------------------------------------------------------------
     // PartialTarget::Targets — explicit triple list (sharded build / harness)
-    // -----------------------------------------------------------------------
 
     #[test]
     fn test_targets_filter_matches_intersection() {
@@ -774,9 +760,7 @@ mod tests {
         assert_eq!(target.dist_subdir(), "targets-empty");
     }
 
-    // -----------------------------------------------------------------------
     // Host detection
-    // -----------------------------------------------------------------------
 
     #[test]
     #[serial(path_env)]
@@ -815,9 +799,7 @@ mod tests {
         assert!(host.contains('-'), "host triple should contain '-': {host}");
     }
 
-    // -----------------------------------------------------------------------
     // resolve_partial_target (without env vars — tests host fallback)
-    // -----------------------------------------------------------------------
 
     #[test]
     fn test_resolve_with_os_default() {
@@ -891,9 +873,7 @@ mod tests {
         assert!(err.to_string().contains("unknown value"), "got: {}", err);
     }
 
-    // -----------------------------------------------------------------------
     // Runner suggestion
-    // -----------------------------------------------------------------------
 
     #[test]
     fn test_suggest_runner() {
@@ -903,9 +883,7 @@ mod tests {
         assert_eq!(suggest_runner("freebsd"), "ubuntu-latest");
     }
 
-    // -----------------------------------------------------------------------
     // resolve_host_target_with_env (--single-target path)
-    // -----------------------------------------------------------------------
 
     #[test]
     fn resolve_host_target_honours_target_env_override() {
@@ -960,9 +938,7 @@ mod tests {
         assert_eq!(synthesized, "aarch64-unknown-linux-gnu");
     }
 
-    // -----------------------------------------------------------------------
     // find_runtime_target (host-alias fallback for --single-target)
-    // -----------------------------------------------------------------------
 
     #[test]
     fn find_runtime_matches_exact() {
@@ -991,9 +967,7 @@ mod tests {
         assert!(m.is_none());
     }
 
-    // -----------------------------------------------------------------------
     // host_buildable_targets (--host-targets)
-    // -----------------------------------------------------------------------
 
     const LINUX_HOST: &str = "x86_64-unknown-linux-gnu";
     const MAC_HOST: &str = "aarch64-apple-darwin";

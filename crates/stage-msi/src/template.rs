@@ -11,9 +11,7 @@ use anyhow::{Context as _, Result};
 
 use anodizer_core::context::Context;
 
-// ---------------------------------------------------------------------------
 // .wxs template rendering
-// ---------------------------------------------------------------------------
 
 /// Read a `.wxs` file and render it through the template engine.
 ///
@@ -60,9 +58,7 @@ pub(super) fn msi_legal_version(version: &str) -> String {
     format!("{}.{}.{}", field(), field(), field())
 }
 
-// ---------------------------------------------------------------------------
 // Artifact creation helper
-// ---------------------------------------------------------------------------
 
 /// Populate per-binary template variables. `BinaryPath` exposes the path
 /// to user `.wxs` templates; `MsiProductCode` exposes the deterministic

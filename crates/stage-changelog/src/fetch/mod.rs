@@ -96,7 +96,7 @@ fn run_git_log(args: &[String], range: &str) -> Result<Option<String>> {
         .with_context(|| "failed to invoke git log".to_string())?;
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr);
-        // A typo'd or nonexistent `from`/`to` ref must surface as an error
+        // A typo'd or nonexistent `from`/`to` ref must be reported as an error
         // rather than a silently-empty changelog: git names it an
         // unknown/ambiguous revision. Any other non-zero exit (e.g. an empty
         // range on git versions that exit non-zero for that) is still treated
@@ -202,9 +202,7 @@ pub(crate) fn push_with_squashed(
 pub(crate) fn parse_git_log_records(text: &str) -> Vec<anodizer_core::git::Commit> {
     anodizer_core::git::parse_commit_output(text)
 }
-// ---------------------------------------------------------------------------
 // Helper: SCM pre-empt decision
-// ---------------------------------------------------------------------------
 
 /// Returns `true` when an SCM-mode changelog should pre-empt to the git
 /// fallback because there is no previous tag to compare against.
@@ -223,9 +221,7 @@ pub(crate) fn should_preempt_scm_to_git(
     (use_github || use_gitlab || use_gitea) && prev_tag.is_none()
 }
 
-// ---------------------------------------------------------------------------
 // Helper: fetch commits from local git
-// ---------------------------------------------------------------------------
 
 /// Fetch git commits scoped by `scope.dirs`, then apply the precise
 /// `changelog.paths` glob intersect ([`anodizer_core::changelog_scope::ChangelogScope::narrow`]).

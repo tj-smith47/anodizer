@@ -58,9 +58,7 @@ fn compound_spdx_license_emitted_verbatim() {
     assert_eq!(json["license"], "MIT OR Apache-2.0");
 }
 
-// -----------------------------------------------------------------------
 // Deep integration tests: verify manifest JSON structure
-// -----------------------------------------------------------------------
 
 /// Helper to build a single 64bit ArchEntry for test convenience.
 fn arch_64(url: &str, hash: &str) -> Vec<ArchEntry> {
@@ -252,9 +250,7 @@ fn test_manifest_no_autoupdate_even_with_slug() {
     );
 }
 
-// -----------------------------------------------------------------------
 // Additional behavior tests — config fields actually do things
-// -----------------------------------------------------------------------
 
 #[test]
 fn test_scoop_manifest_architecture_structure() {
@@ -345,9 +341,7 @@ fn test_scoop_manifest_homepage_derived_from_name() {
     assert_eq!(json["homepage"], "https://github.com/my-tool");
 }
 
-// -----------------------------------------------------------------------
 // New fields: homepage, persist, depends, pre/post_install, shortcuts
-// -----------------------------------------------------------------------
 
 #[test]
 fn test_manifest_custom_homepage() {
@@ -516,9 +510,7 @@ fn test_manifest_all_new_fields_together() {
     assert!(json["shortcuts"].is_array());
 }
 
-// -----------------------------------------------------------------------
 // Multi-arch manifest tests (32bit + 64bit + arm64)
-// -----------------------------------------------------------------------
 
 #[test]
 fn test_manifest_multi_arch_all_three() {
@@ -590,9 +582,7 @@ fn test_manifest_multi_arch_all_three() {
     );
 }
 
-// -----------------------------------------------------------------------
 // wrap_in_directory tests
-// -----------------------------------------------------------------------
 
 #[test]
 fn test_manifest_wrap_in_directory_single_bin() {
@@ -688,9 +678,7 @@ fn test_manifest_no_wrap_emits_bin_as_array() {
     );
 }
 
-// -----------------------------------------------------------------------
 // checkver + autoupdate
-// -----------------------------------------------------------------------
 
 /// With `checkver` + sidecar hash mode, the manifest carries
 /// `checkver: github` and an `autoupdate` block whose per-arch url has the
@@ -785,13 +773,9 @@ fn test_scoop_no_autoupdate_omits_both_keys() {
     assert!(json.get("autoupdate").is_none());
 }
 
-// -----------------------------------------------------------------------
 // skip_upload tests (reuses should_skip_upload from homebrew)
-// -----------------------------------------------------------------------
 
-// -----------------------------------------------------------------------
 // Scoop manifest name override
-// -----------------------------------------------------------------------
 
 #[test]
 fn test_manifest_name_override() {
@@ -813,13 +797,9 @@ fn test_manifest_name_override() {
     );
 }
 
-// -----------------------------------------------------------------------
 // Scoop manifest directory placement (dry-run test)
-// -----------------------------------------------------------------------
 
-// -----------------------------------------------------------------------
 // Scoop commit message template (uses shared render_commit_msg)
-// -----------------------------------------------------------------------
 
 #[test]
 fn test_scoop_commit_msg_default() {
@@ -855,9 +835,7 @@ fn test_scoop_commit_msg_custom() {
     assert_eq!(msg, "scoop: bump mytool to 3.0.0");
 }
 
-// -----------------------------------------------------------------------
 // Multi-artifact disambiguation tests
-// -----------------------------------------------------------------------
 
 use anodizer_core::log::{StageLogger, Verbosity};
 

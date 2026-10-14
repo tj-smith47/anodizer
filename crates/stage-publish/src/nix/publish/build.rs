@@ -17,9 +17,7 @@ pub(crate) fn pr_title(name: &str, version: &str) -> String {
     format!("Update {} to {}", name, version)
 }
 
-// ---------------------------------------------------------------------------
 // Artifact + archive helpers
-// ---------------------------------------------------------------------------
 
 /// The nix system for a platform artifact, or `None` when it is not
 /// nix-installable.
@@ -152,9 +150,7 @@ pub(super) fn unique_dep_args(deps: &[NixDependency]) -> Vec<String> {
         .collect()
 }
 
-// ---------------------------------------------------------------------------
 // Install + sourceRoot + dyn-link detection
-// ---------------------------------------------------------------------------
 
 /// Builds the lines that compose the Nix `installPhase`. Falls back to
 /// the auto-generated `mkdir -p $out/bin; cp …` block when no custom
@@ -430,9 +426,7 @@ pub(super) fn detect_dynamically_linked(ctx: &Context, crate_name: &str) -> anyh
     Ok(false)
 }
 
-// ---------------------------------------------------------------------------
 // Formatter + commit/push helpers
-// ---------------------------------------------------------------------------
 
 /// Runs the configured `alejandra` / `nixfmt` formatter against the
 /// generated derivation. Formatting is opt-in (no `formatter` set is a
@@ -457,7 +451,7 @@ pub(super) fn run_formatter(nix_cfg: &NixConfig, nix_file: &Path, log: &StageLog
     // Detect-and-fail-loud (no runtime auto-install) — consistent with
     // cosign/syft being required-present. The CI base image
     // (anodizer-action `install:`) provisions the formatter. A genuine probe
-    // error (e.g. permission denied) surfaces as itself rather than the
+    // error (e.g. permission denied) shows up as itself rather than the
     // misleading "not found on PATH" remedy.
     match anodizer_core::tool_detect::runs(formatter) {
         anodizer_core::tool_detect::ToolProbe::Available => {}

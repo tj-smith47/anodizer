@@ -13,7 +13,7 @@
 //! - `runtime_allowlist`: operator-supplied opt-outs via the
 //!   `--allow-nondeterministic <name>=<reason>` CLI flag.
 //!
-//! Both lists are surfaced into the run-summary JSON
+//! Both lists are written into the run-summary JSON
 //! (`determinism_allowlist.compile_time` and `.runtime`) and the
 //! per-artifact `PublishEvidence.nondeterministic` field. On collision
 //! between the two lists, the compile-time reason wins on the per-
@@ -151,7 +151,7 @@ pub fn host_is_windows_msvc() -> bool {
         Err(e) => {
             // A bare `rustc` failure here is benign on the common non-Windows
             // host, but on windows-msvc it silently drops the reproducibility
-            // flags — surface it so the skipped-determinism decision is traceable.
+            // flags — report it so the skipped-determinism decision is traceable.
             tracing::warn!(
                 error = %e,
                 "host-target detection failed; treating host as non-windows-msvc and skipping MSVC determinism flags"
@@ -181,7 +181,7 @@ pub fn host_is_macos() -> bool {
             // On a non-macOS host this is the right answer; on a genuine
             // macOS host a swallowed `rustc` failure would un-gate the
             // unproven pkgbuild `.pkg` and risk a false drift finding —
-            // surface it so the decision is auditable.
+            // report it so the decision is auditable.
             tracing::warn!(
                 error = %e,
                 "host-target detection failed; treating host as non-macOS (Linux xar .pkg path is gated, not allow-listed)"
@@ -263,7 +263,7 @@ impl DeterminismState {
         // are NOT here — they are gated so a real regression is caught.
         // Each entry carries its `.sha256` sidecar: the sidecar hashes a
         // non-deterministic source so it is itself non-deterministic, but
-        // not an independent finding worth surfacing.
+        // not an independent finding worth reporting.
         //
         // `.deb` / `.rpm` are allow-listed BECAUSE the real config GPG-signs
         // them (`deb.signature.key_file` / `rpm.signature.key_file` driven by
@@ -331,7 +331,7 @@ impl DeterminismState {
         // serial/namespace must be unique per document, so two runs over
         // byte-identical inputs still produce differing SBOM bytes. These
         // SBOMs are excluded from the reproducibility
-        // guarantee. Surfaced in the report, excluded from `drift_count`.
+        // guarantee. Listed in the report, excluded from `drift_count`.
         // Extensions mirror `infer_stage_from_path`'s `sbom` classifier.
         let sbom_allow: &[(&str, &str)] = &[
             (
@@ -362,7 +362,7 @@ impl DeterminismState {
         // harness's aggregate registry (see [`AggregateKind`]), which excuses
         // an aggregate's drift IFF every differing member is itself
         // allow-listed — the transitive-derivation rule — and otherwise
-        // surfaces the offending member as a real regression.
+        // reports the offending member as a real regression.
 
         Ok(Self {
             sde: commit_ts,
@@ -415,9 +415,7 @@ fn matches_artifact_pattern(pattern: &str, artifact: &str) -> bool {
     pattern == artifact
 }
 
-// ---------------------------------------------------------------------------
 // Aggregate-artifact registry — the transitive-derivation rule
-// ---------------------------------------------------------------------------
 //
 // An *aggregate* is a file whose bytes are a deterministic function of a set
 // of *member* artifacts (a checksums file lists `<digest>  <name>` per member;
@@ -429,7 +427,7 @@ fn matches_artifact_pattern(pattern: &str, artifact: &str) -> bool {
 //
 // The registry lets the determinism harness reconstruct an aggregate's members
 // from both runs and excuse its drift IFF every *differing* member is itself
-// allow-listed; any differing member that is NOT allow-listed is surfaced as a
+// allow-listed; any differing member that is NOT allow-listed is reported as a
 // real regression. The two ids below are the compile-time coupling anchor: each
 // producer references its id (mirroring the `MSVC_DETERMINISM_RUSTFLAGS` ↔
 // `.cargo/config.toml` coupling above), so a producer and its registry entry
@@ -450,7 +448,7 @@ pub const ARTIFACTS_MANIFEST_AGGREGATE_ID: &str = "artifacts-manifest";
 /// Implementors parse the aggregate's bytes into a `unit_key -> member`
 /// map. A *unit* is one line / one manifest entry; its `unit_key` is
 /// content-sensitive (it folds in the recorded digest) so a value-change
-/// for a stable member identity surfaces as an add/remove pair across
+/// for a stable member identity shows up as an add/remove pair across
 /// runs. The `member` is the artifact basename the harness resolves
 /// against the determinism allow-list.
 pub trait AggregateKind {
@@ -522,7 +520,7 @@ impl AggregateKind for CombinedChecksums {
                 .filter(|s| !s.is_empty())
                 .with_context(|| format!("checksum line missing a filename field: {line:?}"))?;
             // unit_key = the whole line: a changed digest yields a new line,
-            // surfaced as an add/remove of the same member across runs.
+            // reported as an add/remove of the same member across runs.
             out.insert(line.to_string(), filename.to_string());
         }
         Ok(out)
@@ -575,7 +573,7 @@ impl AggregateKind for ArtifactsManifest {
                 .map(str::to_string)
                 .unwrap_or_else(|| serde_json::to_string(entry).unwrap_or_default());
             // unit_key folds the digest into the path identity so a
-            // value-change (same path, new digest) surfaces as an add/remove
+            // value-change (same path, new digest) shows up as an add/remove
             // pair judged by `member`'s allow-list status. U+001F is the ASCII
             // unit separator — it cannot occur in a path or hex digest.
             let unit_key = format!("{path}\u{1f}{token}");

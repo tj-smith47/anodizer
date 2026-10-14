@@ -7,7 +7,7 @@
 //!   failure path, AFTER rollback has been attempted. The
 //!   `rollback_happened` flag is RUN-WIDE — true if any publisher was
 //!   rolled back (or rollback was attempted and failed) during this run —
-//!   and is exposed as `{{ .RolledBack }}` in the hook template surface.
+//!   and is exposed as `{{ .RolledBack }}` in the hook template variables.
 //!
 //! Effective hooks are resolved per publisher from the in-scope crates'
 //! `publish:` blocks via `publish.on_error`.
@@ -67,7 +67,7 @@ fn group_label(group: PublisherGroup) -> &'static str {
 /// per-crate vars — the single source of truth for the template binding
 /// ([`bind_failure_vars`]). Every key here must have a matching
 /// [`FAILURE_ENV_VARS`] entry so the env channel never silently lags the
-/// template surface; the exhaustiveness test pins that invariant.
+/// template variables; the exhaustiveness test pins that invariant.
 /// `Version` / `Tag` are deliberately absent: they are already bound on
 /// `ctx.template_vars()` for the current crate scope, so they resolve
 /// per-crate correctly in every config mode without re-binding here.
@@ -91,7 +91,7 @@ fn failure_var_values(
     ]
 }
 
-/// Bind the failure-hook template surface ([`failure_var_values`]) on top
+/// Bind the failure-hook template variables ([`failure_var_values`]) on top
 /// of the standard per-crate vars: `{{ .Publisher }}`, `{{ .Error }}`,
 /// `{{ .Group }}`, `{{ .Required }}`, `{{ .RolledBack }}`, `{{ .RunReport }}`.
 fn bind_failure_vars(
@@ -109,7 +109,7 @@ fn bind_failure_vars(
 }
 
 /// `ANODIZER_*` env var → template var pairs exported to the hook process.
-/// The env channel carries the SAME values as the template surface but
+/// The env channel carries the SAME values as the template variables but
 /// reaches the hook without passing through `sh -c` parsing — `.Error`
 /// holds remote-controlled text (HTTP error bodies, git stderr), so
 /// interpolating it into the command string is a shell-injection vector,
@@ -127,7 +127,7 @@ const FAILURE_ENV_VARS: [(&str, &str); 8] = [
 
 /// Project the bound vars into `ANODIZER_*` env pairs via `env_table`.
 /// Reading back from `vars` (rather than re-deriving from the publisher
-/// result) keeps the env channel equal to the template surface by
+/// result) keeps the env channel equal to the template variables by
 /// construction — including the per-crate-scoped `Version` / `Tag` already
 /// bound on the context.
 fn project_env(vars: &TemplateVars, env_table: &[(&str, &str)]) -> Vec<(String, String)> {
@@ -174,11 +174,11 @@ pub(crate) fn run_report_var(ctx: &Context) -> String {
 /// publisher's failure message (the `{{ .Error }}` value).
 ///
 /// Honors `--skip=on-error`, the same token that suppresses the root
-/// `on_error:` lane — one flag covers both surfaces, exactly as
+/// `on_error:` lane — one flag covers both lanes, exactly as
 /// `--skip=before` / `--skip=after` cover the root and per-crate lanes.
 /// `rollback_happened` is RUN-WIDE — true if any publisher was rolled back
 /// (or rollback was attempted and failed) during this run — and is exposed
-/// as `{{ .RolledBack }}` in the template surface.
+/// as `{{ .RolledBack }}` in the template variables.
 /// `run_report` is the `{{ .RunReport }}` value — the persisted run-report
 /// path, or empty when none exists. It is invariant across a run's fan-out,
 /// so the caller derives it once ([`run_report_var`]) and threads it down.
@@ -218,7 +218,7 @@ pub(crate) fn fire_on_error(
 /// vars — the single source of truth for the on_rollback template binding
 /// ([`bind_rollback_vars`]). Every key here must have a matching
 /// [`ROLLBACK_ENV_VARS`] entry so the env channel never silently lags the
-/// template surface; the exhaustiveness test pins that invariant. `Version` /
+/// template variables; the exhaustiveness test pins that invariant. `Version` /
 /// `Tag` are deliberately absent (already bound per-crate on
 /// `ctx.template_vars()`), mirroring [`failure_var_values`].
 fn rollback_var_values(
@@ -244,7 +244,7 @@ fn rollback_var_values(
     ]
 }
 
-/// Bind the on_rollback template surface ([`rollback_var_values`]) on top of
+/// Bind the on_rollback template variables ([`rollback_var_values`]) on top of
 /// the standard per-crate vars: `{{ .Publisher }}`, `{{ .Group }}`,
 /// `{{ .Required }}`, `{{ .RollbackFailed }}`, `{{ .Error }}`, `{{ .Reason }}`.
 fn bind_rollback_vars(
@@ -392,7 +392,7 @@ mod tests {
     }
 
     /// `--skip=on-error` covers the per-publisher `publish.on_error:`
-    /// surface as well as the root lane, so one flag suppresses failure
+    /// lane as well as the root lane, so one flag suppresses failure
     /// notification everywhere it can fire — the same reach `--skip=before`
     /// / `--skip=after` have over the root and per-crate lanes.
     #[test]
@@ -831,12 +831,10 @@ mod tests {
         );
     }
 
-    // -----------------------------------------------------------------------
-    // on_rollback firing surface
-    // -----------------------------------------------------------------------
+    // on_rollback firing
 
     /// A clean revert (`rollback_failed = false`) binds the publisher context
-    /// on the template surface with `.RollbackFailed = false` and an empty
+    /// in the template variables with `.RollbackFailed = false` and an empty
     /// `.Error`.
     #[test]
     fn on_rollback_fires_with_publisher_group_required_vars() {
@@ -873,7 +871,7 @@ mod tests {
         );
     }
 
-    /// A failed revert (`rollback_failed = true`) surfaces `.RollbackFailed`
+    /// A failed revert (`rollback_failed = true`) reports `.RollbackFailed`
     /// and carries the rollback failure message in `.Error`.
     #[test]
     fn on_rollback_marks_rollback_failed_with_error_message() {
@@ -959,7 +957,7 @@ mod tests {
         }
     }
 
-    /// The env channel must mirror the on_rollback template surface exactly —
+    /// The env channel must mirror the on_rollback template variables exactly —
     /// the same invariant [`env_channel_mirrors_failure_var_surface_exactly`]
     /// pins for `on_error`. `Version` / `Tag` are ambient (bound by the
     /// context per-crate), so they appear on the env side but not in

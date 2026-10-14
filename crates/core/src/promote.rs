@@ -6,7 +6,7 @@
 //! flip. It is a cross-publisher capability, not snap-specific: four publishers
 //! own the mechanic and each speaks its own track vocabulary.
 //!
-//! This module defines the publisher-agnostic surface the `anodizer promote`
+//! This module defines the publisher-agnostic API the `anodizer promote`
 //! verb fans out over:
 //!
 //! * [`Promotable`] — the capability a promotion-capable publisher implements.

@@ -774,11 +774,9 @@ async fn async_retries_until_success() {
     assert_eq!(calls.load(Ordering::SeqCst), 2);
 }
 
-// -----------------------------------------------------------------------
 // is_network_error / is_retriable / HttpError / Retriable
 //
 // Network-error classification test cases.
-// -----------------------------------------------------------------------
 
 /// Plain string error wrapper used in classification tests.
 #[derive(Debug)]
@@ -814,7 +812,7 @@ fn network_error_substrings_match() {
         "net/http: timeout awaiting response headers",
         "context deadline exceeded",
         // DNS-resolution failures across platforms (hyper-util connector
-        // surfaces these via reqwest as `client error (Connect): dns
+        // reports these via reqwest as `client error (Connect): dns
         // error: <platform tail>`). Every known tail is pinned so a
         // cross-platform CI failure cannot reintroduce the gap.
         "client error (Connect): dns error: failed to lookup address information: Name or service not known",
@@ -836,7 +834,7 @@ fn network_error_io_eof_kinds() {
     assert!(is_network_error(&e2));
 }
 
-// Windows-CI regression: connect() on Windows surfaces transient failures
+// Windows-CI regression: connect() on Windows reports transient failures
 // as io::Error { kind: TimedOut, message: "operation timed out" }, neither
 // of which matched the original EOF-only kind check or the
 // needle list. Same shape for the connection-* kinds across platforms —
@@ -1183,7 +1181,7 @@ fn is_retriable_chain_walks_to_http_error() {
     assert!(is_retriable(wrapped.as_ref()));
 }
 
-// ----- as_ref vs root_cause --------------------------------------------
+// as_ref vs root_cause
 //
 // Every consumer of the HTTP retry helpers classifies via
 // `is_retriable(err.as_ref())`, which reaches `HttpError` whatever the inner
@@ -1226,7 +1224,7 @@ fn classifier_root_cause_misses_a_429_whose_inner_has_its_own_cause() {
     assert!(!is_retriable(wrapped.root_cause()));
 }
 
-// ----- retry_http_blocking behavioural tests ---------------------------
+// retry_http_blocking behavioural tests
 //
 // `reqwest::Error` has no public constructor, so the transport-error
 // branch is exercised indirectly via per-publisher integration tests
@@ -1363,7 +1361,7 @@ fn retry_http_blocking_redirect_class_alters_success_predicate() {
     ]);
     let client = reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(2))
-        // Disable redirect-following so the 307 surfaces to the helper.
+        // Disable redirect-following so the 307 reaches the helper.
         .redirect(reqwest::redirect::Policy::none())
         .build()
         .expect("client");
@@ -1383,7 +1381,7 @@ fn retry_http_blocking_redirect_class_alters_success_predicate() {
     assert_eq!(status.as_u16(), 307);
 }
 
-// ----- retry_http_blocking_bytes behavioural tests ---------------------
+// retry_http_blocking_bytes behavioural tests
 
 #[test]
 fn retry_http_blocking_bytes_preserves_non_utf8_body() {
@@ -1494,7 +1492,7 @@ fn retry_http_blocking_bytes_retries_5xx_then_succeeds() {
     assert_eq!(calls.load(Ordering::SeqCst), 2, "one retry then success");
 }
 
-/// Under `AllowRedirects` the bytes variant treats a surfaced 3xx as success
+/// Under `AllowRedirects` the bytes variant treats a returned 3xx as success
 /// (never invoking the error formatter), mirroring the text variant. Pins the
 /// `success_class` predicate's redirect arm for the bytes path.
 #[test]
@@ -1504,7 +1502,7 @@ fn retry_http_blocking_bytes_redirect_class_is_success() {
     ]);
     let client = reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(2))
-        // Disable redirect-following so the 307 surfaces to the helper.
+        // Disable redirect-following so the 307 reaches the helper.
         .redirect(reqwest::redirect::Policy::none())
         .build()
         .expect("client");
@@ -1574,7 +1572,7 @@ fn retry_http_blocking_bytes_transport_error_retries_then_fails() {
 fn classify_http_sync_maps_status_and_transport_to_controlflow() {
     let client = reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(2))
-        // Surface 3xx to the classifier rather than following it.
+        // Pass 3xx to the classifier rather than following it.
         .redirect(reqwest::redirect::Policy::none())
         .build()
         .expect("client");
@@ -1633,7 +1631,7 @@ fn classify_http_sync_maps_status_and_transport_to_controlflow() {
     );
 }
 
-// ----- retry_http_async behavioural tests ------------------------------
+// retry_http_async behavioural tests
 //
 // Mirrors the blocking suite but drives an async reqwest::Client against
 // the same hand-rolled TCP responder (running on a worker thread, so the
@@ -1767,7 +1765,7 @@ async fn retry_http_async_429_retries_then_succeeds() {
     assert_eq!(calls.load(Ordering::SeqCst), 2);
 }
 
-// ----- transport-error behavioural tests -------------------------------
+// transport-error behavioural tests
 //
 // The transport-error arm (Err(reqwest::Error): DNS failure, connection
 // refused, EOF, TLS handshake failure, etc.) is the single most
@@ -1780,7 +1778,7 @@ async fn retry_http_async_429_retries_then_succeeds() {
 //
 // Pinned here:
 //   1. the helper retries (attempt counter > 1)
-//   2. eventually surfaces an Err with the configured label in the chain
+//   2. eventually returns an Err with the configured label in the chain
 // The outer attempt counter is incremented inside the closure, so it
 // sees one bump per attempt regardless of the underlying transport
 // outcome.
@@ -1865,9 +1863,7 @@ async fn retry_http_async_transport_error_retries_then_fails() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // PublisherRetryScope — one budget anchor per publisher invocation
-// ---------------------------------------------------------------------------
 
 #[test]
 fn budget_anchor_is_absent_outside_any_publisher_scope() {

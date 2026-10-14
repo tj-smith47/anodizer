@@ -188,7 +188,7 @@ pub(super) fn crate_has_active_cargo_publisher(c: &CrateConfig) -> bool {
 /// capping the climb here would find the wrong root and silently diverge
 /// from what `cargo publish` itself would resolve. Every `read_to_string` /
 /// `toml::from_str` failure along the way is `.ok()`-swallowed rather than
-/// surfaced: this function only READS candidate `Cargo.toml`s to test for a
+/// reported: this function only READS candidate `Cargo.toml`s to test for a
 /// `[workspace]` table, so a missing or malformed file at any ancestor is
 /// just "not a workspace root here" — never a mutation, never unsafe to
 /// ignore.

@@ -31,7 +31,7 @@ use crate::store::build_store_with_retry;
 /// Hard wall-clock ceiling on one endpoint's canary round-trip so a
 /// black-holed route or hung TLS converts into a probe error instead of
 /// hanging the preflight gate. Exceeds the client connect timeout (30s) so a
-/// refused / unreachable endpoint surfaces its real error first.
+/// refused / unreachable endpoint reports its real error first.
 const PREFLIGHT_PROBE_TIMEOUT: Duration = Duration::from_secs(45);
 
 /// Bytes PUT by the canary. Tiny and fixed — the probe validates

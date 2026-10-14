@@ -14,7 +14,7 @@ use std::process::Command;
 ///   (typically: docker is present but buildx plugin not installed).
 /// `Err(_)` — `docker` itself could not be spawned (binary missing,
 ///   permission denied). Distinct from `Ok(false)` so callers can log the
-///   underlying `io::Error` at trace level when surfacing "docker not
+///   underlying `io::Error` at trace level when reporting "docker not
 ///   available" vs. "docker installed but buildx missing".
 pub fn buildx_available() -> io::Result<bool> {
     Command::new("docker")

@@ -1,8 +1,6 @@
 use super::*;
 
-// ---------------------------------------------------------------------------
 // Default resolution
-// ---------------------------------------------------------------------------
 
 /// Resolved AUR `Default()`-time fields: conflicts, provides, and pkgrel.
 /// Extracted from `publish_to_aur` so the defaults can be exercised in
@@ -95,9 +93,7 @@ pub(crate) fn aur_resolve_defaults(
     }
 }
 
-// ---------------------------------------------------------------------------
 // publish_to_aur — per-section helpers
-// ---------------------------------------------------------------------------
 
 /// Owned, post-default field set fed into `PkgbuildParams`. Built once
 /// by [`aur_resolve_fields`] from the active `aur:` config + project
@@ -125,7 +121,7 @@ pub(crate) struct AurResolvedFields {
 /// `ssh://aur@aur.archlinux.org/<package>.git` from the resolved package
 /// name (rendered the same way the PKGBUILD path renders `aur.name`), so the
 /// push target tracks `pkgbase`/`pkgname` and cannot drift. A broken
-/// `aur.name` template falls back to the raw value here and is surfaced
+/// `aur.name` template falls back to the raw value here and is reported
 /// (once) by the downstream PKGBUILD render.
 pub(crate) fn aur_resolve_push_git_url(
     ctx: &Context,
@@ -345,7 +341,7 @@ pub(crate) fn aur_resolve_fields(
     let raw_package_name = aur_default_package_name(aur_cfg, crate_name);
     // Render the resolved name through the template engine — users who set
     // `aur.name: "{{ .ProjectName }}-bin"` rely on this. On render failure
-    // (typically a malformed template like `{{ unclosed`), surface a warning
+    // (typically a malformed template like `{{ unclosed`), report a warning
     // and fall back to the raw value: a visible warning beats a silent
     // swallow without breaking a currently-malformed user build.
     let package_name = util::render_or_warn(ctx, log, "aur.name", &raw_package_name)?;

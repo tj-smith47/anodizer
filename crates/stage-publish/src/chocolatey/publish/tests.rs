@@ -47,9 +47,7 @@ fn ctx_with_choco_opts(cfg: ChocolateyConfig, opts: ContextOptions) -> Context {
     Context::new(config, opts)
 }
 
-// -----------------------------------------------------------------
 // check_skip_publish
-// -----------------------------------------------------------------
 
 #[test]
 fn check_skip_publish_returns_false_when_skip_is_none() {
@@ -113,9 +111,7 @@ fn check_skip_publish_propagates_render_error_with_context() {
     assert!(msg.contains("mytool"), "{msg}");
 }
 
-// -----------------------------------------------------------------
 // resolve_metadata
-// -----------------------------------------------------------------
 
 #[test]
 fn resolve_metadata_falls_back_to_project_metadata_for_license_and_description() {
@@ -241,9 +237,7 @@ fn resolve_metadata_missing_license_returns_actionable_bail() {
     );
 }
 
-// -----------------------------------------------------------------
 // select_windows_artifacts
-// -----------------------------------------------------------------
 
 /// Two equally-preferred amd64 archives are ambiguous: the entry is skipped
 /// rather than shipping whichever was discovered first.
@@ -464,9 +458,7 @@ fn select_windows_artifacts_matches_windows_in_path_when_target_empty() {
     assert!(a32.is_none() && a64.is_none());
 }
 
-// -----------------------------------------------------------------
 // build_install_mode
-// -----------------------------------------------------------------
 
 #[test]
 fn build_install_mode_dual_when_both_archs_present() {
@@ -580,9 +572,7 @@ fn build_install_mode_bails_on_empty_sha256() {
     assert!(msg.contains("x64.zip"), "{msg}");
 }
 
-// -----------------------------------------------------------------
 // render_text_fields
-// -----------------------------------------------------------------
 
 #[test]
 fn render_text_fields_all_none_when_choco_unset_and_no_metadata() {
@@ -833,9 +823,7 @@ fn render_text_fields_malformed_template_falls_back_to_raw() {
     assert_eq!(tf.title.as_deref(), Some("{{ broken"));
 }
 
-// -----------------------------------------------------------------
 // build_nuspec
-// -----------------------------------------------------------------
 
 #[test]
 fn build_nuspec_assembles_xml_with_required_metadata() {
@@ -871,9 +859,7 @@ fn build_nuspec_assembles_xml_with_required_metadata() {
     assert!(xml.contains("<tags>cli</tags>"));
 }
 
-// -----------------------------------------------------------------
 // stage_package
-// -----------------------------------------------------------------
 
 #[test]
 fn stage_package_writes_nuspec_install_script_and_nupkg() {
@@ -922,9 +908,7 @@ fn stage_package_writes_nuspec_install_script_and_nupkg() {
     assert!(joined.contains("nupkg"));
 }
 
-// -----------------------------------------------------------------
 // resolve_api_key
-// -----------------------------------------------------------------
 
 #[test]
 fn resolve_api_key_renders_template_from_config() {
@@ -986,11 +970,9 @@ fn resolve_api_key_empty_when_neither_configured_nor_env() {
     assert!(resolve_api_key(&ctx, &cfg).unwrap().is_empty());
 }
 
-// -----------------------------------------------------------------
 // handle_feed_state — drives the OData feed-state ladder against an
 // in-process HTTP responder. Touches the moderation-skip, hash-match,
 // hash-drift, rejected, PresentNoHash, and absent branches.
-// -----------------------------------------------------------------
 
 fn fast_retry() -> anodizer_core::retry::RetryPolicy {
     anodizer_core::retry::RetryPolicy {
@@ -1315,13 +1297,11 @@ fn handle_feed_state_approved_with_differing_nupkg_bails() {
     assert!(format!("{err:#}").contains("local nupkg"), "{err:#}");
 }
 
-// -----------------------------------------------------------------
 // publish_to_chocolatey orchestrator: skip-API-key branch + dry-run
 // capture. handle_feed_state is exercised directly above because
 // driving the full orchestrator into the feed-state ladder would
 // also require responding to the push PUT — kept out of scope to
-// bound the in-process responder surface.
-// -----------------------------------------------------------------
+// keep the in-process responder small.
 
 #[test]
 fn publish_to_chocolatey_warns_and_skips_when_api_key_empty() {
@@ -1417,9 +1397,7 @@ fn publish_to_chocolatey_dry_run_omits_path_suffix_when_repo_absent() {
     );
 }
 
-// -----------------------------------------------------------------
 // Existing config-roundtrip + message-shape regressions
-// -----------------------------------------------------------------
 
 /// Config field roundtrip: `republish_in_moderation` survives serde.
 #[test]

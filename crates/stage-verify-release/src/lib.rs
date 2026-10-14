@@ -90,12 +90,12 @@ pub(crate) const STAGE_NAME: &str = "verify-release";
 /// than re-running a publish.
 const PUBLISHED_NOTE: &str = "the release IS published — investigate";
 
-/// Publishers whose LANDING / asset surface this gate verifies. This list is
+/// Publishers whose LANDING / assets this gate verifies. This list is
 /// one of the stage's in-scope triggers, not the whole model: the stage runs
 /// when ANY of (this list ∪ the OS-package carriers derived from
 /// [`PublisherKind::carries_os_packages`] ∪ in-scope custom `publishers:`
 /// entries that can carry OS packages) survives the active
-/// `--publishers`/`--skip` surface — an `--publishers artifactory` run ships
+/// `--publishers`/`--skip` selection — an `--publishers artifactory` run ships
 /// installable packages, so the OS-package axes must still fire. Only when
 /// NONE of those is selected did the run publish nothing the gate can check,
 /// and the stage self-skips — the same consumer-aware gating `signs:` uses
@@ -214,7 +214,7 @@ impl Stage for VerifyReleaseStage {
             return Ok(());
         }
         // A `--skip=github-release,cargo,npm,blob,...`-style run touched none
-        // of the verifiable surfaces — nothing to verify here. OS-package
+        // of the verifiable publishers — nothing to verify here. OS-package
         // carriers (built-in or custom exec) count as verifiable: their
         // shipped packages are exactly what the install-smoke / libc-ceiling
         // axes exist to check.
@@ -249,9 +249,9 @@ impl Stage for VerifyReleaseStage {
             log.verbose("no crates with a release block; no release assets to verify");
         }
 
-        // The asset check consumes the GitHub Release surface only; a
+        // The asset check consumes the GitHub Release only; a
         // `--publishers npm`-style run never touched it, so its assets are
-        // out of the selected surface while the landing checks still apply.
+        // out of the selection while the landing checks still apply.
         let github_selected = !ctx.publisher_deselected("github-release");
         if cfg.assert_assets_enabled() && !github_selected {
             log.verbose("github-release not among the selected publishers — asset check skipped");
@@ -261,17 +261,17 @@ impl Stage for VerifyReleaseStage {
 
         // The install-smoke axis verifies produced OS packages (.deb/.rpm/.apk)
         // are installable — coverage owned by the publishers that DELIVER those
-        // packages, so it is gated on its own surface exactly like the asset
+        // packages, so it is gated on its own publishers exactly like the asset
         // check above. A `--publishers npm` run ships no OS package, so
         // re-running the cross-arch smoke matrix there is both redundant (the
         // OS-package publish job already ran it) and unrunnable (an arm64
         // package cannot exec on an x86_64 runner without qemu/binfmt).
         // The install-smoke and libc-ceiling axes both verify produced OS
-        // packages the run ships, so both are gated on the OS-package surface.
+        // packages the run ships, so both are gated on the OS-package publishers.
         let os_pkg_selected = os_package_publisher_selected(ctx);
         let smoke_enabled = cfg.install_smoke.is_some();
         let smoke_in_surface = smoke_enabled && os_pkg_selected;
-        // Probe Docker only when smoke is actually in scope; an out-of-surface
+        // Probe Docker only when smoke is actually in scope; an out-of-scope
         // run has nothing to smoke, so the probe would be wasted work.
         let docker_ok = if smoke_in_surface {
             smoke::docker_available()
@@ -434,7 +434,7 @@ impl Stage for VerifyReleaseStage {
 /// this stage (`verify_one_crate`'s `github_selected` branch), runnable
 /// standalone against an already-published release, without the landing /
 /// smoke / libc axes (those verify a specific successful publisher's own
-/// landing, not the asset surface every one-way-door publisher depends on).
+/// landing, not the assets every one-way-door publisher depends on).
 ///
 /// Installed once into [`Context::verify_gate`](anodizer_core::context::Context::verify_gate)
 /// by the CLI's pipeline-composition layer and invoked by `stage-publish`'s
@@ -470,7 +470,7 @@ impl Stage for VerifyReleaseStage {
 /// comparison the terminal [`VerifyReleaseStage`] runs, called with an
 /// `AxisScope` that leaves the OS-package axes (libc-ceiling, install-smoke)
 /// out of scope — those verify a specific publisher's own package landing,
-/// not the asset surface every irreversible publisher depends on being
+/// not the assets every irreversible publisher depends on being
 /// correct before it commits to an immutable registry.
 ///
 /// Deliberately does NOT consult [`Context::should_skip`](anodizer_core::context::Context::should_skip)

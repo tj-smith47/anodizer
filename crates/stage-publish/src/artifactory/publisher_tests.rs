@@ -97,7 +97,7 @@ fn artifactory_rollback_treats_404_as_already_absent() {
     assert!(matches!(outcome, DeleteOutcome::AlreadyAbsent));
 }
 
-/// 2xx → Deleted; everything else → Failed (so 5xx still surfaces as
+/// 2xx → Deleted; everything else → Failed (so 5xx still shows up as
 /// a failure for the operator).
 #[test]
 fn artifactory_rollback_classifies_status_buckets() {
@@ -179,9 +179,7 @@ fn artifactory_rollback_target_extra_tolerates_missing_field() {
     assert!(decode_artifactory_targets(&homebrew).is_empty());
 }
 
-// -----------------------------------------------------------------
 // parallel_delete — live DELETE fan-out classification
-// -----------------------------------------------------------------
 
 use anodizer_core::log::{StageLogger, Verbosity};
 use anodizer_core::test_helpers::scripted_responder::{ScriptedRoute, spawn_scripted_responder};

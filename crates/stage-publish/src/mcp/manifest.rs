@@ -74,7 +74,7 @@ pub struct Repository {
 /// the registry populates — `RegistryType`, `Identifier`, `Version`,
 /// `Transport` — set in the publish loop body. Other Package
 /// fields (`registryBaseUrl`, `fileSha256`, runtime args, env vars) are
-/// not surfaced because the registry does not consume them.
+/// not emitted because the registry does not consume them.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Package {
     /// Package registry type (`oci` / `npm` / `pypi` / `nuget`).

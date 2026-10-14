@@ -119,7 +119,7 @@ impl TestArtifactSet {
     ///
     /// Panics on filesystem errors — callers are unit tests using
     /// `tempfile::TempDir`, where every error is a test bug worth
-    /// surfacing immediately.
+    /// reporting immediately.
     pub fn write_to(&self, dir: &Path) -> Vec<Artifact> {
         let mut out = Vec::with_capacity(self.binaries.len() * 3);
         for b in &self.binaries {

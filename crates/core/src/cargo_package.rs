@@ -4,12 +4,12 @@
 //! the `.crate` packaging side of the determinism harness. The harness
 //! itself lives in `crates/cli/` which is forbid-listed for direct
 //! subprocess spawn (see `.claude/rules/module-boundaries.md`); this
-//! module owns the call site so the security surface stays small.
+//! module owns the call site so the security-relevant code stays small.
 //!
 //! Why `cargo package` and not `cargo publish`: `package` is the
 //! offline-equivalent of `publish` minus the registry upload. It writes
 //! the same `.crate` tarball that would have been pushed, so probing it
-//! for byte-stability surfaces packaging non-determinism (mtimes, tar
+//! for byte-stability exposes packaging non-determinism (mtimes, tar
 //! ordering, `.cargo_vcs_info.json` content) without any network reach.
 //!
 //! Known non-determinism the harness will detect when this stage runs:
@@ -27,7 +27,7 @@
 //!   per-call workaround needed.
 //!
 //! When the harness detects drift after these workarounds, the failure
-//! is a real regression in cargo's reproducibility story — surface the
+//! is a real regression in cargo's reproducibility story — report the
 //! drift via the report and don't silently pass.
 
 use anyhow::{Context, Result};
@@ -53,7 +53,7 @@ use std::process::Command;
 ///   already covered that).
 /// - `--allow-dirty` — the per-run worktree may carry a `Cargo.lock`
 ///   diff from the harness's lockfile generation, or the harness's
-///   `--remap-path-prefix` `RUSTFLAGS` may surface as a worktree
+///   `--remap-path-prefix` `RUSTFLAGS` may show up as a worktree
 ///   modification; the dirty check would otherwise abort with a hard
 ///   error that has nothing to do with packaging determinism.
 /// - `--no-metadata` — suppress the warning cargo emits when a
@@ -73,7 +73,7 @@ use std::process::Command;
 /// cannot perturb the packaging step.
 ///
 /// `log` governs cargo's packaging chatter: at default verbosity the
-/// `Packaging`/`Archiving` lines are captured silently (surfaced only on
+/// `Packaging`/`Archiving` lines are captured silently (shown only on
 /// failure), and at `-v` they stream live — the same `status` vs `verbose`
 /// register every other subprocess obeys.
 ///
