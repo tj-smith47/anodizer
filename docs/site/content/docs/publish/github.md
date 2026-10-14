@@ -244,15 +244,33 @@ On GitHub the token is read from `--token`, then `ANODIZER_GITHUB_TOKEN`,
 GitHub token file. On GitLab it is `GITLAB_TOKEN`, then the GitLab token file,
 and on Gitea `GITEA_TOKEN`, then the Gitea token file.
 
-The token file is the path `env_files.github_token` (or `gitlab_token`,
-`gitea_token`) names, else `~/.config/anodizer/github_token`, else
-`~/.config/goreleaser/github_token`. Its first line is the token. A file is
-read only when every variable before it is unset or blank, and a file that
-exists but cannot be read stops the run:
+With `env_files` unset or written as a mapping, the token file is the path
+`env_files.github_token` (or `gitlab_token`, `gitea_token`) names, else
+`~/.config/anodizer/github_token`, else `~/.config/goreleaser/github_token`.
+Its first line is the token. A file is read only when every variable before
+it is unset or blank, and a file that exists but cannot be read stops the run:
 
 ```yaml
 env_files:
   github_token: ~/.secrets/release_token
+```
+
+The list form of `env_files` names `.env` files and turns the token files
+off: no `~/.config/.../github_token` file is read. A token line in one of the
+listed files takes the token file's place instead, read when every variable
+is unset or blank. For GitHub that is the first of `ANODIZER_GITHUB_TOKEN`,
+`GITHUB_TOKEN` and `GH_TOKEN` the files set, for GitLab `GITLAB_TOKEN` and for
+Gitea `GITEA_TOKEN`:
+
+```yaml
+env_files:
+  - .release.env   # GITHUB_TOKEN=ghp_...
+```
+
+With no token found, the run names the file it reads for the token:
+
+```text
+       Error no GitHub token found: set ANODIZER_GITHUB_TOKEN or GITHUB_TOKEN or GH_TOKEN, pass --token, or put a GITHUB_TOKEN line in one of the env files: .release.env.
 ```
 
 ### Forge selection {#choosing-the-forge}
@@ -265,9 +283,10 @@ GitLab or Gitea:
 | 1 | `release.provider` | `github`, `gitlab`, `gitea` |
 | 2 | top-level `force_token` | `github`, `gitlab`, `gitea` |
 | 3 | `ANODIZER_FORCE_TOKEN`; when it is unset or blank, `GORELEASER_FORCE_TOKEN`; both are trimmed | the same three, in any letter case; any other value is ignored |
-| 4 | `GITLAB_TOKEN` in the environment, or a GitLab token file | GitLab |
-| 5 | `GITEA_TOKEN` in the environment, or a Gitea token file | Gitea |
-| 6 | nothing set | GitHub |
+| 4 | `GITLAB_TOKEN` in the environment, or a GitLab token file or env-file line | GitLab |
+| 5 | `GITEA_TOKEN` in the environment, or a Gitea token file or env-file line | Gitea |
+| 6 | no forge token set anywhere, and every release block names `gitlab:` only (or `gitea:` only) | that forge |
+| 7 | nothing set | GitHub |
 
 A project whose CI holds a `GITLAB_TOKEN` for another job and releases to
 GitHub sets `provider: github`:

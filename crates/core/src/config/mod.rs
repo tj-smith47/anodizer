@@ -68,7 +68,9 @@ pub struct Config {
     /// and `from_url:` for fetching configs from URLs with optional headers.
     pub includes: Option<Vec<IncludeSpec>>,
     /// Environment file configuration. Accepts either:
-    /// - A list of `.env` file paths: `[".env", ".release.env"]`
+    /// - A list of `.env` file paths: `[".env", ".release.env"]`. A
+    ///   `GITHUB_TOKEN`, `GITLAB_TOKEN` or `GITEA_TOKEN` line in one of them
+    ///   is read as that forge's token when its variable is unset or blank.
     /// - A struct with token file paths: `{ github_token: "~/.config/goreleaser/github_token" }`
     pub env_files: Option<EnvFilesConfig>,
     /// Workspace-level defaults that fill what each crate, and a few

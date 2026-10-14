@@ -44,6 +44,33 @@ pub(super) fn resolve_force_token_with_env<E: anodizer_core::env_source::EnvSour
     })
 }
 
+/// The token variables a forced forge removes from the process environment:
+/// every variable of the two forges not forced, so a child process sees only
+/// the forced forge's token. For a forced GitLab or Gitea this is
+/// `ANODIZER_GITHUB_TOKEN`, `GITHUB_TOKEN` and `GH_TOKEN` plus the other
+/// forge's variable.
+pub(super) fn tokens_cleared_by_force(forced: &ForceTokenKind) -> Vec<&'static str> {
+    use anodizer_core::scm::ScmTokenType;
+    let kept = match forced {
+        ForceTokenKind::GitHub => ScmTokenType::GitHub,
+        ForceTokenKind::GitLab => ScmTokenType::GitLab,
+        ForceTokenKind::Gitea => ScmTokenType::Gitea,
+    };
+    [
+        ScmTokenType::GitHub,
+        ScmTokenType::GitLab,
+        ScmTokenType::Gitea,
+    ]
+    .into_iter()
+    .filter(|forge| *forge != kept)
+    .flat_map(|forge| {
+        anodizer_core::config::forge_token_vars(forge)
+            .iter()
+            .copied()
+    })
+    .collect()
+}
+
 /// Process-env convenience wrapper over [`resolve_force_token_with_env`].
 fn resolve_force_token(config: &Config) -> Option<ForceTokenKind> {
     resolve_force_token_with_env(config, &anodizer_core::env_source::ProcessEnvSource)
@@ -132,14 +159,19 @@ pub fn setup_env(
             ctx.template_vars_mut().set_config_env(key, value);
         }
     }
-    if let Some(paths) = anodizer_core::config::token_file_config(config.env_files.as_ref()) {
-        let token_vars =
-            anodizer_core::config::load_token_files_with_env(&paths, log, ctx.env_source())
-                .map_err(anyhow::Error::msg)?;
-        for (key, value) in &token_vars {
-            ctx.template_vars_mut().set_config_env(key, value);
-            set_env_var_single_threaded(key, value);
-        }
+    // A forge token held in a token file, or in an env-file line under the
+    // list form, is set in the process environment too, so a child process
+    // that reads `GITHUB_TOKEN` itself (`gh`, `git` credential helpers) sees
+    // the token the run uses.
+    let token_vars = anodizer_core::config::file_tokens_with_log(
+        config.env_files.as_ref(),
+        log,
+        ctx.env_source(),
+    )
+    .map_err(anyhow::Error::msg)?;
+    for (key, value) in &token_vars {
+        ctx.template_vars_mut().set_config_env(key, value);
+        set_env_var_single_threaded(key, value);
     }
 
     // Populate user-defined env vars into template context (highest priority).
@@ -211,25 +243,9 @@ pub fn setup_env(
     // token env vars BEFORE the multi-token check so it cannot fire.
     let resolved_force = resolve_force_token(config);
     if let Some(ref forced) = resolved_force {
-        // Remove env vars for non-forced token types so downstream code
-        // only sees the forced provider's token.
-        let keep_github = matches!(forced, ForceTokenKind::GitHub);
-        let keep_gitlab = matches!(forced, ForceTokenKind::GitLab);
-        let keep_gitea = matches!(forced, ForceTokenKind::Gitea);
-        if !keep_github {
+        for name in tokens_cleared_by_force(forced) {
             // SAFETY: single-threaded pipeline setup, see set_env_var_single_threaded.
-            unsafe {
-                std::env::remove_var("GITHUB_TOKEN");
-                std::env::remove_var("ANODIZER_GITHUB_TOKEN");
-            }
-        }
-        if !keep_gitlab {
-            // SAFETY: single-threaded pipeline setup, see set_env_var_single_threaded.
-            unsafe { std::env::remove_var("GITLAB_TOKEN") };
-        }
-        if !keep_gitea {
-            // SAFETY: single-threaded pipeline setup, see set_env_var_single_threaded.
-            unsafe { std::env::remove_var("GITEA_TOKEN") };
+            unsafe { std::env::remove_var(name) };
         }
     }
 
@@ -315,19 +331,13 @@ pub fn setup_env(
                 anodizer_core::scm::ScmTokenType::GitLab => {
                     format!(
                         "no GitLab token found: {}.",
-                        anodizer_core::config::token_hint(
-                            "GITLAB_TOKEN",
-                            anodizer_core::config::DEFAULT_GITLAB_TOKEN_FILE
-                        )
+                        config.missing_token_hint(anodizer_core::scm::ScmTokenType::GitLab)
                     )
                 }
                 anodizer_core::scm::ScmTokenType::Gitea => {
                     format!(
                         "no Gitea token found: {}.",
-                        anodizer_core::config::token_hint(
-                            "GITEA_TOKEN",
-                            anodizer_core::config::DEFAULT_GITEA_TOKEN_FILE
-                        )
+                        config.missing_token_hint(anodizer_core::scm::ScmTokenType::Gitea)
                     )
                 }
                 anodizer_core::scm::ScmTokenType::GitHub => {
@@ -335,7 +345,7 @@ pub fn setup_env(
                     // the --token-inclusive ladder like its siblings.
                     format!(
                         "no GitHub token found: {}.",
-                        anodizer_core::git::github_token_hint()
+                        config.missing_token_hint(anodizer_core::scm::ScmTokenType::GitHub)
                     )
                 }
             };

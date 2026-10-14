@@ -2087,8 +2087,8 @@ mod tests {
 
     /// A crate that exists ONLY under `workspaces[].crates` and carries a
     /// `publish.scoop` block must register the scoop publisher: the
-    /// registration gate scans the full crate universe, not just
-    /// `config.crates`. A `config.crates`-only gate silently drops the
+    /// registration gate scans the full crate universe, workspace crates
+    /// included. A `config.crates`-only gate silently drops the
     /// publish (never registered, never preflighted, never dispatched)
     /// while `run()`/`requirements()` would have included the crate.
     #[test]

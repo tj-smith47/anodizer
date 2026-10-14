@@ -70,10 +70,8 @@ pub(crate) fn run_gitea_backend(
         None => {
             bail!(
                 "release: no Gitea token available ({})",
-                anodizer_core::config::token_hint(
-                    "GITEA_TOKEN",
-                    anodizer_core::config::DEFAULT_GITEA_TOKEN_FILE
-                )
+                ctx.config
+                    .missing_token_hint(anodizer_core::scm::ScmTokenType::Gitea)
             );
         }
     };

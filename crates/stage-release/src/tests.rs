@@ -4168,9 +4168,8 @@ fn test_populate_checksums_var_unreadable_artifact_errors_not_silent() {
         size: None,
     });
 
-    let err = populate_checksums_var(&mut ctx).expect_err(
-        "an unreadable checksum artifact must be returned, not silently empty Checksums",
-    );
+    let err = populate_checksums_var(&mut ctx)
+        .expect_err("an unreadable checksum artifact must be returned as an error");
     assert!(
         err.to_string().contains("checksum artifact"),
         "error should name the failing checksum artifact read, got: {err}"

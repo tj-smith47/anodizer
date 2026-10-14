@@ -15,6 +15,18 @@ pub enum ScmTokenType {
     Gitea,
 }
 
+impl ScmTokenType {
+    /// The forge's name as it is written in prose: `GitHub`, `GitLab`,
+    /// `Gitea`.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::GitHub => "GitHub",
+            Self::GitLab => "GitLab",
+            Self::Gitea => "Gitea",
+        }
+    }
+}
+
 impl fmt::Display for ScmTokenType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {

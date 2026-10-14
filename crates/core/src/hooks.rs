@@ -2132,9 +2132,9 @@ mod tests {
     }
 
     /// A WORKSPACE-only crate's `crates[].before` fires on the plain-release
-    /// path (empty selection): the scan covers the crate universe, not the
-    /// top-level `crates:` list, so a pure-`workspaces:` config gets the same
-    /// hooks `--publish-only`'s per-crate loop already honors.
+    /// path (empty selection): the scan covers the whole crate universe,
+    /// workspace crates included, so a pure-`workspaces:` config gets the
+    /// same hooks `--publish-only`'s per-crate loop already honors.
     #[test]
     fn per_crate_lifecycle_fires_for_workspace_only_crates() {
         let tmp = tempfile::tempdir().unwrap();

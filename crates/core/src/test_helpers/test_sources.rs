@@ -1038,13 +1038,77 @@ unsafe impl Send for NotAFn {
         );
     }
 
+    /// Whether a function body lists the production sources of every crate:
+    /// through `workspace_production_sources`, or `workspace_crate_dirs` with
+    /// `rust_sources`.
+    fn lists_the_production_sources(body: &str) -> bool {
+        body.contains("workspace_production_sources(")
+            || (body.contains("workspace_crate_dirs(") && body.contains("rust_sources("))
+    }
+
+    /// Whether a function body cuts a source to its production half.
+    fn cuts_a_source(body: &str) -> bool {
+        body.contains("production_half(")
+    }
+
     /// Whether a function body lists the workspace's production sources and
     /// cuts each one to its production half itself. [`production_corpus`]
     /// does both once per test binary; a scan that repeats them reads and
     /// splits every file of the workspace again, which cost two scans a
     /// minute between them.
     fn splits_the_production_sources_itself(body: &str) -> bool {
-        body.contains("workspace_production_sources(") && body.contains("production_half(")
+        lists_the_production_sources(body) && cuts_a_source(body)
+    }
+
+    /// The name a function body declares.
+    fn body_name(body: &str) -> String {
+        body.split_once("fn ")
+            .and_then(|(_, rest)| rest.split(['(', '<']).next())
+            .unwrap_or_default()
+            .trim()
+            .to_string()
+    }
+
+    /// Whether `body` calls the function `name`: `name(` with no identifier
+    /// character before it, outside the body's own signature.
+    fn calls(body: &str, name: &str) -> bool {
+        let needle = format!("{name}(");
+        let signature = format!("fn {name}");
+        body.match_indices(&needle).any(|(at, _)| {
+            let before = body[..at].chars().next_back();
+            !before.is_some_and(|c| c.is_alphanumeric() || c == '_')
+                && !body[..at + name.len()].ends_with(&signature)
+        })
+    }
+
+    /// The functions of one source that list the workspace's production
+    /// sources and cut each one, on their own or through a function of the
+    /// same source they call: a scan that lists the paths and hands each to
+    /// a helper that cuts it is reported, and so is the helper pair the
+    /// other way round. Calls are followed one level, and a call of
+    /// [`production_corpus`] is not followed, since iterating the corpus is
+    /// the shape this asks for.
+    fn private_splits_in(text: &str) -> Vec<String> {
+        let bodies = function_bodies(text);
+        let names: Vec<String> = bodies.iter().map(|b| body_name(b)).collect();
+        let mut out = Vec::new();
+        for (body, name) in bodies.iter().zip(&names) {
+            let callees: Vec<&String> = bodies
+                .iter()
+                .zip(&names)
+                .filter(|(_, callee)| {
+                    *callee != name && callee.as_str() != "production_corpus" && calls(body, callee)
+                })
+                .map(|(callee_body, _)| callee_body)
+                .collect();
+            let lists = lists_the_production_sources(body)
+                || callees.iter().any(|c| lists_the_production_sources(c));
+            let cuts = cuts_a_source(body) || callees.iter().any(|c| cuts_a_source(c));
+            if lists && cuts {
+                out.push(name.clone());
+            }
+        }
+        out
     }
 
     /// A body that lists the production sources and cuts each one itself is
@@ -1064,38 +1128,79 @@ unsafe impl Send for NotAFn {
         ));
     }
 
+    /// A split spread over a scan and a helper of the same source is
+    /// reported whichever half the helper does, and so is a listing through
+    /// `workspace_crate_dirs` and `rust_sources`. Iterating the corpus, or a
+    /// helper two calls away, is not followed.
+    #[test]
+    fn the_corpus_detector_follows_a_split_into_a_helper() {
+        // Each fixture line is one function written with `\n` escapes, so
+        // the scan of this file does not read the fixtures as functions.
+        let lists_then_helper_cuts = [
+            "fn scan() {\n    for p in workspace_production_sources() {\n        check(&p);\n    }\n}",
+            "fn check(p: &Path) {\n    look(production_half(&read(p)));\n}",
+        ]
+        .join("\n");
+        assert_eq!(
+            private_splits_in(&lists_then_helper_cuts),
+            vec!["scan".to_string()]
+        );
+        let helper_lists = [
+            "fn paths() -> Vec<PathBuf> {\n    workspace_production_sources()\n}",
+            "fn scan() {\n    for p in paths() {\n        look(production_half(&read(&p)));\n    }\n}",
+        ]
+        .join("\n");
+        assert_eq!(private_splits_in(&helper_lists), vec!["scan".to_string()]);
+        let crate_dirs = "fn scan() {\n    for k in workspace_crate_dirs() {\n        for p in rust_sources(&k) {\n            look(production_half(&read(&p)));\n        }\n    }\n}";
+        assert_eq!(private_splits_in(crate_dirs), vec!["scan".to_string()]);
+        let corpus = [
+            "fn production_corpus() {\n    for p in workspace_production_sources() {\n        production_half(&read(&p));\n    }\n}",
+            "fn scan() {\n    for s in production_corpus() {\n        look(&s.text);\n    }\n}",
+        ]
+        .join("\n");
+        assert_eq!(
+            private_splits_in(&corpus),
+            vec!["production_corpus".to_string()],
+            "iterating the corpus is not a split"
+        );
+        let two_levels = [
+            "fn scan() {\n    for p in workspace_production_sources() {\n        outer(&p);\n    }\n}",
+            "fn outer(p: &Path) {\n    inner(p);\n}",
+            "fn inner(p: &Path) {\n    look(production_half(&read(p)));\n}",
+        ]
+        .join("\n");
+        assert!(private_splits_in(&two_levels).is_empty());
+        let crate_local = "fn scan() {\n    for p in rust_sources(&crate_src()) {\n        look(production_half(&read(&p)));\n    }\n}";
+        assert!(
+            private_splits_in(crate_local).is_empty(),
+            "one crate's sources are not the workspace corpus"
+        );
+    }
+
     #[test]
     fn every_rust_source_walk_comes_from_the_shared_scanner() {
         let mut walks = Vec::new();
         let mut private_splits = Vec::new();
         for source in workspace_sources() {
             let text = std::fs::read_to_string(&source).expect("readable source");
+            let shown = crate::path_util::slash_display(&source);
+            for name in private_splits_in(&text) {
+                private_splits.push(format!("{shown}: {name}"));
+            }
             for body in function_bodies(&text) {
-                let walk = is_rust_source_walk(&body);
-                let split = splits_the_production_sources_itself(&body);
-                if !walk && !split {
-                    continue;
-                }
-                let name = body
-                    .split_once("fn ")
-                    .and_then(|(_, rest)| rest.split(['(', '<']).next())
-                    .unwrap_or_default()
-                    .to_string();
-                let site = format!("{}: {name}", crate::path_util::slash_display(&source));
-                if split {
-                    private_splits.push(site.clone());
-                }
-                if walk {
-                    walks.push(site);
+                if is_rust_source_walk(&body) {
+                    walks.push(format!("{shown}: {}", body_name(&body)));
                 }
             }
         }
         // `production_corpus` builds the corpus, and the detector and its
-        // fixture test carry the needles the detector looks for.
-        const CORPUS_ALLOWED: [&str; 3] = [
+        // fixture tests carry the needles the detector looks for.
+        const CORPUS_ALLOWED: [&str; 5] = [
             "core/src/test_helpers/test_sources.rs: production_corpus",
             "core/src/test_helpers/test_sources.rs: splits_the_production_sources_itself",
+            "core/src/test_helpers/test_sources.rs: private_splits_in",
             "core/src/test_helpers/test_sources.rs: the_corpus_detector_reports_a_scan_that_splits_the_sources_itself",
+            "core/src/test_helpers/test_sources.rs: the_corpus_detector_follows_a_split_into_a_helper",
         ];
         let mut found: Vec<String> = private_splits
             .iter()
@@ -1112,8 +1217,9 @@ unsafe impl Send for NotAFn {
         assert_eq!(
             found, expected,
             "a scan that lists `workspace_production_sources` and cuts each file \
-             with `production_half` itself: iterate `production_corpus` and read \
-             `source.path`, `source.text` and `source.bodies`"
+             with `production_half`, itself or through a helper it calls: iterate \
+             `production_corpus` and read `source.path`, `source.text` and \
+             `source.bodies`"
         );
         // `crate_has_binary_target` lists one crate's `src/bin` to answer
         // whether a binary target exists at all; it collects no source to

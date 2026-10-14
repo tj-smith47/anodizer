@@ -4032,3 +4032,73 @@ fn check_config_counts_a_crate_cask_under_either_spelling_as_homebrew() {
         "{err:#}"
     );
 }
+
+#[test]
+fn the_token_warning_names_the_forge_and_the_file_the_config_reads() {
+    use anodizer_core::config::{EnvFilesConfig, ReleaseConfig, ScmRepoConfig};
+    let home = tempdir().unwrap();
+    let env = anodizer_core::MapEnvSource::new().with("HOME", home.path().to_string_lossy());
+    let repo = || {
+        Some(ScmRepoConfig {
+            owner: "acme".to_string(),
+            name: "app".to_string(),
+            token: None,
+        })
+    };
+    let releasing = |release: ReleaseConfig, env_files: Option<EnvFilesConfig>| Config {
+        env_files,
+        ..make_config(vec![CrateConfig {
+            release: Some(release),
+            ..make_crate("app", "v{{ .Version }}", None)
+        }])
+    };
+    let warn = |config: &Config, env: &anodizer_core::MapEnvSource| {
+        let mut warnings = Vec::new();
+        check_forge_token(config, env, &mut warnings);
+        warnings
+    };
+    let github = releasing(
+        ReleaseConfig {
+            github: repo(),
+            ..Default::default()
+        },
+        None,
+    );
+    assert_eq!(
+        warn(&github, &env),
+        vec![
+            "no GitHub token found but release sections are configured; set \
+             ANODIZER_GITHUB_TOKEN or GITHUB_TOKEN or GH_TOKEN or write the token to \
+             ~/.config/anodizer/github_token"
+                .to_string()
+        ]
+    );
+    assert!(warn(&github, &env.clone().with("GH_TOKEN", "ghp")).is_empty());
+    let gitlab = releasing(
+        ReleaseConfig {
+            gitlab: repo(),
+            ..Default::default()
+        },
+        Some(EnvFilesConfig::List(vec![".env.x".to_string()])),
+    );
+    assert_eq!(
+        warn(&gitlab, &env),
+        vec![
+            "no GitLab token found but release sections are configured; set GITLAB_TOKEN or \
+             put a GITLAB_TOKEN line in one of the env files: .env.x"
+                .to_string()
+        ]
+    );
+    let dotenv = home.path().join(".env.x");
+    fs::write(&dotenv, "GITLAB_TOKEN=glpat\n").unwrap();
+    let gitlab = Config {
+        env_files: Some(EnvFilesConfig::List(vec![
+            dotenv.to_string_lossy().to_string(),
+        ])),
+        ..gitlab
+    };
+    assert!(
+        warn(&gitlab, &env).is_empty(),
+        "a token line in an env file is a token"
+    );
+}

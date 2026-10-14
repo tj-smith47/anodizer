@@ -196,7 +196,8 @@ pub(crate) fn handle_github_native_changelog(
         bail!(
             "changelog: use=github-native requires a GitHub token ({}); \
              GitHub auto-release-notes is an authenticated API",
-            anodizer_core::git::github_token_hint()
+            ctx.config
+                .missing_token_hint(anodizer_core::scm::ScmTokenType::GitHub)
         );
     }
     if !github_native_has_repo(ctx) {

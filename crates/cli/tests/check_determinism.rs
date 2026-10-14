@@ -73,9 +73,9 @@ fn check_determinism_help_lists_every_flag() {
     }
 }
 
-/// Outside a git repo the dispatcher must error cleanly when resolving
-/// HEAD (not panic, not hang). This tests the early-exit path that gates
-/// the harness's expensive subprocess.
+/// Outside a git repo the dispatcher must return an error when resolving
+/// HEAD, without a panic or a hang. This tests the early-exit path that
+/// gates the harness's expensive subprocess.
 #[test]
 fn check_determinism_errors_cleanly_outside_git_repo() {
     let tmp = TempDir::new().unwrap();

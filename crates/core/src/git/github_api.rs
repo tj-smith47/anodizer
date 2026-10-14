@@ -187,23 +187,12 @@ pub const GITHUB_TOKEN_ENV_LADDER: &[&str] = &["ANODIZER_GITHUB_TOKEN", "GITHUB_
 /// from [`GITHUB_TOKEN_ENV_LADDER`] in actual resolution-precedence order:
 /// `ANODIZER_GITHUB_TOKEN or GITHUB_TOKEN or GH_TOKEN`. Error messages
 /// interpolate this
-/// (or [`github_token_hint`]) in place of restating the vars, so a
+/// (or [`Config::missing_token_hint`](crate::config::Config::missing_token_hint))
+/// in place of restating the vars, so a
 /// hand-spelled hint can never list the ladder in the wrong order or go
 /// stale when a var is added or renamed.
 pub fn github_token_env_hint() -> String {
     GITHUB_TOKEN_ENV_LADDER.join(" or ")
-}
-
-/// Full remediation hint for commands that also accept a `--token` flag:
-/// `set ANODIZER_GITHUB_TOKEN or GITHUB_TOKEN or GH_TOKEN, pass --token, or
-/// write the token to ~/.config/anodizer/github_token`, rendered from
-/// [`GITHUB_TOKEN_ENV_LADDER`] and
-/// [`DEFAULT_GITHUB_TOKEN_FILE`](crate::config::DEFAULT_GITHUB_TOKEN_FILE).
-pub fn github_token_hint() -> String {
-    crate::config::token_hint(
-        &github_token_env_hint(),
-        crate::config::DEFAULT_GITHUB_TOKEN_FILE,
-    )
 }
 
 /// Resolve the GitHub token for API calls through the codebase-standard

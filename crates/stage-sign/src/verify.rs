@@ -888,7 +888,7 @@ mod tests {
         };
         let env = MapEnvSource::new().with("GITHUB_ACTIONS", "true");
         resolve_keyless_identity(Some(&cfg), &env)
-            .expect_err("config-set issuer with no identity must refuse, not widen");
+            .expect_err("config-set issuer with no identity must refuse to match any identity");
     }
 
     #[test]

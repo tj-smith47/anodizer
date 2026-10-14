@@ -966,8 +966,8 @@ fn preserved_dist_ctx(config: &anodizer_core::config::Config) -> anodizer_core::
 /// preserved-context discovery — AFTER its loop-top reset. A reset
 /// hoisted above the loop would clear only the pre-seeded outer
 /// state and leave iteration 1's outcome behind, failing the final
-/// asserts — this tests the per-iteration placement, not just
-/// outer-stale clearing.
+/// asserts. The test holds the reset's place inside the loop as well as
+/// the clearing of the outer state.
 #[test]
 #[serial_test::serial(cwd)]
 fn run_per_crate_resets_publish_outcome_each_iteration() {

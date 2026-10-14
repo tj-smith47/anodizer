@@ -913,7 +913,7 @@ fn test_preprocess_printf_named_unchanged() {
 #[test]
 fn test_preprocess_preserves_emoji_in_literal_text() {
     // A non-ASCII char in plain literal text (no template syntax) must survive
-    // the byte scan intact, not get Latin-1-decoded into mojibake.
+    // the byte scan intact. A Latin-1 decode would turn it into mojibake.
     let input = "Released with anodizer 🦀";
     let result = preprocess(input);
     assert!(result.contains('🦀'), "emoji must survive, got: {result:?}");

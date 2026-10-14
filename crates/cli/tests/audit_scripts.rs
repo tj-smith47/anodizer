@@ -3036,3 +3036,41 @@ fn the_gate_mirror_audit_refuses_an_expression_target() {
         assert!(out.contains(finding), "{run}:\n{out}");
     }
 }
+
+/// Run `coverage-gate.sh` on a cobertura file measuring 95% with `env` set.
+fn run_coverage_gate(env: &[(&str, &str)]) -> (i32, String) {
+    let dir = TempDir::new().unwrap();
+    let xml = dir.path().join("cobertura.xml");
+    std::fs::write(&xml, r#"<coverage line-rate="0.95"></coverage>"#).unwrap();
+    let script =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.claude/scripts/coverage-gate.sh");
+    let mut command = bash();
+    command
+        .arg(&script)
+        .arg(&xml)
+        .env_remove("COVERAGE_MINIMUM")
+        .env_remove("COVERAGE_FLOOR");
+    for (k, v) in env {
+        command.env(k, v);
+    }
+    let out = command.output().unwrap();
+    let mut text = String::from_utf8_lossy(&out.stdout).into_owned();
+    text.push_str(&String::from_utf8_lossy(&out.stderr));
+    (out.status.code().unwrap_or(-1), text)
+}
+
+#[test]
+fn the_coverage_gate_refuses_the_old_minimum_variable() {
+    let (code, text) = run_coverage_gate(&[("COVERAGE_FLOOR", "96")]);
+    assert_eq!(code, 2, "{text}");
+    assert_eq!(
+        text.trim(),
+        "COVERAGE_FLOOR was renamed to COVERAGE_MINIMUM; set COVERAGE_MINIMUM instead"
+    );
+    let (code, text) = run_coverage_gate(&[("COVERAGE_MINIMUM", "96")]);
+    assert_eq!(code, 1, "{text}");
+    assert_eq!(text.trim(), "coverage 95% (badge 95.0%) below minimum 96%");
+    let (code, text) = run_coverage_gate(&[]);
+    assert_eq!(code, 0, "{text}");
+    assert_eq!(text.trim(), "coverage 95% (badge 95.0%) >= minimum 92.5%");
+}

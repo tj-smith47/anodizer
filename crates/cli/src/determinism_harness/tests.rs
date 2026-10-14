@@ -1460,7 +1460,7 @@ fn headroom_guard_aborts_below_minimum_with_actionable_message() {
     assert!(msg.contains("reclaim-disk"), "remedy hint: {msg}");
     assert!(
         msg.contains("absolute minimum"),
-        "run-0 must state the minimum basis, not a peak guarantee: {msg}"
+        "run-0 must state the minimum basis and promise no peak: {msg}"
     );
 }
 

@@ -70,10 +70,8 @@ pub(crate) fn run_gitlab_backend(
         None => {
             bail!(
                 "release: no GitLab token available ({})",
-                anodizer_core::config::token_hint(
-                    "GITLAB_TOKEN",
-                    anodizer_core::config::DEFAULT_GITLAB_TOKEN_FILE
-                )
+                ctx.config
+                    .missing_token_hint(anodizer_core::scm::ScmTokenType::GitLab)
             );
         }
     };

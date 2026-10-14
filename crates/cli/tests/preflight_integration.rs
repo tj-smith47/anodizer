@@ -2775,3 +2775,163 @@ fn a_missing_token_goes_through_fail_on_error_and_stops_at_the_environment_check
         }
     }
 }
+
+/// `(forge, the config line naming the API at {api}, the probed path of
+/// myorg/open with the body granting release access, the token variables
+/// the forge reads, the header the token travels in, the scheme before it)`.
+const RUN_TOKEN_FORGES: [(&str, &str, &str, &str, &str, &str, &str); 3] = [
+    (
+        "github",
+        "github_urls:\n  api: http://{api}/\n",
+        "/repos/myorg/open",
+        r#"{"permissions":{"push":true}}"#,
+        "GITHUB_TOKEN",
+        "authorization",
+        "Bearer ",
+    ),
+    (
+        "gitlab",
+        "gitlab_urls:\n  api: http://{api}/api/v4\n",
+        "/api/v4/projects/myorg%2Fopen",
+        r#"{"permissions":{"project_access":{"access_level":30},"group_access":null}}"#,
+        "GITLAB_TOKEN",
+        "private-token",
+        "",
+    ),
+    (
+        "gitea",
+        "gitea_urls:\n  api: http://{api}\n",
+        "/api/v1/repos/myorg/open",
+        r#"{"permissions":{"push":true}}"#,
+        "GITEA_TOKEN",
+        "authorization",
+        "token ",
+    ),
+];
+
+/// Run the release preflight of a crate releasing to `myorg/open` on
+/// `forge`, with `home` as `HOME`, `root` at the top of the config and
+/// `env` set, against an API that grants release access. Returns the
+/// output and the tokens the API was sent, a token repeated by consecutive
+/// requests listed once.
+fn run_token_preflight(
+    forge: (&str, &str, &str, &str, &str, &str, &str),
+    home: &std::path::Path,
+    root: &str,
+    env: &[(&str, String)],
+) -> (std::process::Output, Vec<String>) {
+    let (name, urls, path, body, _, header, scheme) = forge;
+    let (api, log) = json_api(vec![(
+        Box::leak(path.to_string().into_boxed_str()),
+        body.to_string(),
+    )]);
+    let root = format!("{}{root}", urls.replace("{api}", &api.to_string()));
+    let tmp = single_crate_release_fixture_with(&root, &forge_release(name, "open", ""));
+    let mut env = env.to_vec();
+    env.push(("HOME", home.to_string_lossy().to_string()));
+    let out = run_forge_preflight(tmp.path(), &env, &["--json"]);
+    let mut sent: Vec<String> = log
+        .lock()
+        .unwrap()
+        .iter()
+        .filter_map(|r| r.header(header))
+        .map(|v| v.strip_prefix(scheme).unwrap_or(v).to_string())
+        .collect();
+    sent.dedup();
+    (out, sent)
+}
+
+/// A token held only in the forge's default token file, or only in a token
+/// line of a listed env file, is the run token on GitHub, GitLab and Gitea,
+/// and a variable set beside the file is read first.
+#[test]
+fn a_token_held_only_in_a_file_is_the_run_token_on_every_forge() {
+    if !tool_on_path("git") {
+        eprintln!("skipping: git not on PATH");
+        return;
+    }
+    for forge in RUN_TOKEN_FORGES {
+        let (name, .., var, _, _) = forge;
+        let home = TempDir::new().unwrap();
+        let file = home.path().join(format!(".config/anodizer/{name}_token"));
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, format!("{name}_from_file\n")).unwrap();
+        let (out, sent) = run_token_preflight(forge, home.path(), "", &[]);
+        assert_eq!(
+            sent,
+            vec![format!("{name}_from_file")],
+            "{name}: the token file is the run token: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let (out, sent) =
+            run_token_preflight(forge, home.path(), "", &[(var, format!("{name}_from_env"))]);
+        assert_eq!(
+            sent,
+            vec![format!("{name}_from_env")],
+            "{name}: {var} is read before the token file: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+
+        let bare = TempDir::new().unwrap();
+        let dotenv = bare.path().join(".env.x");
+        std::fs::write(&dotenv, format!("{var}={name}_from_dotenv\n")).unwrap();
+        let listed = format!("env_files:\n  - {}\n", dotenv.display());
+        let (out, sent) = run_token_preflight(forge, bare.path(), &listed, &[]);
+        assert_eq!(
+            sent,
+            vec![format!("{name}_from_dotenv")],
+            "{name}: a {var} line in a listed env file is the run token: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let (out, sent) = run_token_preflight(
+            forge,
+            bare.path(),
+            &listed,
+            &[(var, format!("{name}_from_env"))],
+        );
+        assert_eq!(
+            sent,
+            vec![format!("{name}_from_env")],
+            "{name}: {var} is read before the env file: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+}
+
+/// With no token anywhere, the release preflight names the token file the
+/// config reads: the configured path, or the env files of the list form.
+#[test]
+fn a_missing_token_names_the_file_the_config_reads() {
+    if !tool_on_path("git") {
+        eprintln!("skipping: git not on PATH");
+        return;
+    }
+    let home = TempDir::new().unwrap();
+    let default_file = home.path().join(".config/anodizer/github_token");
+    std::fs::create_dir_all(default_file.parent().unwrap()).unwrap();
+    std::fs::write(&default_file, "ghp_unread\n").unwrap();
+    let github = RUN_TOKEN_FORGES[0];
+    let ladder = "set ANODIZER_GITHUB_TOKEN or GITHUB_TOKEN or GH_TOKEN, pass --token, or";
+    for (root, clause) in [
+        (
+            "env_files:\n  github_token: ~/custom/gh.txt\n".to_string(),
+            "write the token to ~/custom/gh.txt".to_string(),
+        ),
+        (
+            "env_files:\n  - .env.x\n".to_string(),
+            "put a GITHUB_TOKEN line in one of the env files: .env.x".to_string(),
+        ),
+    ] {
+        let (out, sent) = run_token_preflight(github, home.path(), &root, &[]);
+        assert!(sent.is_empty(), "no token reaches the API: {sent:?}");
+        let report = json_report(&out)["publishers"].clone();
+        assert_eq!(
+            strings(&report, "blockers"),
+            vec![format!(
+                "github-release: no GitHub token resolved ({ladder} {clause}); cannot create the \
+                 release in myorg/open"
+            )],
+            "{root}"
+        );
+    }
+}

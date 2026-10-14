@@ -11,6 +11,13 @@
 # round 91.99 up to 92 and mask a run under the minimum.
 set -euo pipefail
 
+# The variable was renamed; a caller still setting the old name would
+# otherwise run the gate at the default minimum without a word.
+if [ -n "${COVERAGE_FLOOR+set}" ]; then
+  echo "COVERAGE_FLOOR was renamed to COVERAGE_MINIMUM; set COVERAGE_MINIMUM instead" >&2
+  exit 2
+fi
+
 XML="${1:?Usage: coverage-gate.sh <cobertura.xml> [minimum]}"
 MINIMUM="${2:-${COVERAGE_MINIMUM:-92.5}}"
 

@@ -4676,13 +4676,13 @@ fn publish_top_level_homebrew_casks_live_clone_writes_and_pushes() {
     assert_eq!(got.total, 1);
     assert_eq!(got.applicable, 1, "the darwin cask is applicable");
 
-    let landed = anodizer_core::test_helpers::git_test_stdout(
+    let pushed = anodizer_core::test_helpers::git_test_stdout(
         bare.path(),
         &["show", "main:Casks/mycask.rb"],
     );
     assert!(
-        landed.contains("cask \"mycask\"") && landed.contains("version \"1.2.3\""),
-        "the pushed cask must carry the rendered name+version; got:\n{landed}"
+        pushed.contains("cask \"mycask\"") && pushed.contains("version \"1.2.3\""),
+        "the pushed cask must carry the rendered name+version; got:\n{pushed}"
     );
     drop(bare);
 }
@@ -4794,13 +4794,13 @@ fn publish_top_level_homebrew_casks_pr_enabled_pushes_and_records_outcome() {
         got.pushed_any,
         "the cask branch must land regardless of PR submission: {got:?}"
     );
-    let landed = anodizer_core::test_helpers::git_test_stdout(
+    let pushed = anodizer_core::test_helpers::git_test_stdout(
         bare.path(),
         &["show", "main:Casks/mycask.rb"],
     );
     assert!(
-        landed.contains("cask \"mycask\""),
-        "the cask must be pushed to the tap; got:\n{landed}"
+        pushed.contains("cask \"mycask\""),
+        "the cask must be pushed to the tap; got:\n{pushed}"
     );
     // The PR-submission path ran: with `gh` absent and no token the transport
     // resolves to a no-credential outcome that `maybe_submit_pr` returns and
@@ -6789,11 +6789,11 @@ fn publish_cask_with_an_unrenderable_pull_request_token_skips_before_any_push() 
         events[0].reason
     );
     assert!(!events[0].reason.contains("{{"), "{}", events[0].reason);
-    let landed = anodizer_core::test_helpers::git_test_stdout(
+    let pushed = anodizer_core::test_helpers::git_test_stdout(
         good_bare.path(),
         &["show", "main:Casks/beta.rb"],
     );
-    assert!(landed.contains("cask \"beta\""), "{landed}");
+    assert!(pushed.contains("cask \"beta\""), "{pushed}");
     drop(broken_bare);
     drop(good_bare);
 }
@@ -6848,11 +6848,11 @@ fn publish_top_level_casks_with_an_unrenderable_pull_request_token_skip_before_a
         events[0].reason
     );
     assert!(!events[0].reason.contains("{{"), "{}", events[0].reason);
-    let landed = anodizer_core::test_helpers::git_test_stdout(
+    let pushed = anodizer_core::test_helpers::git_test_stdout(
         good_bare.path(),
         &["show", "main:Casks/healthy.rb"],
     );
-    assert!(landed.contains("cask \"healthy\""), "{landed}");
+    assert!(pushed.contains("cask \"healthy\""), "{pushed}");
     drop(broken_bare);
     drop(good_bare);
 }

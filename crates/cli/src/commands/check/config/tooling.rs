@@ -1,12 +1,12 @@
 use super::*;
 
 /// Environment / tool availability checks (warnings only). Probes
-/// cross-compilation tools, docker + buildx, the GitHub token, nfpm, and
+/// cross-compilation tools, docker + buildx, the release forge's token, nfpm, and
 /// the signing binaries.
 pub(super) fn check_environment(config: &Config, warnings: &mut Vec<String>) {
     check_cross_tooling(config, warnings);
     check_docker_tooling(config, warnings);
-    check_github_token(config, warnings);
+    check_forge_token(config, &anodizer_core::ProcessEnvSource, warnings);
     check_nfpm_tool(config, warnings);
     // Blob storage cloud credentials are validated at upload time by the
     // SDK — object_store handles S3/GCS/Azure natively. Config correctness
@@ -71,31 +71,41 @@ pub(super) fn check_docker_tooling(config: &Config, warnings: &mut Vec<String>) 
     }
 }
 
-pub(super) fn check_github_token(config: &Config, warnings: &mut Vec<String>) {
-    // Route through the canonical resolver so an empty `GITHUB_TOKEN=""`
-    // (set-but-blank) is correctly reported as "no token", same as unset. A
-    // GitHub token file is the last source of the run token, so a token held
-    // only there is a token. A token file that cannot be read is reported by
-    // the release itself; here it counts as no token.
-    let file_token = || {
-        anodizer_core::config::token_file_tokens(
-            config.env_files.as_ref(),
-            &anodizer_core::ProcessEnvSource,
-        )
-        .ok()
-        .and_then(|mut tokens| tokens.remove("GITHUB_TOKEN"))
-    };
-    if config_needs_release(config)
-        && anodizer_core::git::resolve_github_token(None).is_none()
-        && file_token().is_none()
-    {
-        warnings.push(format!(
-            "no GitHub token found but release sections are configured; set {} or write the \
-             token to {}",
-            anodizer_core::git::github_token_env_hint(),
-            anodizer_core::config::DEFAULT_GITHUB_TOKEN_FILE
-        ));
+/// Warn when release sections are configured and the forge the run would
+/// release to has no token in any source the run reads: its variables, then
+/// its token file or env-file line. A blank variable counts as unset. A file
+/// that cannot be read is reported by the release itself; here it counts as
+/// no token.
+pub(super) fn check_forge_token<E: anodizer_core::env_source::EnvSource + ?Sized>(
+    config: &Config,
+    env: &E,
+    warnings: &mut Vec<String>,
+) {
+    if !config_needs_release(config) {
+        return;
     }
+    let file_tokens = anodizer_core::config::token_file_tokens(config.env_files.as_ref(), env)
+        .unwrap_or_default();
+    let forge = crate::commands::helpers::detect_forge(config, env, &file_tokens);
+    let vars = anodizer_core::config::forge_token_vars(forge);
+    let has_var = vars.iter().any(|name| {
+        env.var(name)
+            .as_deref()
+            .and_then(anodizer_core::git::non_blank_token)
+            .is_some()
+    });
+    if has_var || file_tokens.contains_key(anodizer_core::config::forge_file_var(forge)) {
+        return;
+    }
+    let vars = vars.join(" or ");
+    let hint = match anodizer_core::config::token_file_clause(config.env_files.as_ref(), forge) {
+        Some(file) => format!("set {vars} or {file}"),
+        None => format!("set {vars}"),
+    };
+    warnings.push(format!(
+        "no {} token found but release sections are configured; {hint}",
+        forge.name()
+    ));
 }
 
 pub(super) fn check_nfpm_tool(config: &Config, warnings: &mut Vec<String>) {

@@ -3179,7 +3179,7 @@ fn resolve_auto_without_token_but_oidc_context_routes_to_mint() {
         .expect_err("a token exchange against an unreachable OIDC endpoint fails");
     assert!(
         !err.to_string().contains("no credential available"),
-        "auto must route to the token exchange when an OIDC context exists, not bail: {err:#}"
+        "auto must route to the token exchange when an OIDC context exists: {err:#}"
     );
 }
 

@@ -2934,18 +2934,21 @@ fn the_refusal_quoted_in_the_github_release_docs_is_what_the_inference_produces(
         1,
         "the Minimal config section quotes one Error line: {quoted:?}"
     );
-    // The page's only other quoted Error line is the release preflight abort,
+    // The page's other quoted Error lines are the release preflight abort,
     // held by `the_lines_quoted_in_the_release_preflight_docs_are_what_the_preflight_prints`
-    // (crates/cli/tests/preflight_integration.rs). A third one fails here
-    // until a test holds it too.
+    // (crates/cli/tests/preflight_integration.rs), and the missing-token
+    // error, held by `the_missing_token_error_quoted_in_the_github_docs_is_what_the_run_prints`.
+    // A fourth one fails here until a test holds it too.
     let page = quoted_error_lines("publish/github.md");
     let preflight =
         quoted_label_lines_in_section("publish/github.md", "## Release preflight", "Error ");
     assert_eq!(preflight.len(), 1, "{preflight:?}");
+    let auth = quoted_label_lines_in_section("publish/github.md", "## Authentication", "Error ");
+    assert_eq!(auth.len(), 1, "{auth:?}");
     assert_eq!(
         page,
-        [preflight, quoted.clone()].concat(),
-        "every Error line on the page is in one of the two held sections"
+        [preflight, quoted.clone(), auth].concat(),
+        "every Error line on the page is in one of the three held sections"
     );
     with_empty_git_repo_cwd(|| {
         let mut config = Config {
@@ -3517,4 +3520,159 @@ fn multi_family_config() -> Config {
         ],
         ..Default::default()
     }
+}
+
+fn release_on(forges: &[&str]) -> anodizer_core::config::ReleaseConfig {
+    let repo = || {
+        Some(anodizer_core::config::ScmRepoConfig {
+            owner: "acme".to_string(),
+            name: "app".to_string(),
+            token: None,
+        })
+    };
+    anodizer_core::config::ReleaseConfig {
+        github: forges.contains(&"github").then(repo).flatten(),
+        gitlab: forges.contains(&"gitlab").then(repo).flatten(),
+        gitea: forges.contains(&"gitea").then(repo).flatten(),
+        ..Default::default()
+    }
+}
+
+fn config_releasing_on(forges: &[&str]) -> Config {
+    Config {
+        project_name: "p".to_string(),
+        crates: vec![CrateConfig {
+            name: "p".to_string(),
+            release: Some(release_on(forges)),
+            ..Default::default()
+        }],
+        ..Default::default()
+    }
+}
+
+#[test]
+fn the_release_blocks_pick_the_forge_only_when_no_forge_token_is_set() {
+    let none = std::collections::HashMap::new();
+    let empty = anodizer_core::env_source::MapEnvSource::new();
+    for (forges, expected) in [
+        (&["gitlab"][..], ScmTokenType::GitLab),
+        (&["gitea"][..], ScmTokenType::Gitea),
+        (&["github"][..], ScmTokenType::GitHub),
+        (&["gitlab", "gitea"][..], ScmTokenType::GitHub),
+        (&["gitlab", "github"][..], ScmTokenType::GitHub),
+        (&[][..], ScmTokenType::GitHub),
+    ] {
+        assert_eq!(
+            detect_forge(&config_releasing_on(forges), &empty, &none),
+            expected,
+            "release blocks {forges:?}"
+        );
+    }
+    let gitlab_only = config_releasing_on(&["gitlab"]);
+    let github_set = anodizer_core::env_source::MapEnvSource::new().with("GH_TOKEN", "ghp");
+    assert_eq!(
+        detect_forge(&gitlab_only, &github_set, &none),
+        ScmTokenType::GitHub,
+        "a GitHub token decides before the release blocks"
+    );
+    let github_file =
+        std::collections::HashMap::from([("GITHUB_TOKEN".to_string(), "ghp_file".to_string())]);
+    assert_eq!(
+        detect_forge(&gitlab_only, &empty, &github_file),
+        ScmTokenType::GitHub,
+        "a GitHub token from a file decides before the release blocks"
+    );
+    let gitea_set = anodizer_core::env_source::MapEnvSource::new().with("GITEA_TOKEN", "t");
+    assert_eq!(
+        detect_forge(&gitlab_only, &gitea_set, &none),
+        ScmTokenType::Gitea
+    );
+    let mut provider = config_releasing_on(&["gitlab"]);
+    provider.release = Some(anodizer_core::config::ReleaseConfig {
+        provider: Some(ForceTokenKind::GitHub),
+        ..Default::default()
+    });
+    assert_eq!(
+        detect_forge(&provider, &empty, &none),
+        ScmTokenType::GitHub,
+        "release.provider decides first"
+    );
+}
+
+/// A run whose only release block is `release.gitlab:` or `release.gitea:`
+/// and that holds no token is told which GitLab or Gitea source to set,
+/// never the GitHub one.
+#[cfg(unix)]
+#[test]
+#[serial_test::serial(setup_env)]
+fn a_missing_token_on_a_gitlab_or_gitea_release_names_that_forge() {
+    let home = tempfile::TempDir::new().unwrap();
+    let home = home.path().to_string_lossy().to_string();
+    for (forge, expected) in [
+        (
+            "gitlab",
+            "no GitLab token found: set GITLAB_TOKEN, pass --token, or write the token to \
+             ~/.config/anodizer/gitlab_token.",
+        ),
+        (
+            "gitea",
+            "no Gitea token found: set GITEA_TOKEN, pass --token, or write the token to \
+             ~/.config/anodizer/gitea_token.",
+        ),
+    ] {
+        let config = config_releasing_on(&[forge]);
+        let mut ctx = ctx_with_env(&config, &[("HOME", &home)]);
+        resolve_scm_token_type(&mut ctx, &config).expect("resolve the run token");
+        let err = setup_env(&mut ctx, &config, &quiet_log())
+            .expect_err("a release with no token must stop at the token check");
+        assert_eq!(err.to_string(), expected, "release.{forge}");
+    }
+}
+
+#[test]
+fn forcing_a_forge_clears_every_variable_of_the_other_two() {
+    assert_eq!(
+        tokens_cleared_by_force(&ForceTokenKind::GitLab),
+        vec![
+            "ANODIZER_GITHUB_TOKEN",
+            "GITHUB_TOKEN",
+            "GH_TOKEN",
+            "GITEA_TOKEN"
+        ]
+    );
+    assert_eq!(
+        tokens_cleared_by_force(&ForceTokenKind::Gitea),
+        vec![
+            "ANODIZER_GITHUB_TOKEN",
+            "GITHUB_TOKEN",
+            "GH_TOKEN",
+            "GITLAB_TOKEN"
+        ]
+    );
+    assert_eq!(
+        tokens_cleared_by_force(&ForceTokenKind::GitHub),
+        vec!["GITLAB_TOKEN", "GITEA_TOKEN"]
+    );
+}
+
+/// The missing-token error the GitHub release page quotes for the list form
+/// of `env_files` is the error a run with that config and no token stops at.
+#[cfg(unix)]
+#[test]
+#[serial_test::serial(setup_env)]
+fn the_missing_token_error_quoted_in_the_github_docs_is_what_the_run_prints() {
+    use crate::commands::check::config::tests::quoted_label_lines_in_section;
+    let quoted = quoted_label_lines_in_section("publish/github.md", "## Authentication", "Error ");
+    assert_eq!(quoted.len(), 1, "{quoted:?}");
+    let home = tempfile::TempDir::new().unwrap();
+    let config = Config {
+        env_files: Some(anodizer_core::config::EnvFilesConfig::List(vec![
+            ".release.env".to_string(),
+        ])),
+        ..config_releasing_on(&["github"])
+    };
+    let mut ctx = ctx_with_env(&config, &[("HOME", &home.path().to_string_lossy())]);
+    resolve_scm_token_type(&mut ctx, &config).expect("resolve the run token");
+    let err = setup_env(&mut ctx, &config, &quiet_log()).expect_err("no token must stop the run");
+    assert_eq!(vec![err.to_string()], quoted);
 }

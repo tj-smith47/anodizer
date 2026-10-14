@@ -590,8 +590,8 @@ mod tests {
     /// while consecutive stages are skipped flush BEFORE the next running
     /// stage's body output and are not lost when that stage fails — the
     /// row precedes the failure line on the early error return. (Capture
-    /// records messages, not section headers, so the tested bound is the
-    /// stage's first body line rather than its section opening.)
+    /// records messages and leaves out section headers, so the tested bound
+    /// is the stage's first body line.)
     #[test]
     fn buffered_skips_flush_before_next_stage_and_survive_its_failure() {
         use anodizer_core::log::LogCapture;

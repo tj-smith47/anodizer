@@ -202,7 +202,8 @@ pub async fn fetch_published_assets(
             anyhow::anyhow!(
                 "verify-release: no GitHub token available to fetch the published \
              release's assets ({})",
-                anodizer_core::git::github_token_hint()
+                ctx.config
+                    .missing_token_hint(anodizer_core::scm::ScmTokenType::GitHub)
             )
         })?;
 

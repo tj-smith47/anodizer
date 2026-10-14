@@ -241,63 +241,106 @@ pub fn setup_context(ctx: &mut Context, config: &Config, log: &StageLogger) -> R
     Ok(())
 }
 
-/// Resolve the SCM token type and token value from config and environment.
+/// The forge a run releases to, in the order the release docs give:
+/// `release.provider`, `force_token`, `ANODIZER_FORCE_TOKEN` /
+/// `GORELEASER_FORCE_TOKEN`, a GitLab token, a Gitea token, then the release
+/// blocks, then GitHub. `file_tokens` holds the tokens the config's files
+/// carry ([`anodizer_core::config::token_file_tokens`]); a token there counts
+/// as the variable it stands for.
 ///
-/// This sets `ctx.token_type` based on priority (highest first):
-/// 1. `release.provider` — the forge the release is published to
-/// 2. `config.force_token` — explicit user config (`force_token: gitlab`)
-/// 3. `ANODIZER_FORCE_TOKEN` env var — e.g. `github`, `gitlab`, `gitea`
-/// 4. `GORELEASER_FORCE_TOKEN` env var — compat fallback
-/// 5. Environment variable presence — `GITLAB_TOKEN` → GitLab, `GITEA_TOKEN` → Gitea
-/// 6. Default — GitHub
-///
-/// A token file (`env_files.github_token` / `gitlab_token` / `gitea_token`,
-/// or the default `~/.config/anodizer/<forge>_token` then
-/// `~/.config/goreleaser/<forge>_token`) counts as the variable it stands
-/// for in the detection above.
-///
-/// It also resolves the token value into `ctx.options.token` (if not already
-/// set by a CLI flag), the first that holds a value of:
-/// - GitLab: `GITLAB_TOKEN`, then the GitLab token file
-/// - Gitea: `GITEA_TOKEN`, then the Gitea token file
-/// - GitHub: `ANODIZER_GITHUB_TOKEN`, `GITHUB_TOKEN`, `GH_TOKEN`, then the
-///   GitHub token file
-///
-/// A token file that exists but cannot be read is an error.
-pub fn resolve_scm_token_type(ctx: &mut Context, config: &Config) -> Result<()> {
-    let file_tokens =
-        anodizer_core::config::token_file_tokens(config.env_files.as_ref(), ctx.env_source())
-            .map_err(anyhow::Error::msg)?;
-    let from_file = |var: &str| file_tokens.get(var).cloned();
-    // Detect which SCM backend to use from environment variables. The
-    // EnvSource indirection lets tests build a `Context` via
-    // `TestContextBuilder::env(...)` and drive every branch without
-    // mutating process env.
+/// The release blocks decide only when no forge variable or file holds a
+/// token: a config whose release blocks name only `gitlab:` (or only
+/// `gitea:`) releases there, so a missing token is reported for that forge.
+pub(crate) fn detect_forge<E: anodizer_core::env_source::EnvSource + ?Sized>(
+    config: &Config,
+    env: &E,
+    file_tokens: &std::collections::HashMap<String, String>,
+) -> ScmTokenType {
     let is_set = |name: &str| {
-        ctx.env_var(name)
+        env.var(name)
             .as_deref()
             .and_then(anodizer_core::git::non_blank_token)
-            .or_else(|| from_file(name))
             .is_some()
+            || file_tokens.contains_key(name)
     };
     let env_hint = if is_set("GITLAB_TOKEN") {
         Some("gitlab")
     } else if is_set("GITEA_TOKEN") {
         Some("gitea")
-    } else {
+    } else if git::GITHUB_TOKEN_ENV_LADDER.iter().any(|name| is_set(name)) {
         None
+    } else {
+        release_block_forge(config)
     };
 
     // Resolution priority: explicit `release.provider:` (cross-platform
-    // publishing) > top-level `force_token:` > env-var detection. `release.provider:` makes the cross-platform case
-    // declarative: a project that lives on GitLab but publishes to
-    // GitHub declares `provider: github` and the token detection
-    // honours it without needing the user to clear `GITLAB_TOKEN`.
+    // publishing) > top-level `force_token:` > env-var detection. A project
+    // that lives on GitLab but publishes to GitHub declares `provider:
+    // github`, and the detection honours it without the user clearing
+    // `GITLAB_TOKEN`.
     let provider_force = config.release.as_ref().and_then(|r| r.provider.clone());
-    let force_token =
-        provider_force.or_else(|| resolve_force_token_with_env(config, ctx.env_source()));
+    let force_token = provider_force.or_else(|| resolve_force_token_with_env(config, env));
+    scm::resolve_token_type(force_token.as_ref(), env_hint)
+}
 
-    ctx.token_type = scm::resolve_token_type(force_token.as_ref(), env_hint);
+/// `gitlab` or `gitea` when every release block that names a forge, the
+/// top-level one and each crate's, names that one forge only.
+fn release_block_forge(config: &Config) -> Option<&'static str> {
+    let mut forges = std::collections::BTreeSet::new();
+    let universe = config.crate_universe();
+    let blocks = config
+        .release
+        .iter()
+        .chain(universe.iter().filter_map(|c| c.release.as_ref()));
+    for block in blocks {
+        if block.github.is_some() {
+            forges.insert("github");
+        }
+        if block.gitlab.is_some() {
+            forges.insert("gitlab");
+        }
+        if block.gitea.is_some() {
+            forges.insert("gitea");
+        }
+    }
+    match forges.into_iter().collect::<Vec<_>>().as_slice() {
+        [only @ ("gitlab" | "gitea")] => Some(*only),
+        _ => None,
+    }
+}
+
+/// Resolve the SCM token type and token value from config and environment.
+///
+/// `ctx.token_type` is [`detect_forge`]: highest first,
+/// 1. `release.provider` — the forge the release is published to
+/// 2. `config.force_token` — explicit user config (`force_token: gitlab`)
+/// 3. `ANODIZER_FORCE_TOKEN` env var — e.g. `github`, `gitlab`, `gitea`
+/// 4. `GORELEASER_FORCE_TOKEN` env var — compat fallback
+/// 5. Token presence — `GITLAB_TOKEN` → GitLab, `GITEA_TOKEN` → Gitea
+/// 6. The release blocks, when no forge token is set anywhere — only
+///    `gitlab:` blocks → GitLab, only `gitea:` blocks → Gitea
+/// 7. Default — GitHub
+///
+/// A token file (`env_files.github_token` / `gitlab_token` / `gitea_token`,
+/// or the default `~/.config/anodizer/<forge>_token` then
+/// `~/.config/goreleaser/<forge>_token`), or with the list form of
+/// `env_files` a token line in one of the `.env` files, counts as the
+/// variable it stands for in the detection above.
+///
+/// It also resolves the token value into `ctx.options.token` (if not already
+/// set by a CLI flag), the first that holds a value of:
+/// - GitLab: `GITLAB_TOKEN`, then the GitLab token file or env-file line
+/// - Gitea: `GITEA_TOKEN`, then the Gitea token file or env-file line
+/// - GitHub: `ANODIZER_GITHUB_TOKEN`, `GITHUB_TOKEN`, `GH_TOKEN`, then the
+///   GitHub token file or env-file line
+///
+/// A token file or env file that exists but cannot be read is an error.
+pub fn resolve_scm_token_type(ctx: &mut Context, config: &Config) -> Result<()> {
+    let file_tokens =
+        anodizer_core::config::token_file_tokens(config.env_files.as_ref(), ctx.env_source())
+            .map_err(anyhow::Error::msg)?;
+    let from_file = |var: &str| file_tokens.get(var).cloned();
+    ctx.token_type = detect_forge(config, ctx.env_source(), &file_tokens);
 
     // Resolve the token value if not already provided via CLI flag. Every
     // source is trimmed here, once, so a blank `--token ""` or `GITLAB_TOKEN=""`
@@ -319,9 +362,9 @@ pub fn resolve_scm_token_type(ctx: &mut Context, config: &Config) -> Result<()> 
             ScmTokenType::Gitea => env("GITEA_TOKEN").or_else(|| from_file("GITEA_TOKEN")),
             // Route through the canonical resolver so an empty
             // `GITHUB_TOKEN=""` (the shape GH Actions gives a missing secret)
-            // falls through to the next source. The GitHub token file is held
-            // under `GITHUB_TOKEN` and is read only when the whole ladder is
-            // unset or blank, so it comes last.
+            // falls through to the next source. A GitHub token from a file is
+            // held under `GITHUB_TOKEN` and is read only when the whole ladder
+            // is unset or blank, so it comes last.
             ScmTokenType::GitHub => {
                 anodizer_core::git::resolve_github_token_with_env(None, &|key| ctx.env_var(key))
                     .or_else(|| from_file("GITHUB_TOKEN"))

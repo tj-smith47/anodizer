@@ -196,7 +196,7 @@
       }
     },
     "env_files": {
-      "description": "Environment file configuration. Accepts either:\n- A list of `.env` file paths: `[\".env\", \".release.env\"]`\n- A struct with token file paths: `{ github_token: \"~/.config/goreleaser/github_token\" }`",
+      "description": "Environment file configuration. Accepts either:\n- A list of `.env` file paths: `[\".env\", \".release.env\"]`. A `GITHUB_TOKEN`, `GITLAB_TOKEN` or `GITEA_TOKEN` line in one of them is read as that forge's token when its variable is unset or blank.\n- A struct with token file paths: `{ github_token: \"~/.config/goreleaser/github_token\" }`",
       "default": null,
       "anyOf": [
         {
@@ -6215,7 +6215,7 @@
       ]
     },
     "EnvFilesConfig": {
-      "description": "Environment file configuration.\n\nAccepts two forms:\n- **List form** (anodizer extension): array of `.env` file paths loaded as KEY=VALUE.\n\n  ```yaml\n  env_files:\n    - .env\n    - .release.env\n  ```\n\n- **Struct form**: paths to files containing provider tokens.\n\n  ```yaml\n  env_files:\n    github_token: ~/.config/goreleaser/github_token\n    gitlab_token: ~/.config/goreleaser/gitlab_token\n    gitea_token: ~/.config/goreleaser/gitea_token\n  ```",
+      "description": "Environment file configuration.\n\nAccepts two forms:\n- **List form** (anodizer extension): array of `.env` file paths loaded as KEY=VALUE. The token files are not read in this form; a `GITHUB_TOKEN`, `GITLAB_TOKEN` or `GITEA_TOKEN` line in one of the files is the run token when the variable is unset or blank.\n\n  ```yaml\n  env_files:\n    - .env\n    - .release.env\n  ```\n\n- **Struct form**: paths to files containing provider tokens.\n\n  ```yaml\n  env_files:\n    github_token: ~/.config/goreleaser/github_token\n    gitlab_token: ~/.config/goreleaser/gitlab_token\n    gitea_token: ~/.config/goreleaser/gitea_token\n  ```",
       "anyOf": [
         {
           "description": "List of `.env` file paths to load (KEY=VALUE format).",

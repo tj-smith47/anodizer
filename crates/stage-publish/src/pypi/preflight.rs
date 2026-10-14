@@ -283,7 +283,7 @@ pub(crate) fn distribution_name_version(token: &str) -> Option<(String, String)>
 /// from config-derivable build targets so a multi-binary workspace is told to
 /// narrow per-entry `ids:` before the run reaches the Manager group.
 ///
-/// A Warning, not a Blocker: preflight cannot read each binary's minimum glibc version,
+/// The finding is a Warning: preflight cannot read each binary's minimum glibc version,
 /// so two gnu binaries on one triple with different minimums would tag distinct
 /// `manylinux` versions and NOT collide — the run-path bail stays the hard
 /// gate.

@@ -77,7 +77,8 @@ pub(crate) fn run_github_backend(
         None => {
             anyhow::bail!(
                 "release: no GitHub token available ({})",
-                anodizer_core::git::github_token_hint()
+                ctx.config
+                    .missing_token_hint(anodizer_core::scm::ScmTokenType::GitHub)
             );
         }
     };

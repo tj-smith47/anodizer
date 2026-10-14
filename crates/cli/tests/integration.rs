@@ -6595,4 +6595,19 @@ fn a_github_token_held_only_in_a_token_file_is_the_run_token() {
         "a token in the file env_files.github_token names is the run token: {}",
         String::from_utf8_lossy(&output.stderr)
     );
+
+    let home = TempDir::new().unwrap();
+    let dotenv = home.path().join(".env.x");
+    fs::write(&dotenv, "GITHUB_TOKEN=ghp_fromdotenv\n").unwrap();
+    let output = release_with_only_home(
+        home.path(),
+        &format!("env_files:\n  - {}\n", dotenv.display()),
+    );
+    assert!(
+        !stopped_at_the_token_check(&output)
+            && String::from_utf8_lossy(&output.stderr)
+                .contains("loaded GITHUB_TOKEN from the env files"),
+        "a GITHUB_TOKEN line in a listed env file is the run token: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }

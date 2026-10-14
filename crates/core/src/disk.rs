@@ -628,7 +628,7 @@ mod tests {
                 assert_eq!(s.run_idx, 0);
                 assert_eq!(s.required_bytes, 45 * GIB);
                 assert_eq!(s.available_bytes, 30 * GIB);
-                assert!(!s.peak_gated, "run-0 is minimum-gated, not peak-gated");
+                assert!(!s.peak_gated, "run-0 is gated by the minimum alone");
                 assert!(
                     s.message().contains("absolute minimum"),
                     "run-0 message must state the minimum basis: {}",

@@ -376,8 +376,8 @@ mod tests {
     use std::fs;
     use tempfile::TempDir;
 
-    /// The version-matcher scan skips a `tests/` module directory, not only a
-    /// `tests.rs` sibling. A test module scanned as production would report a
+    /// The version-matcher scan skips a `tests/` module directory as well as
+    /// a `tests.rs` sibling. A test module scanned as production would report a
     /// version literal inside a fixture as a matcher the population declares.
     #[test]
     fn rust_sources_skips_a_gated_tests_directory() {

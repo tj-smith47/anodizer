@@ -6326,9 +6326,8 @@ mod archive_name_guard {
     #[test]
     fn meta_archive_under_binary_format_produces_nothing() {
         // A meta archive holds only extra files, and `binary` carries none, so
-        // the pair produces no artifact at all — GoReleaser's archive pipe
-        // reaches the same place, iterating binaries the meta entry does not
-        // have. Tested because the outcome is an empty dist/, not an error.
+        // the pair produces no artifact at all. Tested because the outcome is
+        // an empty dist/ and the run carries on without an error.
         let tmp = TempDir::new().unwrap();
         let mut c = cfg("default", None, &["binary"]);
         c.meta = Some(true);

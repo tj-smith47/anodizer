@@ -178,7 +178,8 @@ fn github(ctx: &Context, targets: Vec<Target<'_>>) -> PreflightCheck {
         let check = match t.token.as_deref() {
             None => PreflightCheck::Blocker(format!(
                 "no GitHub token resolved ({}); cannot create the release in {owner}/{repo}",
-                anodizer_core::git::github_token_hint()
+                ctx.config
+                    .missing_token_hint(anodizer_core::scm::ScmTokenType::GitHub)
             )),
             Some(token) => {
                 let probe = GithubRepoProbe {
@@ -322,10 +323,8 @@ fn gitlab(ctx: &Context, targets: Vec<Target<'_>>) -> PreflightCheck {
         let check = match t.token.as_deref() {
             None => PreflightCheck::Blocker(format!(
                 "no GitLab token available ({}); cannot create the release in {project}",
-                anodizer_core::config::token_hint(
-                    "GITLAB_TOKEN",
-                    anodizer_core::config::DEFAULT_GITLAB_TOKEN_FILE
-                )
+                ctx.config
+                    .missing_token_hint(anodizer_core::scm::ScmTokenType::GitLab)
             )),
             Some(token) => probed
                 .entry((project.clone(), token.to_string()))
@@ -401,10 +400,8 @@ fn gitea(ctx: &Context, targets: Vec<Target<'_>>) -> PreflightCheck {
         let check = match t.token.as_deref() {
             None => PreflightCheck::Blocker(format!(
                 "no Gitea token available ({}); cannot create the release in {owner}/{repo}",
-                anodizer_core::config::token_hint(
-                    "GITEA_TOKEN",
-                    anodizer_core::config::DEFAULT_GITEA_TOKEN_FILE
-                )
+                ctx.config
+                    .missing_token_hint(anodizer_core::scm::ScmTokenType::Gitea)
             )),
             Some(_) if !crate::gitea::has_scheme_and_host(&api) => PreflightCheck::Blocker(
                 format!("invalid gitea_urls.api URL {api:?}; cannot create the release"),

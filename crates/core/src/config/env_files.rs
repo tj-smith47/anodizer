@@ -7,6 +7,9 @@ use serde::{Deserialize, Deserializer, Serialize};
 ///
 /// Accepts two forms:
 /// - **List form** (anodizer extension): array of `.env` file paths loaded as KEY=VALUE.
+///   The token files are not read in this form; a `GITHUB_TOKEN`,
+///   `GITLAB_TOKEN` or `GITEA_TOKEN` line in one of the files is the run
+///   token when the variable is unset or blank.
 ///   ```yaml
 ///   env_files:
 ///     - .env
@@ -140,7 +143,7 @@ pub fn load_token_files(
 }
 
 /// The token file read for the GitHub token when `env_files.github_token`
-/// is unset, named in every "no GitHub token" hint.
+/// is unset.
 pub const DEFAULT_GITHUB_TOKEN_FILE: &str = "~/.config/anodizer/github_token";
 /// The token file read for the GitLab token when `env_files.gitlab_token`
 /// is unset.
@@ -149,12 +152,87 @@ pub const DEFAULT_GITLAB_TOKEN_FILE: &str = "~/.config/anodizer/gitlab_token";
 /// unset.
 pub const DEFAULT_GITEA_TOKEN_FILE: &str = "~/.config/anodizer/gitea_token";
 
+/// The variables a forge's run token is read from, in the order they are
+/// read: `ANODIZER_GITHUB_TOKEN`, `GITHUB_TOKEN`, `GH_TOKEN` for GitHub,
+/// `GITLAB_TOKEN` for GitLab and `GITEA_TOKEN` for Gitea.
+pub fn forge_token_vars(forge: crate::scm::ScmTokenType) -> &'static [&'static str] {
+    match forge {
+        crate::scm::ScmTokenType::GitHub => crate::git::GITHUB_TOKEN_ENV_LADDER,
+        crate::scm::ScmTokenType::GitLab => &["GITLAB_TOKEN"],
+        crate::scm::ScmTokenType::Gitea => &["GITEA_TOKEN"],
+    }
+}
+
+/// The variable a forge's token is held under once it is read from a file:
+/// `GITHUB_TOKEN`, `GITLAB_TOKEN` or `GITEA_TOKEN`.
+pub fn forge_file_var(forge: crate::scm::ScmTokenType) -> &'static str {
+    match forge {
+        crate::scm::ScmTokenType::GitHub => "GITHUB_TOKEN",
+        crate::scm::ScmTokenType::GitLab => "GITLAB_TOKEN",
+        crate::scm::ScmTokenType::Gitea => "GITEA_TOKEN",
+    }
+}
+
+/// The file source of a forge's token as the config reads it, worded as the
+/// last clause of a missing-token hint, or `None` when the config reads no
+/// file for it (`env_files: []`).
+///
+/// - With `env_files` unset, or in its mapping form, the clause names the one
+///   path a user writes: the configured `env_files.<forge>_token`, else the
+///   default (`write the token to ~/.config/anodizer/github_token`).
+/// - In the list form no token file is read, so the clause names the env
+///   files (`put a GITHUB_TOKEN line in one of the env files: .env,
+///   .release.env`).
+pub fn token_file_clause(
+    env_files: Option<&EnvFilesConfig>,
+    forge: crate::scm::ScmTokenType,
+) -> Option<String> {
+    use crate::scm::ScmTokenType;
+    match env_files {
+        Some(EnvFilesConfig::List(files)) if files.is_empty() => None,
+        Some(EnvFilesConfig::List(files)) => Some(format!(
+            "put a {} line in one of the env files: {}",
+            forge_file_var(forge),
+            files.join(", ")
+        )),
+        Some(EnvFilesConfig::TokenFiles(_)) | None => {
+            let paths = token_file_config(env_files).unwrap_or_default();
+            let path = match forge {
+                ScmTokenType::GitHub => paths.github_token.as_deref(),
+                ScmTokenType::GitLab => paths.gitlab_token.as_deref(),
+                ScmTokenType::Gitea => paths.gitea_token.as_deref(),
+            }
+            .unwrap_or(match forge {
+                ScmTokenType::GitHub => DEFAULT_GITHUB_TOKEN_FILE,
+                ScmTokenType::GitLab => DEFAULT_GITLAB_TOKEN_FILE,
+                ScmTokenType::Gitea => DEFAULT_GITEA_TOKEN_FILE,
+            });
+            Some(format!("write the token to {path}"))
+        }
+    }
+}
+
 /// The remediation hint for a missing forge token, naming every source the
-/// run reads: `set GITLAB_TOKEN, pass --token, or write the token to
-/// ~/.config/anodizer/gitlab_token`. `vars` is the variable, or the variables
-/// joined with `or`, in the order they are read.
-pub fn token_hint(vars: &str, file: &str) -> String {
-    format!("set {vars}, pass --token, or write the token to {file}")
+/// run reads for that forge under this config, in the order it reads them:
+/// `set GITLAB_TOKEN, pass --token, or write the token to
+/// ~/.config/anodizer/gitlab_token`. The file clause is
+/// [`token_file_clause`].
+pub fn missing_token_hint(
+    env_files: Option<&EnvFilesConfig>,
+    forge: crate::scm::ScmTokenType,
+) -> String {
+    let vars = forge_token_vars(forge).join(" or ");
+    match token_file_clause(env_files, forge) {
+        Some(file) => format!("set {vars}, pass --token, or {file}"),
+        None => format!("set {vars} or pass --token"),
+    }
+}
+
+impl super::Config {
+    /// [`missing_token_hint`] for this config's `env_files`.
+    pub fn missing_token_hint(&self, forge: crate::scm::ScmTokenType) -> String {
+        missing_token_hint(self.env_files.as_ref(), forge)
+    }
 }
 
 /// [`EnvSource`](crate::EnvSource)-injecting form of [`load_token_files`].
@@ -242,20 +320,73 @@ pub fn token_file_config(env_files: Option<&EnvFilesConfig>) -> Option<EnvFilesT
     }
 }
 
-/// The tokens the config's token files hold, keyed by the variable each one
+/// The tokens the config's files hold, keyed by the variable each one
 /// stands for (`GITHUB_TOKEN`, `GITLAB_TOKEN`, `GITEA_TOKEN`), read without
-/// logging. Only the tokens [`load_token_files_with_env`] would load are
-/// returned, so a file never outranks a variable. A file that exists but
-/// cannot be read is an error.
+/// logging. See [`file_tokens_with_log`].
 pub fn token_file_tokens<E: crate::EnvSource + ?Sized>(
     env_files: Option<&EnvFilesConfig>,
     env: &E,
 ) -> Result<std::collections::HashMap<String, String>, String> {
-    let Some(paths) = token_file_config(env_files) else {
-        return Ok(std::collections::HashMap::new());
+    let quiet = crate::log::StageLogger::new("env", crate::log::Verbosity::Quiet);
+    file_tokens_with_log(env_files, &quiet, env)
+}
+
+/// The forge tokens the config's files hold, keyed by the variable each one
+/// stands for (`GITHUB_TOKEN`, `GITLAB_TOKEN`, `GITEA_TOKEN`).
+///
+/// - With `env_files` unset or in its mapping form, these are the token
+///   files ([`load_token_files_with_env`]).
+/// - In the list form no token file is read. A token line in one of the
+///   `.env` files stands for its forge instead: for GitHub the first of
+///   `ANODIZER_GITHUB_TOKEN`, `GITHUB_TOKEN` and `GH_TOKEN` the files set to
+///   a value that is not blank, for GitLab `GITLAB_TOKEN`, for Gitea
+///   `GITEA_TOKEN`. A missing env file is skipped here; the run reports it
+///   when it loads the files.
+///
+/// Only a forge whose variables are all unset or blank in `env` gets a
+/// value, so a file never outranks a variable. A file that exists but
+/// cannot be read is an error.
+pub fn file_tokens_with_log<E: crate::EnvSource + ?Sized>(
+    env_files: Option<&EnvFilesConfig>,
+    log: &crate::log::StageLogger,
+    env: &E,
+) -> Result<std::collections::HashMap<String, String>, String> {
+    use crate::scm::ScmTokenType;
+    let files = match env_files {
+        Some(EnvFilesConfig::List(files)) => files,
+        _ => {
+            let paths = token_file_config(env_files).unwrap_or_default();
+            return load_token_files_with_env(&paths, log, env);
+        }
     };
     let quiet = crate::log::StageLogger::new("env", crate::log::Verbosity::Quiet);
-    load_token_files_with_env(&paths, &quiet, env)
+    let lines = load_env_files(files, &quiet, false)?;
+    let set = |name: &&str| {
+        env.var(name)
+            .as_deref()
+            .and_then(crate::git::non_blank_token)
+            .is_some()
+    };
+    let mut tokens = std::collections::HashMap::new();
+    for forge in [
+        ScmTokenType::GitHub,
+        ScmTokenType::GitLab,
+        ScmTokenType::Gitea,
+    ] {
+        let vars = forge_token_vars(forge);
+        if vars.iter().any(set) {
+            continue;
+        }
+        let found = vars.iter().find_map(|name| {
+            let value = lines.get(*name)?;
+            crate::git::non_blank_token(value).map(|token| (*name, token))
+        });
+        if let Some((name, token)) = found {
+            log.verbose(&format!("loaded {name} from the env files"));
+            tokens.insert(forge_file_var(forge).to_string(), token);
+        }
+    }
+    Ok(tokens)
 }
 
 /// Load environment variables from .env-style files.
@@ -415,11 +546,102 @@ mod tests {
                 .map(String::as_str),
             Some("file_tok"),
         );
-        let listed = EnvFilesConfig::List(vec![".env".to_string()]);
+        let listed = EnvFilesConfig::List(vec!["/nonexistent/anodizer/.env".to_string()]);
         let env = crate::MapEnvSource::new().with("HOME", home);
         assert!(
             token_file_tokens(Some(&listed), &env).unwrap().is_empty(),
             "the list form of env_files reads no token file"
+        );
+    }
+
+    fn write_env_file(dir: &std::path::Path, name: &str, body: &str) -> String {
+        let path = dir.join(name);
+        std::fs::write(&path, body).unwrap();
+        path.to_string_lossy().to_string()
+    }
+
+    #[test]
+    fn a_token_line_in_a_listed_env_file_stands_for_its_forge() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let first = write_env_file(
+            dir.path(),
+            ".env.a",
+            "GH_TOKEN=ghp_gh\nGITLAB_TOKEN=' glpat_dotenv '\nGITEA_TOKEN=\n",
+        );
+        let second = write_env_file(dir.path(), ".env.b", "GITHUB_TOKEN=ghp_dotenv\n");
+        let listed = EnvFilesConfig::List(vec![first, second]);
+        let tokens = token_file_tokens(Some(&listed), &crate::MapEnvSource::new()).unwrap();
+        assert_eq!(
+            tokens.get("GITHUB_TOKEN").map(String::as_str),
+            Some("ghp_dotenv"),
+            "GITHUB_TOKEN comes before GH_TOKEN in the GitHub order"
+        );
+        assert_eq!(
+            tokens.get("GITLAB_TOKEN").map(String::as_str),
+            Some("glpat_dotenv"),
+            "the env-file value is trimmed"
+        );
+        assert_eq!(tokens.get("GITEA_TOKEN"), None, "a blank line is unset");
+    }
+
+    #[test]
+    fn a_variable_outranks_a_token_line_in_a_listed_env_file() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let file = write_env_file(
+            dir.path(),
+            ".env",
+            "GITHUB_TOKEN=ghp_dotenv\nGITLAB_TOKEN=glpat_dotenv\nGITEA_TOKEN=gitea_dotenv\n",
+        );
+        let listed = EnvFilesConfig::List(vec![file]);
+        let env = crate::MapEnvSource::new()
+            .with("GH_TOKEN", "ghp_env")
+            .with("GITLAB_TOKEN", "glpat_env")
+            .with("GITEA_TOKEN", "  ");
+        let tokens = token_file_tokens(Some(&listed), &env).unwrap();
+        assert_eq!(tokens.get("GITHUB_TOKEN"), None);
+        assert_eq!(tokens.get("GITLAB_TOKEN"), None);
+        assert_eq!(
+            tokens.get("GITEA_TOKEN").map(String::as_str),
+            Some("gitea_dotenv"),
+            "a blank variable counts as unset"
+        );
+    }
+
+    #[test]
+    fn the_missing_token_hint_names_the_file_the_config_reads() {
+        use crate::scm::ScmTokenType::{GitHub, GitLab, Gitea};
+        let github = "set ANODIZER_GITHUB_TOKEN or GITHUB_TOKEN or GH_TOKEN, pass --token, or";
+        assert_eq!(
+            missing_token_hint(None, GitHub),
+            format!("{github} write the token to ~/.config/anodizer/github_token")
+        );
+        let mapped = EnvFilesConfig::TokenFiles(EnvFilesTokenConfig {
+            github_token: Some("~/custom/gh.txt".to_string()),
+            ..Default::default()
+        });
+        assert_eq!(
+            missing_token_hint(Some(&mapped), GitHub),
+            format!("{github} write the token to ~/custom/gh.txt")
+        );
+        assert_eq!(
+            missing_token_hint(Some(&mapped), GitLab),
+            "set GITLAB_TOKEN, pass --token, or write the token to ~/.config/anodizer/gitlab_token",
+            "an unset field names the default path"
+        );
+        let listed = EnvFilesConfig::List(vec![".env".to_string(), ".release.env".to_string()]);
+        assert_eq!(
+            missing_token_hint(Some(&listed), GitHub),
+            format!("{github} put a GITHUB_TOKEN line in one of the env files: .env, .release.env")
+        );
+        assert_eq!(
+            missing_token_hint(Some(&listed), Gitea),
+            "set GITEA_TOKEN, pass --token, or put a GITEA_TOKEN line in one of the env files: \
+             .env, .release.env"
+        );
+        assert_eq!(
+            missing_token_hint(Some(&EnvFilesConfig::List(Vec::new())), GitLab),
+            "set GITLAB_TOKEN or pass --token",
+            "an empty list reads no file"
         );
     }
 

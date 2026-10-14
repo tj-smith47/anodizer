@@ -400,9 +400,10 @@ pub fn crate_archive_asset_names(
         let mut map: BTreeMap<String, ArchiveAssetName> = BTreeMap::new();
         for target in &targets {
             // The build stage seeds the per-target vars BEFORE it renders a
-            // build's `binary:`, so a templated binary name must be resolved
-            // against THIS target's values here too, never the ones the
-            // previous iteration's asset-name render left behind.
+            // build's `binary:`, so a templated binary name is resolved
+            // against THIS target's values here too. Without the seed it
+            // would read the values the previous iteration's asset-name
+            // render left behind.
             crate::archive_name::seed_target_vars(ctx, target);
             // The archive stage groups its binaries by target before naming
             // the asset after the first one, so a crate whose builds split by

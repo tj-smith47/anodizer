@@ -188,7 +188,7 @@ pub fn publish_to_cargo(
     // Resolved once and threaded, so the helpers that have no `Context` to ask
     // still read the same value.
     let retry_deadline = ctx.retry_deadline();
-    let minted = if ctx.is_dry_run() || ctx.should_skip("cargo") {
+    let issued = if ctx.is_dry_run() || ctx.should_skip("cargo") {
         None
     } else {
         resolve_workspace_cargo_token(ctx, &retry_policy, retry_deadline, log)?
@@ -200,8 +200,8 @@ pub fn publish_to_cargo(
     // not consult `ctx.env_source()`), but the overlay makes the token visible
     // to the rollback dispatcher's scope-availability gate — so a partial OIDC
     // publish can still yank, even though no ambient token exists. Under
-    // `auth: token` (ambient), `minted` is `None` and the context is untouched.
-    if let Some(ref token) = minted {
+    // `auth: token` (ambient), `issued` is `None` and the context is untouched.
+    if let Some(ref token) = issued {
         ctx.begin_cargo_trusted_publishing(token.clone());
     }
 
@@ -213,7 +213,7 @@ pub fn publish_to_cargo(
         move |name: &str, version: &str, policy: &_, log: &StageLogger| {
             is_already_published(name, version, policy, retry_deadline, log)
         },
-        minted.as_deref(),
+        issued.as_deref(),
     );
 
     // Revoke timing for an issued (OIDC) token:
@@ -225,7 +225,7 @@ pub fn publish_to_cargo(
     //   token and revoke it afterward.
     // A `?` between the token request and this decision would leak the token past its
     // release; there is none — the loop's error is captured in `result`.
-    if minted.is_some() {
+    if issued.is_some() {
         let published_something = !record.is_empty();
         let defer_for_rollback = result.is_err() && published_something;
         if !defer_for_rollback && let Some(token) = ctx.end_cargo_trusted_publishing() {
@@ -240,7 +240,7 @@ pub fn publish_to_cargo(
 /// per-workspace choice (the issued token authorizes every crate matching the
 /// repo's Trusted Publisher, so it is resolved once and reused).
 ///
-/// Returns `Some(minted)` only when Trusted Publishing actually issued a
+/// Returns `Some(token)` only when Trusted Publishing actually issued a
 /// token; `None` for the token/ambient path, which must stay behaviorally
 /// identical to today (inherit the ambient `CARGO_REGISTRY_TOKEN`, no
 /// injection, no revoke).

@@ -98,11 +98,7 @@ pub(crate) fn handle_dry_run(
     release_cfg: &anodizer_core::config::ReleaseConfig,
     s: DryRunSummary<'_>,
 ) -> Result<()> {
-    let backend_label = match ctx.token_type {
-        ScmTokenType::GitLab => "GitLab",
-        ScmTokenType::Gitea => "Gitea",
-        ScmTokenType::GitHub => "GitHub",
-    };
+    let backend_label = ctx.token_type.name();
 
     log_dry_run_provider_urls(ctx, log);
 

@@ -92,9 +92,11 @@ pub(crate) fn resolve_artifact_kind(use_value: Option<&str>) -> ArtifactKind {
 
 /// Resolve a GitHub token from the environment for a publisher's repository:
 /// the publisher-specific env var, then the run's GitHub token (`--token`, or
-/// the value the CLI resolved from `ANODIZER_GITHUB_TOKEN` / `GITHUB_TOKEN` /
-/// `GH_TOKEN` at startup), then `ANODIZER_GITHUB_TOKEN`, `GITHUB_TOKEN` and
-/// `GH_TOKEN`. Every value is trimmed, and one that is empty or only
+/// the value the CLI resolved at startup from `ANODIZER_GITHUB_TOKEN` /
+/// `GITHUB_TOKEN` / `GH_TOKEN`, or, when all three are unset or blank, from
+/// the GitHub token file or, with the list form of `env_files`, a
+/// `GITHUB_TOKEN` line in one of the env files), then
+/// `ANODIZER_GITHUB_TOKEN`, `GITHUB_TOKEN` and `GH_TOKEN`. Every value is trimmed, and one that is empty or only
 /// whitespace falls through ([`anodizer_core::git::non_blank_token`]).
 ///
 /// The publisher variable comes first because it names a token issued for

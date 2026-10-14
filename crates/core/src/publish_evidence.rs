@@ -563,7 +563,7 @@ pub struct HomebrewCoreTargetSnapshot {
     /// Where the bump's token came from. Never the token value.
     ///
     /// On the wire every source is written as `token_env_var`, the one field
-    /// releases up to 0.29.0 read, because those releases refuse a target
+    /// releases up to 0.28.1 read, because those releases refuse a target
     /// with any field they do not know: a variable as its name, and the
     /// other sources as `pull_request.token`, `repository.token` and
     /// `--token`, spellings no variable a publisher reads can have. An older
@@ -571,6 +571,15 @@ pub struct HomebrewCoreTargetSnapshot {
     /// goes on to the GitHub variables. A report is decoded back to the same
     /// source, so a report read and written again keeps its source, and an
     /// old and a new record of the same bump are equal.
+    ///
+    /// Release 0.28.1 prints the field with a `$` in front of it, so its
+    /// rollback of a bump recorded here names these spellings as variables:
+    /// `($--token / ANODIZER_GITHUB_TOKEN / GITHUB_TOKEN / GH_TOKEN all
+    /// unset)`, `$pull_request.token`, `$repository.token`, and `verify
+    /// $--token is set` after a 401 or 403. No spelling reads correctly
+    /// there: the field is the only
+    /// one it accepts, it prints every value as a variable, and a spelling
+    /// that names a real variable would make it read that variable.
     pub token_source: Option<TokenSource>,
 }
 
@@ -667,8 +676,9 @@ pub enum TokenSource {
     EnvVar(String),
     /// The run's GitHub token: `--token`, or the first of
     /// `ANODIZER_GITHUB_TOKEN`, `GITHUB_TOKEN` and `GH_TOKEN` the CLI read at
-    /// startup when `--token` is unset, or the GitHub token file when all
-    /// three are unset.
+    /// startup when `--token` is unset, or, when all three are unset, the
+    /// GitHub token file or a `GITHUB_TOKEN` line in one of the listed env
+    /// files.
     RunToken,
 }
 

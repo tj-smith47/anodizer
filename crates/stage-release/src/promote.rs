@@ -165,7 +165,9 @@ fn flip_one(
             "github-promote: no GitHub token resolved for {}/{}: {}",
             repo.owner,
             repo.name,
-            anodizer_core::git::github_token_hint()
+            req.ctx
+                .config
+                .missing_token_hint(anodizer_core::scm::ScmTokenType::GitHub)
         );
     };
     let flipped = rt.block_on(async {
@@ -439,7 +441,8 @@ pub fn preflight(ctx: &Context) -> Result<()> {
             "no GitHub token resolved for {}: {}. To promote without github, deselect it with \
              --publishers",
             untokened.join(", "),
-            anodizer_core::git::github_token_hint()
+            ctx.config
+                .missing_token_hint(anodizer_core::scm::ScmTokenType::GitHub)
         );
     }
     Ok(())

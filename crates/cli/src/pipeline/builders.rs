@@ -1152,7 +1152,7 @@ mod tests {
         // The subprocess returns 0 and prints to stdout — the run must succeed.
         // `output: true` plumbing is identical to the shared `run_hooks` path
         // already exercised by `crates/core/src/hooks.rs::tests`; this test
-        // tests the call site, not the output capture mechanism itself.
+        // holds the call site, and the capture itself is tested there.
         p.run(&mut ctx, &log)
             .expect("echo hook must succeed under before-publish");
     }

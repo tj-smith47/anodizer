@@ -4267,6 +4267,15 @@ mod secret_renders {
         ),
         ("let pattern", r"\blet\s+([A-Z][^=;]*)=([^;]*)"),
         (
+            "array",
+            r"\blet\s+(?:mut\s+)?\[([^\[\]=;]*)\]\s*(?::[^=;]+)?=([^;]*)",
+        ),
+        (
+            "assign",
+            r"(?:^|[;{}])\s*([a-z_][a-z0-9_]*)\s*=([^=;>][^;]*)",
+        ),
+        ("at arm", r"\b([a-z_][a-z0-9_]*)\s*@\s*[^=;{}]*?=>"),
+        (
             "tuple arm",
             r"\(((?:[^();{}]|\([^();{}]*\))*,(?:[^();{}]|\([^();{}]*\))*)\)\s*(?:if\b[^{};]*?)?=>",
         ),
@@ -4390,7 +4399,10 @@ mod secret_renders {
         /// (the scrutinee of the `match` the arm belongs to), a tuple arm
         /// `(Some(ident), _) =>` (the scrutinee's element at that position),
         /// a struct pattern `Holder { field: ident, .. }` (the expression's
-        /// `field`), or a closure parameter (the statement text before the
+        /// `field`), an array pattern `let [ident] = [...]` (the array), an
+        /// assignment `ident = …;` after a deferred `let ident;`, an `@`
+        /// binding `ident @ Some(_) =>` (the scrutinee), or a closure
+        /// parameter (the statement text before the
         /// closure, or for a closure stored with `let r = |v| …` the
         /// arguments of every later call `r(…)`). A `let` whose expression
         /// runs past `at` binds the part before it.
@@ -4400,7 +4412,7 @@ mod secret_renders {
                 b.start < at
                     && b.names.contains(ident)
                     && match b.kind {
-                        "let" | "tuple" | "let pattern" => {
+                        "let" | "tuple" | "let pattern" | "array" | "assign" => {
                             b.expression.is_some_and(|(s, _)| s <= at)
                         }
                         _ => b.end <= at,
@@ -4436,11 +4448,11 @@ mod secret_renders {
                     };
                     Some((start, with_field(pattern, expr)))
                 }
-                "arm" | "tuple arm" => {
+                "arm" | "at arm" | "tuple arm" => {
                     let brace = enclosing_brace(body, start)?;
                     let head = &body[statement_start(body, brace)..brace];
                     let scrutinee = &head[head.rfind("match ")? + "match ".len()..];
-                    if found.kind == "arm" {
+                    if found.kind != "tuple arm" {
                         return Some((start, Cow::Borrowed(scrutinee)));
                     }
                     let pattern = &body[start + 1..found.end];
@@ -4850,6 +4862,48 @@ mod secret_renders {
         );
     }
 
+    /// An array pattern, an `@` binding in a match arm and a deferred
+    /// `let` assigned later each bind the credential they are given.
+    #[test]
+    fn a_credential_bound_by_an_array_pattern_an_at_binding_or_a_deferred_let_is_reported() {
+        let names = BTreeSet::from(["webhook_url", "password"]);
+        let bodies = [
+            r#"fn array() {
+        let [u] = [cfg.webhook_url.clone().unwrap_or_default()];
+        ctx.render_template(&u)?;
+        let [c] = [cfg.color.clone().unwrap_or_default()];
+        ctx.render_template(&c)?;
+    }"#,
+            r#"fn at_binding() {
+        match cfg.webhook_url.as_deref() {
+            s @ Some(_) => ctx.render_template(s.unwrap_or_default())?,
+            None => {}
+        }
+        match cfg.color.as_deref() {
+            c @ Some(_) => ctx.render_template(c.unwrap_or_default())?,
+            None => {}
+        }
+    }"#,
+            r#"fn deferred() {
+        let u;
+        u = cfg.webhook_url.clone().unwrap_or_default();
+        ctx.render_template(&u)?;
+        let c;
+        c = cfg.color.clone().unwrap_or_default();
+        ctx.render_template(&c)?;
+    }"#,
+        ]
+        .map(str::to_string);
+        assert_eq!(
+            credential_render_calls(&bodies, &names),
+            vec![
+                (0, "render_template(&u)".to_string()),
+                (1, "render_template(s.unwrap_or_default())".to_string()),
+                (2, "render_template(&u)".to_string()),
+            ]
+        );
+    }
+
     /// A value a call builds from a credential argument is reported when it
     /// is rendered whole, and passes when a method is called on it first,
     /// since a binding keeps a call's arguments only for a whole read.
@@ -5045,6 +5099,11 @@ mod credential_env_reads {
         "!= Some(\"\")",
         "len() > 0",
         "len() == 0",
+        "len() != 0",
+        "count() > 0",
+        "count() == 0",
+        "count() != 0",
+        "unwrap_or(",
         "Ok(\"\")",
         "is_ok()",
         "is_err()",
@@ -5114,6 +5173,14 @@ mod credential_env_reads {
             cached_regex(r"(?:\.(?:as_ref|as_str|as_deref|to_string|to_owned|clone|into)\(\))+$")
                 .replace(arg, "");
         let arg = arg.as_ref();
+        // `concat!("NPM_TOK", "EN")` names the literal its pieces join to.
+        if let Some(pieces) = arg.strip_prefix("concat!(") {
+            let joined: String = cached_regex(r#""([^"]*)""#)
+                .captures_iter(pieces)
+                .map(|c| c[1].to_string())
+                .collect();
+            return is_credential_name(&joined);
+        }
         if arg.contains('"') {
             return has_credential_literal(arg);
         }
@@ -5621,6 +5688,49 @@ const NPM_USER: &str = "NPM_USER";"#;
                 vec![r#".var("GITHUB_TOKEN")"#.to_string()],
                 vec![r#".var("NPM_TOKEN") else"#.to_string()],
                 Vec::<String>::new(),
+                Vec::<String>::new(),
+            ]
+        );
+    }
+
+    /// A read defaulted by `unwrap_or(…)`, a value counted with `len() != 0`
+    /// or `.chars().count() > 0`, and a name joined by `concat!` are
+    /// presence tests on a credential, and the trimmed control is not.
+    #[test]
+    fn a_credential_read_defaulted_counted_or_named_by_concat_is_reported() {
+        let cases = [
+            r#"fn defaulted() {
+            let t = std::env::var("NPM_TOKEN").unwrap_or(String::new());
+            if t.len() != 0 { send(t); }
+        }"#,
+            r#"fn counted() {
+            if std::env::var("NPM_TOKEN").map(|v| v.chars().count()).unwrap_or(0) > 0 { go(); }
+        }"#,
+            r#"fn concatenated() {
+            if std::env::var(concat!("NPM_TOK", "EN")).unwrap_or_default().is_empty() { return; }
+            if std::env::var(concat!("NPM_US", "ER")).unwrap_or_default().is_empty() { return; }
+        }"#,
+            r#"fn control() {
+            if std::env::var("NPM_TOKEN").map(|v| v.trim().chars().count()).unwrap_or(0) > 0 { go(); }
+        }"#,
+        ];
+        let consts = BTreeSet::new();
+        let got: Vec<Vec<String>> = cases
+            .iter()
+            .map(|body| bare_empty_credential_reads(body, &consts))
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                vec![r#"env::var("NPM_TOKEN").unwrap_or(String::new())"#.to_string()],
+                vec![
+                    r#"env::var("NPM_TOKEN").map(|v| v.chars().count()).unwrap_or(0) > 0"#
+                        .to_string()
+                ],
+                vec![
+                    r#"env::var(concat!("NPM_TOK", "EN")).unwrap_or_default().is_empty()"#
+                        .to_string()
+                ],
                 Vec::<String>::new(),
             ]
         );
