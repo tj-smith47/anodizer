@@ -2608,6 +2608,22 @@ fn winget_probe_token_prefers_github_token_via_env_seam() {
     );
     let empty = anodizer_core::MapEnvSource::new();
     assert_eq!(winget_probe_token(&empty, None), None);
+
+    let dir = tempfile::TempDir::new().unwrap();
+    let dotenv = dir.path().join(".env");
+    std::fs::write(&dotenv, "GITHUB_TOKEN=gh-dotenv\n").unwrap();
+    let listed =
+        anodizer_core::config::EnvFilesConfig::List(vec![dotenv.to_string_lossy().to_string()]);
+    assert_eq!(
+        winget_probe_token(&empty, Some(&listed)).as_deref(),
+        Some("gh-dotenv"),
+        "a GitHub token line in a listed env file is the last source"
+    );
+    assert_eq!(
+        winget_probe_token(&fallback_only, Some(&listed)).as_deref(),
+        Some("gh-fallback"),
+        "a variable is read before the env-file line"
+    );
 }
 
 #[test]

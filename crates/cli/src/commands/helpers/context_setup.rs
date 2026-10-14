@@ -244,12 +244,13 @@ pub fn setup_context(ctx: &mut Context, config: &Config, log: &StageLogger) -> R
 /// The forge a run releases to, in the order the release docs give:
 /// `release.provider`, `force_token`, `ANODIZER_FORCE_TOKEN` /
 /// `GORELEASER_FORCE_TOKEN`, a GitLab token, a Gitea token, then the release
-/// blocks, then GitHub. `file_tokens` holds the tokens the config's files
-/// carry ([`anodizer_core::config::token_file_tokens`]); a token there counts
-/// as the variable it stands for.
+/// blocks, then GitHub. `file_tokens` holds the tokens the config's token
+/// files carry ([`anodizer_core::config::token_file_tokens`]); a token there
+/// counts as the variable it stands for. A token line in a listed env file
+/// is not read here.
 ///
-/// The release blocks decide only when no forge variable or file holds a
-/// token: a config whose release blocks name only `gitlab:` (or only
+/// The release blocks decide only when no forge variable or token file holds
+/// a token: a config whose release blocks name only `gitlab:` (or only
 /// `gitea:`) releases there, so a missing token is reported for that forge.
 pub(crate) fn detect_forge<E: anodizer_core::env_source::EnvSource + ?Sized>(
     config: &Config,
@@ -323,18 +324,21 @@ fn release_block_forge(config: &Config) -> Option<&'static str> {
 ///
 /// A token file (`env_files.github_token` / `gitlab_token` / `gitea_token`,
 /// or the default `~/.config/anodizer/<forge>_token` then
-/// `~/.config/goreleaser/<forge>_token`), or with the list form of
-/// `env_files` a token line in one of the `.env` files, counts as the
-/// variable it stands for in the detection above.
+/// `~/.config/goreleaser/<forge>_token`) counts as the variable it stands
+/// for in the detection above. A token line in a listed `.env` file does
+/// not count there: it never picks the forge.
 ///
 /// It also resolves the token value into `ctx.options.token` (if not already
 /// set by a CLI flag), the first that holds a value of:
-/// - GitLab: `GITLAB_TOKEN`, then the GitLab token file or env-file line
-/// - Gitea: `GITEA_TOKEN`, then the Gitea token file or env-file line
-/// - GitHub: `ANODIZER_GITHUB_TOKEN`, `GITHUB_TOKEN`, `GH_TOKEN`, then the
-///   GitHub token file or env-file line
+/// - GitLab: `GITLAB_TOKEN`, the GitLab token file, then a `GITLAB_TOKEN`
+///   line in a listed env file
+/// - Gitea: `GITEA_TOKEN`, the Gitea token file, then a `GITEA_TOKEN` line
+///   in a listed env file
+/// - GitHub: `ANODIZER_GITHUB_TOKEN`, `GITHUB_TOKEN`, `GH_TOKEN`, the GitHub
+///   token file, then one of those variables as a line in a listed env file
 ///
-/// A token file or env file that exists but cannot be read is an error.
+/// A line for another forge is ignored. A token file or env file that exists
+/// but cannot be read is an error.
 pub fn resolve_scm_token_type(ctx: &mut Context, config: &Config) -> Result<()> {
     let file_tokens =
         anodizer_core::config::token_file_tokens(config.env_files.as_ref(), ctx.env_source())
@@ -370,6 +374,11 @@ pub fn resolve_scm_token_type(ctx: &mut Context, config: &Config) -> Result<()> 
                     .or_else(|| from_file("GITHUB_TOKEN"))
             }
         };
+    }
+    if ctx.options.token.is_none() {
+        ctx.options.token =
+            anodizer_core::config::env_file_token(config.env_files.as_ref(), ctx.token_type)
+                .map_err(anyhow::Error::msg)?;
     }
     Ok(())
 }

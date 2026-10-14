@@ -159,19 +159,20 @@ pub fn setup_env(
             ctx.template_vars_mut().set_config_env(key, value);
         }
     }
-    // A forge token held in a token file, or in an env-file line under the
-    // list form, is set in the process environment too, so a child process
-    // that reads `GITHUB_TOKEN` itself (`gh`, `git` credential helpers) sees
-    // the token the run uses.
-    let token_vars = anodizer_core::config::file_tokens_with_log(
-        config.env_files.as_ref(),
-        log,
-        ctx.env_source(),
-    )
-    .map_err(anyhow::Error::msg)?;
-    for (key, value) in &token_vars {
-        ctx.template_vars_mut().set_config_env(key, value);
-        set_env_var_single_threaded(key, value);
+    // A forge token held in a token file is set in the process environment
+    // too, so a child process that reads `GITHUB_TOKEN` itself (`gh`, `git`
+    // credential helpers) sees it. A token line in a listed env file stays in
+    // the template env only: it is the run token's last source for the forge
+    // already chosen, and in the process environment it would count as a
+    // second forge token in the check below.
+    if let Some(paths) = anodizer_core::config::token_file_config(config.env_files.as_ref()) {
+        let token_vars =
+            anodizer_core::config::load_token_files_with_env(&paths, log, ctx.env_source())
+                .map_err(anyhow::Error::msg)?;
+        for (key, value) in &token_vars {
+            ctx.template_vars_mut().set_config_env(key, value);
+            set_env_var_single_threaded(key, value);
+        }
     }
 
     // Populate user-defined env vars into template context (highest priority).

@@ -257,8 +257,8 @@ env_files:
 
 The list form of `env_files` names `.env` files and turns the token files
 off: no `~/.config/.../github_token` file is read. A token line in one of the
-listed files takes the token file's place instead, read when every variable
-is unset or blank. For GitHub that is the first of `ANODIZER_GITHUB_TOKEN`,
+listed files takes the token file's place instead, for the forge the run
+releases to, read when every variable is unset or blank. For GitHub that is the first of `ANODIZER_GITHUB_TOKEN`,
 `GITHUB_TOKEN` and `GH_TOKEN` the files set, for GitLab `GITLAB_TOKEN` and for
 Gitea `GITEA_TOKEN`:
 
@@ -283,10 +283,18 @@ GitLab or Gitea:
 | 1 | `release.provider` | `github`, `gitlab`, `gitea` |
 | 2 | top-level `force_token` | `github`, `gitlab`, `gitea` |
 | 3 | `ANODIZER_FORCE_TOKEN`; when it is unset or blank, `GORELEASER_FORCE_TOKEN`; both are trimmed | the same three, in any letter case; any other value is ignored |
-| 4 | `GITLAB_TOKEN` in the environment, or a GitLab token file or env-file line | GitLab |
-| 5 | `GITEA_TOKEN` in the environment, or a Gitea token file or env-file line | Gitea |
-| 6 | no forge token set anywhere, and every release block names `gitlab:` only (or `gitea:` only) | that forge |
+| 4 | `GITLAB_TOKEN` in the environment, or a GitLab token file | GitLab |
+| 5 | `GITEA_TOKEN` in the environment, or a Gitea token file | Gitea |
+| 6 | no forge variable or token file holds a token, and every release block names `gitlab:` only (or `gitea:` only) | that forge |
 | 7 | nothing set | GitHub |
+
+A token line in a listed env file never picks the forge. Once the forge is
+chosen, only that forge's line is read, and only as its last token source. A
+line for another forge is template env only, and no line counts toward the
+`multiple SCM tokens set simultaneously` check, which reads the environment
+variables. A `github:` block filled in from a github.com `origin` remote
+counts as a release block in row 6, so a GitLab or Gitea release from such a
+checkout sets `provider` or `force_token`.
 
 A project whose CI holds a `GITLAB_TOKEN` for another job and releases to
 GitHub sets `provider: github`:

@@ -2820,6 +2820,17 @@ fn run_token_preflight(
     root: &str,
     env: &[(&str, String)],
 ) -> (std::process::Output, Vec<String>) {
+    run_token_preflight_with(forge, home, root, env, &[])
+}
+
+/// [`run_token_preflight`] with `args` added to the command line.
+fn run_token_preflight_with(
+    forge: (&str, &str, &str, &str, &str, &str, &str),
+    home: &std::path::Path,
+    root: &str,
+    env: &[(&str, String)],
+    args: &[&str],
+) -> (std::process::Output, Vec<String>) {
     let (name, urls, path, body, _, header, scheme) = forge;
     let (api, log) = json_api(vec![(
         Box::leak(path.to_string().into_boxed_str()),
@@ -2829,7 +2840,9 @@ fn run_token_preflight(
     let tmp = single_crate_release_fixture_with(&root, &forge_release(name, "open", ""));
     let mut env = env.to_vec();
     env.push(("HOME", home.to_string_lossy().to_string()));
-    let out = run_forge_preflight(tmp.path(), &env, &["--json"]);
+    let mut args = args.to_vec();
+    args.push("--json");
+    let out = run_forge_preflight(tmp.path(), &env, &args);
     let mut sent: Vec<String> = log
         .lock()
         .unwrap()
@@ -2842,8 +2855,9 @@ fn run_token_preflight(
 }
 
 /// A token held only in the forge's default token file, or only in a token
-/// line of a listed env file, is the run token on GitHub, GitLab and Gitea,
-/// and a variable set beside the file is read first.
+/// line of a listed env file for the forge the run releases to, is the run
+/// token on GitHub, GitLab and Gitea, and a variable set beside the file is
+/// read first.
 #[test]
 fn a_token_held_only_in_a_file_is_the_run_token_on_every_forge() {
     if !tool_on_path("git") {
@@ -2875,7 +2889,13 @@ fn a_token_held_only_in_a_file_is_the_run_token_on_every_forge() {
         let bare = TempDir::new().unwrap();
         let dotenv = bare.path().join(".env.x");
         std::fs::write(&dotenv, format!("{var}={name}_from_dotenv\n")).unwrap();
-        let listed = format!("env_files:\n  - {}\n", dotenv.display());
+        // An env-file line never picks the forge, and the fixture's
+        // github.com remote fills a `github:` block beside the forge's own,
+        // so `force_token` names the forge whose line is read.
+        let listed = format!(
+            "force_token: {name}\nenv_files:\n  - {}\n",
+            dotenv.display()
+        );
         let (out, sent) = run_token_preflight(forge, bare.path(), &listed, &[]);
         assert_eq!(
             sent,
@@ -2933,5 +2953,91 @@ fn a_missing_token_names_the_file_the_config_reads() {
             )],
             "{root}"
         );
+    }
+}
+
+/// A token line in a listed env file is read only for the forge the run has
+/// already chosen. A `GITLAB_TOKEN` line beside a config whose only release
+/// block is `release.github:` leaves the run on GitHub, with or without
+/// `--token`.
+#[test]
+fn an_env_file_token_line_for_another_forge_does_not_move_the_release() {
+    if !tool_on_path("git") {
+        eprintln!("skipping: git not on PATH");
+        return;
+    }
+    let home = TempDir::new().unwrap();
+    let dotenv = home.path().join(".env.gl");
+    std::fs::write(&dotenv, "GITLAB_TOKEN=glpat_dotenv\n").unwrap();
+    let listed = format!("env_files:\n  - {}\n", dotenv.display());
+    let github = RUN_TOKEN_FORGES[0];
+    let (out, sent) =
+        run_token_preflight_with(github, home.path(), &listed, &[], &["--token", "ghp_flag"]);
+    assert_eq!(
+        sent,
+        vec!["ghp_flag".to_string()],
+        "the GitHub API gets the --token value: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(out.status.success(), "{}", json_report(&out));
+
+    let (out, sent) = run_token_preflight(github, home.path(), &listed, &[]);
+    assert!(sent.is_empty(), "no token reaches the API: {sent:?}");
+    let blockers = strings(&json_report(&out)["publishers"], "blockers");
+    assert_eq!(blockers.len(), 1, "{blockers:?}");
+    assert!(
+        blockers[0].starts_with("github-release: no GitHub token resolved"),
+        "{blockers:?}"
+    );
+}
+
+/// The multiple-token check reads real variables only, so a token line in a
+/// listed env file never counts as a second forge token: not beside another
+/// forge's variable, and not beside another line when `--token` is passed.
+#[test]
+fn an_env_file_token_line_is_never_a_second_forge_token() {
+    if !tool_on_path("git") {
+        eprintln!("skipping: git not on PATH");
+        return;
+    }
+    let [github, gitlab, _] = RUN_TOKEN_FORGES;
+    let cases = [
+        (
+            gitlab,
+            "GITHUB_TOKEN=ghp_dotenv\n",
+            Some(("GITLAB_TOKEN", "glpat_env")),
+            None,
+            "glpat_env",
+        ),
+        (
+            github,
+            "GITLAB_TOKEN=glpat_dotenv\n",
+            Some(("GITHUB_TOKEN", "ghp_var")),
+            None,
+            "ghp_var",
+        ),
+        (
+            github,
+            "GITHUB_TOKEN=ghp_dotenv\nGITLAB_TOKEN=glpat_dotenv\n",
+            None,
+            Some("ghp_flag"),
+            "ghp_flag",
+        ),
+    ];
+    for (forge, body, var, cli_token, token) in cases {
+        let env: Vec<(&str, String)> = var.map(|(k, v)| (k, v.to_string())).into_iter().collect();
+        let args: Vec<&str> = cli_token.map(|t| vec!["--token", t]).unwrap_or_default();
+        let home = TempDir::new().unwrap();
+        let dotenv = home.path().join(".env.x");
+        std::fs::write(&dotenv, body).unwrap();
+        let listed = format!("env_files:\n  - {}\n", dotenv.display());
+        let (out, sent) = run_token_preflight_with(forge, home.path(), &listed, &env, &args);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            !stderr.contains("multiple SCM tokens"),
+            "{body:?} {env:?}: {stderr}"
+        );
+        assert_eq!(sent, vec![token.to_string()], "{body:?} {env:?}: {stderr}");
+        assert!(out.status.success(), "{body:?} {env:?}: {stderr}");
     }
 }

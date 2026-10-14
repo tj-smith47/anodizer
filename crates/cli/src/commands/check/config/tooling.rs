@@ -72,10 +72,10 @@ pub(super) fn check_docker_tooling(config: &Config, warnings: &mut Vec<String>) 
 }
 
 /// Warn when release sections are configured and the forge the run would
-/// release to has no token in any source the run reads: its variables, then
-/// its token file or env-file line. A blank variable counts as unset. A file
-/// that cannot be read is reported by the release itself; here it counts as
-/// no token.
+/// release to has no token in any source the run reads: its variables, its
+/// token file, then its line in a listed env file. A blank variable counts as
+/// unset. A file that cannot be read is reported by the release itself; here
+/// it counts as no token.
 pub(super) fn check_forge_token<E: anodizer_core::env_source::EnvSource + ?Sized>(
     config: &Config,
     env: &E,
@@ -94,7 +94,13 @@ pub(super) fn check_forge_token<E: anodizer_core::env_source::EnvSource + ?Sized
             .and_then(anodizer_core::git::non_blank_token)
             .is_some()
     });
-    if has_var || file_tokens.contains_key(anodizer_core::config::forge_file_var(forge)) {
+    if has_var
+        || file_tokens.contains_key(anodizer_core::config::forge_file_var(forge))
+        || anodizer_core::config::env_file_token(config.env_files.as_ref(), forge)
+            .ok()
+            .flatten()
+            .is_some()
+    {
         return;
     }
     let vars = vars.join(" or ");

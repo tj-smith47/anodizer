@@ -57,18 +57,27 @@ pub(super) struct WingetProbeSpec {
 
 /// Ambient GitHub token for the winget burn probe, read through the injected
 /// env source in the run token's order: `ANODIZER_GITHUB_TOKEN`,
-/// `GITHUB_TOKEN`, `GH_TOKEN`, then the GitHub token file `env_files` names
-/// (or the default one). The probe is a read-only public search that works
-/// anonymously; the token only buys a higher rate limit, so a token file that
-/// cannot be read leaves the probe anonymous.
+/// `GITHUB_TOKEN`, `GH_TOKEN`, the GitHub token file `env_files` names (or
+/// the default one), then a GitHub token line in a listed env file. The
+/// probe is a read-only public search that works anonymously; the token only
+/// buys a higher rate limit, so a token file or env file that cannot be read
+/// leaves the probe anonymous.
 pub(super) fn winget_probe_token<E: anodizer_core::EnvSource + ?Sized>(
     env: &E,
     env_files: Option<&anodizer_core::config::EnvFilesConfig>,
 ) -> Option<String> {
     anodizer_core::git::resolve_github_token_with_env(None, &|key| env.var(key)).or_else(|| {
         anodizer_core::config::token_file_tokens(env_files, env)
-            .ok()?
-            .remove("GITHUB_TOKEN")
+            .ok()
+            .and_then(|mut tokens| tokens.remove("GITHUB_TOKEN"))
+            .or_else(|| {
+                anodizer_core::config::env_file_token(
+                    env_files,
+                    anodizer_core::scm::ScmTokenType::GitHub,
+                )
+                .ok()
+                .flatten()
+            })
     })
 }
 

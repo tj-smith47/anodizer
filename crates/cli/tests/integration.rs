@@ -6603,10 +6603,10 @@ fn a_github_token_held_only_in_a_token_file_is_the_run_token() {
         home.path(),
         &format!("env_files:\n  - {}\n", dotenv.display()),
     );
+    // The control run above stops at the token check, so passing it here
+    // means the env-file line was read as the run token.
     assert!(
-        !stopped_at_the_token_check(&output)
-            && String::from_utf8_lossy(&output.stderr)
-                .contains("loaded GITHUB_TOKEN from the env files"),
+        !stopped_at_the_token_check(&output),
         "a GITHUB_TOKEN line in a listed env file is the run token: {}",
         String::from_utf8_lossy(&output.stderr)
     );

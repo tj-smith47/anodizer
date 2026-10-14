@@ -3676,3 +3676,136 @@ fn the_missing_token_error_quoted_in_the_github_docs_is_what_the_run_prints() {
     let err = setup_env(&mut ctx, &config, &quiet_log()).expect_err("no token must stop the run");
     assert_eq!(vec![err.to_string()], quoted);
 }
+
+fn listed_env_files(dir: &std::path::Path, body: &str) -> anodizer_core::config::EnvFilesConfig {
+    let path = dir.join(".env");
+    std::fs::write(&path, body).unwrap();
+    anodizer_core::config::EnvFilesConfig::List(vec![path.to_string_lossy().to_string()])
+}
+
+/// A token line in a listed env file is read only for the forge the run has
+/// already chosen. A `GITLAB_TOKEN` line on a config whose only release
+/// block is `release.github:` leaves the run on GitHub.
+#[test]
+fn an_env_file_token_line_never_picks_the_forge() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let home = dir.path().to_string_lossy().to_string();
+    let config = Config {
+        env_files: Some(listed_env_files(dir.path(), "GITLAB_TOKEN=glpat_dotenv\n")),
+        ..config_releasing_on(&["github"])
+    };
+    let mut ctx = ctx_with_env(&config, &[("HOME", &home)]);
+    resolve_scm_token_type(&mut ctx, &config).expect("resolve the run token");
+    assert_eq!(ctx.token_type, ScmTokenType::GitHub);
+    assert_eq!(ctx.options.token, None, "a GitLab line is no GitHub token");
+
+    let mut ctx = ctx_with_env_and_cli_token(&config, &[("HOME", &home)], "ghp_flag");
+    resolve_scm_token_type(&mut ctx, &config).expect("resolve the run token");
+    assert_eq!(ctx.token_type, ScmTokenType::GitHub);
+    assert_eq!(ctx.options.token.as_deref(), Some("ghp_flag"));
+}
+
+/// The token order on every forge ends with the env-file line: a variable
+/// beats it, and a blank variable falls through to it.
+#[test]
+fn a_variable_outranks_an_env_file_token_line_and_a_blank_one_falls_through() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let home = dir.path().to_string_lossy().to_string();
+    let env_files = listed_env_files(
+        dir.path(),
+        "GITHUB_TOKEN=ghp_dotenv\nGITLAB_TOKEN=glpat_dotenv\nGITEA_TOKEN=gitea_dotenv\n",
+    );
+    for (forge, kind, var, expected_var, expected_line) in [
+        (
+            "github",
+            ScmTokenType::GitHub,
+            "GH_TOKEN",
+            "ghp_var",
+            "ghp_dotenv",
+        ),
+        (
+            "gitlab",
+            ScmTokenType::GitLab,
+            "GITLAB_TOKEN",
+            "glpat_var",
+            "glpat_dotenv",
+        ),
+        (
+            "gitea",
+            ScmTokenType::Gitea,
+            "GITEA_TOKEN",
+            "gitea_var",
+            "gitea_dotenv",
+        ),
+    ] {
+        let config = Config {
+            env_files: Some(env_files.clone()),
+            ..config_releasing_on(&[forge])
+        };
+        let mut ctx = ctx_with_env(&config, &[("HOME", &home), (var, expected_var)]);
+        resolve_scm_token_type(&mut ctx, &config).expect("resolve the run token");
+        assert_eq!(ctx.token_type, kind, "{forge}");
+        assert_eq!(ctx.options.token.as_deref(), Some(expected_var), "{forge}");
+
+        let mut ctx = ctx_with_env(&config, &[("HOME", &home), (var, "  ")]);
+        resolve_scm_token_type(&mut ctx, &config).expect("resolve the run token");
+        assert_eq!(ctx.token_type, kind, "{forge}");
+        assert_eq!(ctx.options.token.as_deref(), Some(expected_line), "{forge}");
+    }
+}
+
+/// The multiple-token check reads real variables only. A token line in a
+/// listed env file is never a second forge token: not beside another
+/// forge's variable, and not beside another line in the same file.
+#[cfg(unix)]
+#[test]
+#[serial_test::serial(setup_env)]
+fn an_env_file_token_line_is_never_a_second_forge_token() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let home = dir.path().to_string_lossy().to_string();
+    let cases = [
+        (
+            "GITHUB_TOKEN=ghp_dotenv\n",
+            Some(("GITLAB_TOKEN", "glpat_env")),
+            None,
+            ScmTokenType::GitLab,
+            "glpat_env",
+        ),
+        (
+            "GITLAB_TOKEN=glpat_dotenv\n",
+            Some(("GITHUB_TOKEN", "ghp_var")),
+            None,
+            ScmTokenType::GitHub,
+            "ghp_var",
+        ),
+        (
+            "GITHUB_TOKEN=ghp_dotenv\nGITLAB_TOKEN=glpat_dotenv\n",
+            None,
+            Some("ghp_flag"),
+            ScmTokenType::GitHub,
+            "ghp_flag",
+        ),
+    ];
+    for (body, vars, cli_token, forge, token) in cases {
+        let config = Config {
+            env_files: Some(listed_env_files(dir.path(), body)),
+            ..config_releasing_on(&["github"])
+        };
+        let mut env = vec![("HOME", home.as_str())];
+        env.extend(vars);
+        let mut ctx = ctx_with_env_inner(&config, &env, cli_token.map(str::to_string));
+        resolve_scm_token_type(&mut ctx, &config).expect("resolve the run token");
+        assert_eq!(ctx.token_type, forge, "{body:?} {vars:?}");
+        assert_eq!(
+            ctx.options.token.as_deref(),
+            Some(token),
+            "{body:?} {vars:?}"
+        );
+        setup_env(&mut ctx, &config, &quiet_log())
+            .unwrap_or_else(|e| panic!("{body:?} {vars:?}: {e}"));
+        assert!(
+            std::env::vars().all(|(_, value)| !value.ends_with("_dotenv")),
+            "{body:?} {vars:?}: an env-file line entered the process environment"
+        );
+    }
+}

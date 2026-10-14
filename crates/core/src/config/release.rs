@@ -192,7 +192,15 @@ pub struct ReleaseConfig {
     /// 4. `GITLAB_TOKEN` set in the environment, or a GitLab token file:
     ///    GitLab;
     /// 5. `GITEA_TOKEN` set in the environment, or a Gitea token file: Gitea;
-    /// 6. GitHub.
+    /// 6. when no forge variable or token file holds a token, the release
+    ///    blocks: every one naming `gitlab:` only gives GitLab, every one
+    ///    naming `gitea:` only gives Gitea;
+    /// 7. GitHub.
+    ///
+    /// A token line in a listed env file (the list form of `env_files`)
+    /// never picks the provider. Once the provider is chosen, its line is
+    /// the last source of the run token, after `--token`, the provider's
+    /// variables and its token file.
     ///
     /// Set it for cross-platform publishing, where the source repo lives on
     /// one provider (e.g. GitLab) and releases go to another (e.g. GitHub),
