@@ -119,7 +119,7 @@ pub(crate) fn rollback_publish(
             &t.fork_owner,
             &t.branch,
             Some(&token),
-            env_hint,
+            &format!("${env_hint}"),
             env,
         ) {
             Ok(v) => v,
@@ -475,8 +475,7 @@ mod tests {
     fn rollback_skips_target_when_no_token_resolvable() {
         let capture = LogCapture::new();
         // An address that refuses connections proves the skip arm makes no
-        // request (a connect would show up as a query-failure warn instead of
-        // the no-token warn).
+        // request (a connect would show up as a query-failure warn).
         let dead_addr = anodizer_core::test_helpers::refusing_addr::refusing_addr();
 
         // env carries the API base but NONE of SCHEMASTORE_TOKEN /

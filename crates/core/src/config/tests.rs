@@ -6995,7 +6995,7 @@ sboms:
     assert!(s.env.is_none());
 }
 
-// env map-form rejection tests (must be Vec<String>, not map)
+// env map-form rejection tests (`env:` must be a Vec<String>)
 
 /// Assert that the given YAML fails to deserialize into `Config` because an
 /// `env:` field was supplied as a map (`KEY: value`), where the
@@ -7820,7 +7820,7 @@ fn test_evaluate_if_condition_bool_vars_snapshot_vs_release() {
     assert!(!eval(true, "{{ not IsSnapshot or IsHarness }}"));
 }
 
-// F2: `disable` → `skip` serde aliases
+// `disable` → `skip` serde aliases
 //
 // Imported docker_v2/snapcraft/nsis/msi/release configs use `disable:`;
 // anodizer renamed to `skip:`. With `deny_unknown_fields` on the
@@ -8260,7 +8260,7 @@ dockers_v2:
     super::validate_no_docker_v1(&raw).expect("dockers_v2 only must pass");
 }
 
-// F3: legacy archive/snapshot/build aliases
+// Legacy archive/snapshot/build aliases
 
 #[test]
 fn test_archives_format_singular_alias_folds_into_formats() {
@@ -9723,7 +9723,7 @@ crates: []
 
 // Deprecation aliases
 
-// Row 1+2: nested docker_v2[].retry / docker_manifests[].retry
+// Nested docker_v2[].retry / docker_manifests[].retry
 
 #[test]
 fn legacy_docker_retry_warns_for_docker_v2() {
@@ -9833,7 +9833,7 @@ workspaces:
     );
 }
 
-// Row 3: V1 dockers: block rejection
+// V1 dockers: block rejection
 //
 // `test_v1_dockers_block_rejected_with_migration_message` already covers the
 // rejection. Add a sibling test asserting the load_config path also reports
@@ -9862,7 +9862,7 @@ dockers:
     assert!(err.contains("dockers_v2"), "missing v2 pointer: {err}");
 }
 
-// Row 4: furies: → gemfury: rename (v2.14)
+// furies: → gemfury: rename (v2.14)
 
 #[test]
 fn legacy_furies_top_level_parses_as_gemfury() {
@@ -10278,7 +10278,7 @@ dockers_v2:
     );
 }
 
-// Row 5: nested mcp.github (v2.13.1)
+// Nested mcp.github (v2.13.1)
 
 #[test]
 fn legacy_mcp_github_block_rejected_with_migration_message() {
@@ -10316,7 +10316,7 @@ mcp:
     super::validate_no_mcp_github(&raw).expect("canonical mcp.* must pass");
 }
 
-// Row 6: homebrew_casks[].binary singular → binaries plural (v2.12.6)
+// homebrew_casks[].binary singular → binaries plural (v2.12.6)
 
 #[test]
 fn legacy_homebrew_cask_binary_singular_folds_into_binaries() {
@@ -10423,7 +10423,7 @@ crates:
     assert!(cask.legacy_binary.is_none());
 }
 
-// Row 6b: homebrew_casks[].manpage singular → manpages plural
+// homebrew_casks[].manpage singular → manpages plural
 
 #[test]
 fn legacy_homebrew_cask_manpage_singular_folds_into_manpages() {

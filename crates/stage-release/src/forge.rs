@@ -164,7 +164,7 @@ fn upload_pace_delay(idx: usize, pace: Duration) -> Option<Duration> {
 ///    an idempotent skip REGARDLESS of `replace_existing_artifacts`, a
 ///    differing one is deleted first only when the user opted in — then
 ///    upload.
-/// 5. Drain: first task failure aborts the loop; a panicked task is reported as
+/// 5. Collect results: first task failure aborts the loop; a panicked task is reported as
 ///    `release: upload task panicked`.
 pub(crate) async fn run_upload_loop<C: ForgeAssetClient>(
     client: Arc<C>,

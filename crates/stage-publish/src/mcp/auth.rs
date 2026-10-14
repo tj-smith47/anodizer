@@ -13,8 +13,8 @@
 //!
 //! The retry policy is threaded through every HTTP call — auth-exchange
 //! 5xx / transport failures retry per the user's top-level `retry:` block,
-//! 4xx fast-fails so a bad token shows up immediately instead of after
-//! a 10-attempt sleep cascade. The wall-clock deadline
+//! 4xx fast-fails so a bad token shows up immediately, with no 10-attempt
+//! sleep cascade. The wall-clock deadline
 //! (`Context::retry_deadline`) rides alongside it so a wedged registry cannot
 //! spend the whole attempt ladder inside the auth exchange.
 

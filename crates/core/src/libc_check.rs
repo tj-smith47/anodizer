@@ -159,9 +159,8 @@ fn scan_glibc_requirement<Elf: FileHeader<Endian = Endianness>>(
     elf_bytes: &[u8],
 ) -> Result<Option<GlibcVersion>> {
     // A malformed section/symbol table on an otherwise-valid ELF header is
-    // uninspectable, not a glibc violation: each step degrades to SKIP
-    // (`Ok(None)`) rather than returning an error the caller would log as a
-    // false post-release issue.
+    // uninspectable and says nothing about glibc: each step degrades to SKIP
+    // (`Ok(None)`) so the caller logs no false post-release issue.
     let Ok(endian) = elf.endian() else {
         return Ok(None);
     };
@@ -549,8 +548,8 @@ mod tests {
 
     #[test]
     fn non_elf_degrades_to_skip() {
-        // A non-ELF or unparseable artifact must DEGRADE TO SKIP, not return a
-        // libc-check error the stage would log as a false post-release issue.
+        // A non-ELF or unparseable artifact must DEGRADE TO SKIP, so the stage
+        // logs no false post-release libc-check issue.
         let max = max_glibc_requirement(b"not an elf at all").unwrap();
         assert!(max.is_none());
         let out = check_glibc_ceiling(b"\x7fELFgarbage", "2.36").unwrap();

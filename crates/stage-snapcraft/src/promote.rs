@@ -328,8 +328,7 @@ fn recorded_revisions(report: &PublishReport, snap_name: &str) -> Vec<String> {
 /// registered or holding no revisions — which promotion treats as "nothing to
 /// promote" (a skip). `Err` is reserved for a genuine probe/auth error (the
 /// probe could not run, or the store answered with an authentication /
-/// connectivity fault), which must be reported honestly rather than masquerade as
-/// an empty promote.
+/// connectivity fault), which must be reported as an error.
 fn list_revisions(snap_name: &str, log: &StageLogger) -> Result<Option<String>> {
     let args = snapcraft_list_revisions_command(snap_name);
     let mut cmd = Command::new(&args[0]);
@@ -1187,7 +1186,7 @@ Rev    Uploaded              Arches  Version  Channels
     }
 
     // A genuine probe/auth error (non-zero exit with NO absent marker)
-    // must be reported honestly as a failure, never masquerade as an empty skip.
+    // must be reported as a failure.
     #[cfg(unix)]
     #[test]
     #[serial_test::serial(path_env)]

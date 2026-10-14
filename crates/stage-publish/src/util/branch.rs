@@ -273,8 +273,8 @@ mod tests {
         assert!(fetch_default_branch_with_env("o", "n", None, &env).is_none());
     }
 
-    /// 500 returns `None` — the function silently degrades on server
-    /// error too, not just 404. A regression that reported the 5xx as
+    /// 500 returns `None` — the function silently degrades on a 404 and
+    /// on a server error alike. A regression that reported the 5xx as
     /// an `Err` would gate PR creation on transient upstream outages.
     #[test]
     fn fetch_default_branch_returns_none_on_500() {

@@ -328,10 +328,9 @@ fn deep_merge_option<T: Serialize + DeserializeOwned + Clone>(
 /// Other fields are left untouched.
 ///
 /// Defaults merging is best-effort by design — a serialise / deserialise
-/// failure here leaves `target` unchanged rather than failing the whole
-/// pipeline. The failure is still reported via `tracing::warn!` so that
-/// genuinely broken configs show up in CI rather than silently dropping
-/// defaults.
+/// failure here leaves `target` unchanged and the pipeline continues. The
+/// failure is still reported via `tracing::warn!` so that genuinely broken
+/// configs show up in CI.
 fn deep_merge_struct_inplace<T: Serialize + DeserializeOwned>(target: &mut T, defaults: &T) {
     let type_name = std::any::type_name::<T>();
     let mut crate_json = match serde_json::to_value(&*target) {
@@ -1232,7 +1231,7 @@ mod tests {
         );
     }
 
-    // (I-5) Workspace-overlay path
+    // Workspace-overlay path
 
     #[test]
     fn defaults_apply_to_workspace_crates() {
@@ -1268,7 +1267,7 @@ mod tests {
         );
     }
 
-    // (I-1) Generic skip suppression
+    // Generic skip suppression
 
     #[test]
     fn per_crate_skip_true_suppresses_arbitrary_block() {
@@ -1302,7 +1301,7 @@ mod tests {
         );
     }
 
-    // (M-6) Single defaults entry, fan-out guard
+    // Single defaults entry, fan-out guard
 
     #[test]
     fn defaults_entry_does_not_fan_out_into_multiple_matching_entries() {
@@ -1345,7 +1344,7 @@ mod tests {
         }
     }
 
-    // (M-7) Unkeyed entries stay distinct
+    // Unkeyed entries stay distinct
 
     #[test]
     fn unkeyed_entries_stay_distinct_no_collapse() {

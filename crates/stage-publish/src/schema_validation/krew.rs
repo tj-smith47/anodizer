@@ -9,8 +9,8 @@
 //! validator renders the exact YAML the live publish would submit — via the
 //! same render path — and checks it against the vendored schema, so a
 //! structural defect (a non-semver version, a malformed sha256, a missing
-//! selector) shows up in the emission-validate pass rather than after a
-//! krew-index PR has already been opened.
+//! selector) shows up in the emission-validate pass, before a krew-index PR
+//! is opened.
 
 use anodizer_core::context::Context;
 use anyhow::Result;

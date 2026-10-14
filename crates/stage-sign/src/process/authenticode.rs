@@ -41,8 +41,7 @@ pub(crate) fn process_authenticode_config(
     // WINDOWS_CERT_FILE). The cert here is a PATH, never inline bytes.
     // The cert is a filesystem PATH; trim surrounding whitespace so a templated
     // or env-supplied value with a trailing newline still opens (the AUR-key
-    // newline failure class). The password below is NOT trimmed — passphrase
-    // whitespace may be significant.
+    // newline failure class). The password below is trimmed the same way.
     let cert_env_name = authenticode.resolved_cert_env().to_string();
     let cert_path: Option<String> = match authenticode.cert_file.as_deref() {
         Some(tmpl) => {

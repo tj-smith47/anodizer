@@ -34,8 +34,7 @@ pub(crate) const WEBHOOK_DEFAULT_MESSAGE_TEMPLATE: &str =
 
 /// Evaluate an `enabled` field (now `Option<StringOrBool>`) through the template
 /// engine. Returns `Ok(true)` only when the value is present and resolves to
-/// truthy. Returns template render errors instead of silently treating them
-/// as "not enabled".
+/// truthy. A template render error is returned as `Err`.
 pub(crate) fn is_enabled(ctx: &mut Context, enabled: Option<&StringOrBool>) -> Result<bool> {
     match enabled {
         None => Ok(false),

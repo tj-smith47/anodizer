@@ -468,7 +468,7 @@ impl anodizer_core::Publisher for KrewPublisher {
                 &t.fork_owner,
                 &t.branch,
                 Some(&token),
-                env_hint_for_target,
+                &format!("${env_hint_for_target}"),
                 env,
             ) {
                 Ok(v) => v,

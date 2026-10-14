@@ -67,7 +67,7 @@ fn group_label(group: PublisherGroup) -> &'static str {
 /// per-crate vars — the single source of truth for the template binding
 /// ([`bind_failure_vars`]). Every key here must have a matching
 /// [`FAILURE_ENV_VARS`] entry so the env channel never silently lags the
-/// template variables; the exhaustiveness test pins that invariant.
+/// template variables; the exhaustiveness test holds that invariant.
 /// `Version` / `Tag` are deliberately absent: they are already bound on
 /// `ctx.template_vars()` for the current crate scope, so they resolve
 /// per-crate correctly in every config mode without re-binding here.
@@ -218,7 +218,7 @@ pub(crate) fn fire_on_error(
 /// vars — the single source of truth for the on_rollback template binding
 /// ([`bind_rollback_vars`]). Every key here must have a matching
 /// [`ROLLBACK_ENV_VARS`] entry so the env channel never silently lags the
-/// template variables; the exhaustiveness test pins that invariant. `Version` /
+/// template variables; the exhaustiveness test holds that invariant. `Version` /
 /// `Tag` are deliberately absent (already bound per-crate on
 /// `ctx.template_vars()`), mirroring [`failure_var_values`].
 fn rollback_var_values(

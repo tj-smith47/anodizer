@@ -618,7 +618,7 @@ fn verify_gpg_faked_system_time_with(
 /// Emit each advisory (non-blocking) preflight warning as a `log.warn` line.
 /// These are tools the run would PREFER but does not require — the declaring
 /// stage degrades gracefully without them (e.g. the build's cross-compile
-/// toolchain) — so they show up as a recommendation, never a gate failure.
+/// toolchain) — so they show up as a recommendation and the gate passes.
 fn log_preflight_warnings(report: &EnvPreflightReport, log: &StageLogger) {
     for w in &report.warnings {
         log.warn(&format!(

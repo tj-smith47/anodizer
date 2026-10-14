@@ -396,7 +396,7 @@ fn determinism_check_matrix_declares_explicit_shard_labels() {
 /// Extracts the bash `expected=(...)` shard tokens from the
 /// `release.yml` partial-shard guard step. The guard list and the
 /// `determinism.yml` matrix are hand-maintained independently; this
-/// exposes the tokens so a test can pin them equal.
+/// exposes the tokens so a test can assert them equal.
 fn release_guard_expected_shards() -> Vec<String> {
     let wf = workflow();
     let release = jobs(wf)

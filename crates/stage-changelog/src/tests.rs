@@ -5436,8 +5436,7 @@ line two\n\
         std::fs::write(root.join("a.txt"), "x").unwrap();
         commit(root, "feat: a real commit");
 
-        // A typo'd upper bound must be reported as an error rather than a
-        // silently-empty changelog.
+        // A typo'd upper bound must be reported as an error.
         let result = refresh_crate_unreleased(root, "mylib", root, None, Some("nope-not-a-ref"));
         let err = result.expect_err("nonexistent to_ref must be an error");
         let msg = format!("{err:#}");

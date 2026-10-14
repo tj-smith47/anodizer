@@ -102,11 +102,11 @@ pub(crate) enum FindPrError {
     /// HTTP 401 — the supplied token (or its absence) was rejected as
     /// unauthenticated. The operator should verify the env-var is set
     /// in the current shell.
-    Auth401 { url: String, env_hint: String },
+    Auth401 { url: String, token_hint: String },
     /// HTTP 403 with no rate-limit signal — the supplied token
     /// authenticated but lacks the `pull_request:read` scope. Operator
     /// should verify scopes / fine-grained permissions.
-    Auth403 { url: String, env_hint: String },
+    Auth403 { url: String, token_hint: String },
     /// HTTP 429, or 401 / 403 carrying a rate-limit header
     /// (`Retry-After` / `X-RateLimit-Remaining: 0`) — GitHub throttled
     /// the query. Transient: the token may be fine, so the operator
@@ -131,17 +131,17 @@ impl std::fmt::Display for FindPrError {
             Self::Network { url, source } => {
                 write!(f, "github_pr: network error querying {}: {}", url, source)
             }
-            Self::Auth401 { url, env_hint } => write!(
+            Self::Auth401 { url, token_hint } => write!(
                 f,
-                "github_pr: 401 Unauthorized querying {}; verify ${} \
+                "github_pr: 401 Unauthorized querying {}; verify {} \
                  is set and not expired",
-                url, env_hint
+                url, token_hint
             ),
-            Self::Auth403 { url, env_hint } => write!(
+            Self::Auth403 { url, token_hint } => write!(
                 f,
-                "github_pr: 403 Forbidden querying {}; verify ${} \
+                "github_pr: 403 Forbidden querying {}; verify {} \
                  has pull_request:read scope",
-                url, env_hint
+                url, token_hint
             ),
             Self::RateLimited { url } => write!(
                 f,
@@ -188,13 +188,13 @@ impl std::error::Error for FindPrError {
 /// as [`FindPrError::RateLimited`] rather than an auth failure — matching
 /// the probe policy in `core::git::github_repo_probe`.
 ///
-/// `url`, `env_hint`, and `body` are only consulted for the error
+/// `url`, `token_hint`, and `body` are only consulted for the error
 /// variants' carrier-strings.
 pub(crate) fn classify_find_pr_status(
     status: reqwest::StatusCode,
     rate_limited: bool,
     url: &str,
-    env_hint: &str,
+    token_hint: &str,
     body_supplier: impl FnOnce() -> String,
 ) -> Result<(), FindPrError> {
     if status == reqwest::StatusCode::TOO_MANY_REQUESTS
@@ -209,13 +209,13 @@ pub(crate) fn classify_find_pr_status(
     if status == reqwest::StatusCode::UNAUTHORIZED {
         return Err(FindPrError::Auth401 {
             url: url.to_string(),
-            env_hint: env_hint.to_string(),
+            token_hint: token_hint.to_string(),
         });
     }
     if status == reqwest::StatusCode::FORBIDDEN {
         return Err(FindPrError::Auth403 {
             url: url.to_string(),
-            env_hint: env_hint.to_string(),
+            token_hint: token_hint.to_string(),
         });
     }
     if status == reqwest::StatusCode::NOT_FOUND {
@@ -237,9 +237,9 @@ pub(crate) fn classify_find_pr_status(
 /// `upstream_owner/upstream_repo`, by number.
 ///
 /// `Ok(Vec::new())` is a genuine "no open pull request matches";
-/// `Err(FindPrError)` is every failure, and `env_hint` is the name of the
-/// token variable the auth variants put in their message so the warn names
-/// what to fix. Callers report the variant; collapsing an `Err` to an empty
+/// `Err(FindPrError)` is every failure, and `token_hint` names the token's
+/// source in the auth variants' message (`$KREW_INDEX_TOKEN`, or a config
+/// field such as `` `repository.token` ``) so the warn names what to fix. Callers report the variant; collapsing an `Err` to an empty
 /// list reads a rotated token as "nothing to close". Pagination follows
 /// `Link: rel="next"` up to 10 pages: the first 1000 matches are returned
 /// and any beyond them are not listed.
@@ -256,7 +256,7 @@ pub(crate) fn find_open_pr_numbers_for_head_with_env<E: EnvSource + ?Sized>(
     fork_owner: &str,
     branch: &str,
     token: Option<&str>,
-    env_hint: &str,
+    token_hint: &str,
     env: &E,
 ) -> Result<Vec<u64>, FindPrError> {
     Ok(find_open_prs_for_head_with_env(
@@ -265,7 +265,7 @@ pub(crate) fn find_open_pr_numbers_for_head_with_env<E: EnvSource + ?Sized>(
         fork_owner,
         branch,
         token,
-        env_hint,
+        token_hint,
         env,
     )?
     .into_iter()
@@ -290,7 +290,7 @@ pub(crate) fn find_open_prs_for_head_with_env<E: EnvSource + ?Sized>(
     fork_owner: &str,
     branch: &str,
     token: Option<&str>,
-    env_hint: &str,
+    token_hint: &str,
     env: &E,
 ) -> Result<Vec<OpenPullRequest>, FindPrError> {
     const PAGE_CAP: usize = 10;
@@ -341,7 +341,7 @@ pub(crate) fn find_open_prs_for_head_with_env<E: EnvSource + ?Sized>(
         if !status.is_success() {
             let body = anodizer_core::http::body_of_blocking(resp);
             return Err(
-                classify_find_pr_status(status, rate_limited, &url, env_hint, || body.clone())
+                classify_find_pr_status(status, rate_limited, &url, token_hint, || body.clone())
                     .unwrap_err(),
             );
         }
@@ -461,8 +461,7 @@ pub(crate) fn close_pr_via_api_with_env<E: EnvSource + ?Sized>(
 mod tests {
     use super::*;
 
-    /// The lookup must return an `Err` variant (not panic, not silently
-    /// return `Ok(Vec::new())`) when the request fails — auth-blindness
+    /// The lookup must return an `Err` variant when the request fails — auth-blindness
     /// (the bug `FindPrError` exists to prevent) must never collapse to
     /// `Ok(empty)`. Driven through the `_with_env` point with the API base
     /// pointed at a guaranteed-dead local URL (`127.0.0.1:1`) so the
@@ -584,8 +583,8 @@ mod tests {
             || "{\"message\":\"Bad credentials\"}".to_string(),
         );
         match result {
-            Err(FindPrError::Auth401 { env_hint, .. }) => {
-                assert_eq!(env_hint, "KREW_INDEX_TOKEN");
+            Err(FindPrError::Auth401 { token_hint, .. }) => {
+                assert_eq!(token_hint, "KREW_INDEX_TOKEN");
             }
             other => panic!("expected Auth401, got {:?}", other),
         }
@@ -601,8 +600,8 @@ mod tests {
             || "{\"message\":\"Forbidden\"}".to_string(),
         );
         match result {
-            Err(FindPrError::Auth403 { env_hint, .. }) => {
-                assert_eq!(env_hint, "KREW_INDEX_TOKEN");
+            Err(FindPrError::Auth403 { token_hint, .. }) => {
+                assert_eq!(token_hint, "KREW_INDEX_TOKEN");
             }
             other => panic!("expected Auth403, got {:?}", other),
         }

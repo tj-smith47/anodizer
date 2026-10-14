@@ -9,6 +9,7 @@ use anodizer_core::config::{
     CommitAuthorConfig, CrateConfig, HomebrewCoreConfig, PullRequestConfig, ReleaseConfig,
     RepositoryConfig, ScmRepoConfig, StringOrBool,
 };
+use anodizer_core::context::Context;
 use anodizer_core::test_helpers::TestContextBuilder;
 use anodizer_core::test_helpers::scripted_responder::{
     RequestLog, ScriptedRoute, spawn_scripted_responder,
@@ -25,6 +26,7 @@ use super::resolve::{
     TOKEN_ENV_VARS, bump_branch, resolve_commit_message, resolve_download_url,
     resolve_formula_name, resolve_pr_token, resolve_token, resolve_upstream,
 };
+use crate::util::TokenSource;
 
 const OLD_URL: &str = "https://github.com/acme/my-tool/archive/refs/tags/v1.0.0.tar.gz";
 const NEW_URL: &str = "https://github.com/acme/my-tool/archive/refs/tags/v1.2.3.tar.gz";
@@ -721,14 +723,17 @@ fn resolve_token_ladder() {
     };
     let got = resolve_token(&ctx, &cfg).unwrap().unwrap();
     assert_eq!(got.token, "cfg-tok");
-    assert_eq!(got.env_var, None, "config token records no env var");
+    assert_eq!(got.source, TokenSource::RepositoryField);
 
     // HOMEBREW_CORE_GITHUB_TOKEN precedes COMMITTER_TOKEN + GITHUB ladder.
     let got = resolve_token(&ctx, &HomebrewCoreConfig::default())
         .unwrap()
         .unwrap();
     assert_eq!(got.token, "hc-tok");
-    assert_eq!(got.env_var.as_deref(), Some("HOMEBREW_CORE_GITHUB_TOKEN"));
+    assert_eq!(
+        got.source,
+        TokenSource::EnvVar("HOMEBREW_CORE_GITHUB_TOKEN".into())
+    );
 
     // COMMITTER_TOKEN (mislav/bump-homebrew-formula-action's name) is next, and
     // the ACTUAL var is recorded (whichever entry of TOKEN_ENV_VARS was read).
@@ -742,8 +747,8 @@ fn resolve_token_ladder() {
         .unwrap();
     assert_eq!(got.token, "committer-tok");
     assert_eq!(
-        got.env_var.as_deref(),
-        Some("COMMITTER_TOKEN"),
+        got.source,
+        TokenSource::EnvVar("COMMITTER_TOKEN".into()),
         "the real matched env var is recorded for rollback"
     );
 
@@ -757,7 +762,7 @@ fn resolve_token_ladder() {
         .unwrap()
         .unwrap();
     assert_eq!(got.token, "gh-tok");
-    assert_eq!(got.env_var.as_deref(), Some("GITHUB_TOKEN"));
+    assert_eq!(got.source, TokenSource::EnvVar("GITHUB_TOKEN".into()));
 
     // Empty env values are filtered (a blank secret is not a token).
     let ctx = TestContextBuilder::new()
@@ -788,7 +793,7 @@ fn homebrew_core_reads_the_shared_token_order() {
         .unwrap()
         .unwrap();
     assert_eq!(got.token, "run-tok", "the run token precedes GITHUB_TOKEN");
-    assert_eq!(got.env_var, None, "the run token records no variable");
+    assert_eq!(got.source, TokenSource::RunToken);
 
     let own = TestContextBuilder::new()
         .sealed_env()
@@ -802,7 +807,7 @@ fn homebrew_core_reads_the_shared_token_order() {
         got.token, "committer-tok",
         "the publisher variable precedes the run token"
     );
-    assert_eq!(got.env_var.as_deref(), Some("COMMITTER_TOKEN"));
+    assert_eq!(got.source, TokenSource::EnvVar("COMMITTER_TOKEN".into()));
 
     let cfg = HomebrewCoreConfig {
         repository: Some(RepositoryConfig {
@@ -816,8 +821,10 @@ fn homebrew_core_reads_the_shared_token_order() {
         ..Default::default()
     };
     assert_eq!(
-        resolve_pr_token(&own, &cfg).unwrap().as_deref(),
-        Some("pr-tok")
+        resolve_pr_token(&own, &cfg)
+            .unwrap()
+            .map(|t| (t.token, t.source)),
+        Some(("pr-tok".to_string(), TokenSource::PullRequestField))
     );
     assert_eq!(
         resolve_token(&own, &cfg).unwrap().unwrap().token,
@@ -826,33 +833,153 @@ fn homebrew_core_reads_the_shared_token_order() {
     assert_eq!(
         resolve_pr_token(&run, &HomebrewCoreConfig::default())
             .unwrap()
-            .as_deref(),
-        Some("run-tok")
+            .map(|t| (t.token, t.source)),
+        Some(("run-tok".to_string(), TokenSource::RunToken))
     );
 }
 
-/// The missing-token messages name the sources in the order the bump reads
-/// them, the run's GitHub token between the publisher variables and
-/// `GITHUB_TOKEN` (the publish error, the preflight warning and the rollback
-/// warning all print [`super::resolve::token_order_hint`]), and a run that
-/// has that token requires no variable.
-#[test]
-fn the_token_requirement_and_its_messages_follow_the_read_order() {
-    let hint = super::resolve::token_order_hint();
-    let at = |needle: &str| {
-        hint.find(needle)
-            .unwrap_or_else(|| panic!("{needle} is missing from: {hint}"))
-    };
-    assert!(
-        at("repository.token") < at("$HOMEBREW_CORE_GITHUB_TOKEN")
-            && at("$HOMEBREW_CORE_GITHUB_TOKEN") < at("$COMMITTER_TOKEN")
-            && at("$COMMITTER_TOKEN") < at("the run's GitHub token")
-            && at("the run's GitHub token") < at("$ANODIZER_GITHUB_TOKEN")
-            && at("$ANODIZER_GITHUB_TOKEN") < at("$GITHUB_TOKEN")
-            && at("$GITHUB_TOKEN") < at("$GH_TOKEN"),
-        "the hint names the run token between the publisher variables and GITHUB_TOKEN: {hint}"
-    );
+/// Every source the bump token can come from, set at once.
+#[derive(Clone)]
+struct TokenSources {
+    pull_request: bool,
+    repository: bool,
+    run_token: bool,
+    vars: Vec<&'static str>,
+}
 
+impl TokenSources {
+    fn all() -> Self {
+        let mut vars: Vec<&'static str> = TOKEN_ENV_VARS.to_vec();
+        vars.extend(anodizer_core::git::GITHUB_TOKEN_ENV_LADDER);
+        Self {
+            pull_request: true,
+            repository: true,
+            run_token: true,
+            vars,
+        }
+    }
+
+    fn build(&self, token_type: anodizer_core::scm::ScmTokenType) -> (Context, HomebrewCoreConfig) {
+        let mut builder = TestContextBuilder::new().sealed_env();
+        for var in &self.vars {
+            builder = builder.env(*var, format!("{var}-value"));
+        }
+        if self.run_token {
+            builder = builder.token(Some("run-value".into()));
+        }
+        let mut ctx = builder.build();
+        ctx.token_type = token_type;
+        let cfg = HomebrewCoreConfig {
+            repository: Some(RepositoryConfig {
+                token: self.repository.then(|| "repository-value".into()),
+                pull_request: Some(anodizer_core::config::PullRequestConfig {
+                    token: self.pull_request.then(|| "pull-request-value".into()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        (ctx, cfg)
+    }
+
+    fn remove(&mut self, source: &TokenSource) {
+        match source {
+            TokenSource::PullRequestField => self.pull_request = false,
+            TokenSource::RepositoryField => self.repository = false,
+            TokenSource::RunToken => self.run_token = false,
+            TokenSource::EnvVar(name) => self.vars.retain(|v| v != name),
+        }
+    }
+}
+
+/// A token resolver of this publisher, `resolve_token` or `resolve_pr_token`.
+type Resolver =
+    fn(&Context, &HomebrewCoreConfig) -> anyhow::Result<Option<super::resolve::ResolvedToken>>;
+
+/// A missing-token hint of this publisher.
+type Hint = fn(&Context) -> String;
+
+/// The sources `resolve` reads, in the order it reads them: resolve with
+/// every source set, record the one that answered, take it away, repeat.
+fn read_order(token_type: anodizer_core::scm::ScmTokenType, resolve: Resolver) -> Vec<TokenSource> {
+    let mut sources = TokenSources::all();
+    let mut order = Vec::new();
+    loop {
+        let (ctx, cfg) = sources.build(token_type);
+        let Some(got) = resolve(&ctx, &cfg).expect("renders") else {
+            return order;
+        };
+        sources.remove(&got.source);
+        order.push(got.source);
+    }
+}
+
+/// How the hint names a source.
+fn hint_label(source: &TokenSource) -> String {
+    match source {
+        TokenSource::PullRequestField => "`homebrew_cores[].repository.pull_request.token`".into(),
+        TokenSource::RepositoryField => "`homebrew_cores[].repository.token`".into(),
+        other => other.to_string(),
+    }
+}
+
+/// The missing-token hints list the sources the resolvers read, in the order
+/// they read them, on a GitHub run and on a GitLab run, whose run token the
+/// resolvers never read. On a GitHub run the run token's item says where the
+/// CLI took it from.
+#[test]
+fn the_token_hints_list_the_sources_in_the_order_the_resolvers_read() {
+    use anodizer_core::scm::ScmTokenType;
+    for token_type in [ScmTokenType::GitHub, ScmTokenType::GitLab] {
+        let cases: [(&str, Resolver, Hint); 2] = [
+            ("bump", resolve_token, super::resolve::token_order_hint),
+            (
+                "pull request",
+                resolve_pr_token,
+                super::resolve::pr_token_order_hint,
+            ),
+        ];
+        for (name, resolve, hint) in cases {
+            let order = read_order(token_type, resolve);
+            assert_eq!(
+                order.contains(&TokenSource::RunToken),
+                token_type == ScmTokenType::GitHub,
+                "{name} on {token_type:?}: {order:?}"
+            );
+            let (ctx, _) = TokenSources::all().build(token_type);
+            let hint = hint(&ctx);
+            let items: Vec<&str> = hint.split(", then ").collect();
+            assert_eq!(
+                items.len(),
+                order.len(),
+                "{name} on {token_type:?}: the hint {hint:?} lists every source read, {order:?}"
+            );
+            for (item, source) in items.iter().zip(&order) {
+                assert!(
+                    item.starts_with(&hint_label(source)),
+                    "{name} on {token_type:?}: the item {item:?} is {source:?}; hint: {hint}"
+                );
+            }
+            if token_type == ScmTokenType::GitHub {
+                assert!(
+                    hint.contains(
+                        "the run's GitHub token (`--token`, or \
+                         ANODIZER_GITHUB_TOKEN/GITHUB_TOKEN/GH_TOKEN read at startup when \
+                         `--token` is unset)"
+                    ),
+                    "the run token's item names where it came from: {hint}"
+                );
+            }
+        }
+    }
+}
+
+/// A run that has a GitHub run token requires no variable, since the bump
+/// reads that token. A GitLab run's `--token` is a GitLab credential the
+/// bump never reads, so its requirement still lists every variable.
+#[test]
+fn only_a_github_run_token_satisfies_the_token_requirement() {
     let mut run = TestContextBuilder::new()
         .sealed_env()
         .token(Some("run-tok".into()))
@@ -862,6 +989,72 @@ fn the_token_requirement_and_its_messages_follow_the_read_order() {
         HomebrewCorePublisher::new().requirements(&run),
         Vec::new(),
         "the run token satisfies the bump, so no variable is required"
+    );
+
+    run.token_type = anodizer_core::scm::ScmTokenType::GitLab;
+    let want: Vec<String> = TOKEN_ENV_VARS
+        .iter()
+        .chain(anodizer_core::git::GITHUB_TOKEN_ENV_LADDER)
+        .map(|v| v.to_string())
+        .collect();
+    match HomebrewCorePublisher::new().requirements(&run).as_slice() {
+        [anodizer_core::EnvRequirement::EnvAnyOf { vars, .. }] => assert_eq!(
+            vars, &want,
+            "a GitLab --token is not read, so the variables are still required"
+        ),
+        other => panic!("a GitLab run requires the token variables, got {other:?}"),
+    }
+}
+
+/// The rollback warning names the source the bump's token came from, each
+/// source in its own words, and a snapshot that recorded none says so.
+#[test]
+fn the_rollback_warning_names_the_source_the_bump_used() {
+    let ctx = TestContextBuilder::new().sealed_env().build();
+    let cases = [
+        (
+            Some(TokenSource::PullRequestField),
+            "the bump's token came from `repository.pull_request.token`",
+        ),
+        (
+            Some(TokenSource::RepositoryField),
+            "the bump's token came from `repository.token`",
+        ),
+        (
+            Some(TokenSource::EnvVar("COMMITTER_TOKEN".into())),
+            "the bump's token came from $COMMITTER_TOKEN",
+        ),
+        (
+            Some(TokenSource::RunToken),
+            "the bump's token came from the run's GitHub token",
+        ),
+        (None, "the bump recorded no token source"),
+    ];
+    for (source, want) in cases {
+        let t = hbc_target(false, source.clone());
+        let warning = super::publisher::rollback_no_token_warning(&ctx, &t);
+        let (said, order) = warning
+            .split_once("; the rollback read ")
+            .unwrap_or_else(|| panic!("the warning states the order: {warning}"));
+        assert!(said.ends_with(want), "{source:?}: {warning}");
+        assert_eq!(
+            order.trim_end_matches(')'),
+            super::resolve::pr_token_order_hint(&ctx),
+            "{source:?}: {warning}"
+        );
+    }
+
+    let legacy: anodizer_core::publish_evidence::HomebrewCoreTargetSnapshot = serde_json::from_str(
+        r#"{"formula":"my-tool","version":"1.2.3","upstream_owner":"Homebrew",
+                "upstream_repo":"homebrew-core","head_owner":"forkuser",
+                "branch":"bump-my-tool-1.2.3","direct_commit":false,
+                "token_env_var":"COMMITTER_TOKEN"}"#,
+    )
+    .expect("a report from a build that recorded the variable decodes");
+    assert!(
+        super::publisher::rollback_no_token_warning(&ctx, &legacy)
+            .contains("the bump's token came from $COMMITTER_TOKEN;"),
+        "an older report's variable is read as the source"
     );
 }
 
@@ -1307,7 +1500,10 @@ fn run_records_snapshot_when_create_pr_returns_already_exists() {
     assert_eq!(t.branch, "bump-my-tool-1.2.3");
     assert!(!t.direct_commit);
     assert!(t.pr_url.is_none(), "no PR url from the 422 outcome");
-    assert_eq!(t.token_env_var.as_deref(), Some(TOKEN_ENV_VARS[0]));
+    assert_eq!(
+        t.token_source,
+        Some(TokenSource::EnvVar(TOKEN_ENV_VARS[0].into()))
+    );
 }
 
 #[test]
@@ -1434,7 +1630,10 @@ fn run_builds_evidence_with_pr_ref_and_snapshot() {
             let t = &e.homebrew_core_targets[0];
             assert_eq!(t.head_owner, "forkuser");
             assert_eq!(t.branch, "bump-my-tool-1.2.3");
-            assert_eq!(t.token_env_var.as_deref(), Some(TOKEN_ENV_VARS[0]));
+            assert_eq!(
+                t.token_source,
+                Some(TokenSource::EnvVar(TOKEN_ENV_VARS[0].into()))
+            );
         }
         other => panic!("expected HomebrewCore evidence, got {other:?}"),
     }
@@ -1478,7 +1677,8 @@ fn rollback_decodes_evidence_and_closes_the_pr() {
                     branch: "bump-my-tool-1.2.3".into(),
                     direct_commit: false,
                     pr_url: Some("https://github.com/Homebrew/homebrew-core/pull/42".into()),
-                    token_env_var: Some(TOKEN_ENV_VARS[0].into()),
+                    token_source: Some(TokenSource::EnvVar(TOKEN_ENV_VARS[0].into())),
+                    token_env_var: None,
                 },
             ],
         },
@@ -1504,7 +1704,7 @@ fn rollback_decodes_evidence_and_closes_the_pr() {
 /// non-direct target carries the fork head/branch the close flow queries.
 fn hbc_target(
     direct_commit: bool,
-    token_env: Option<&str>,
+    token_source: Option<TokenSource>,
 ) -> anodizer_core::publish_evidence::HomebrewCoreTargetSnapshot {
     anodizer_core::publish_evidence::HomebrewCoreTargetSnapshot {
         formula: "my-tool".into(),
@@ -1516,7 +1716,8 @@ fn hbc_target(
         direct_commit,
         pr_url: (!direct_commit)
             .then(|| "https://github.com/Homebrew/homebrew-core/pull/42".to_string()),
-        token_env_var: token_env.map(Into::into),
+        token_source,
+        token_env_var: None,
     }
 }
 
@@ -1585,7 +1786,10 @@ fn rollback_warns_when_no_bump_prs_recorded() {
 fn rollback_direct_commit_target_is_warn_only() {
     let (cap, reqs) = run_hbc_rollback(
         vec![],
-        vec![hbc_target(true, Some("HOMEBREW_CORE_GITHUB_TOKEN"))],
+        vec![hbc_target(
+            true,
+            Some(TokenSource::EnvVar("HOMEBREW_CORE_GITHUB_TOKEN".into())),
+        )],
         Some(("HOMEBREW_CORE_GITHUB_TOKEN", "ghp_x")),
     );
     assert!(
@@ -1606,7 +1810,10 @@ fn rollback_direct_commit_target_is_warn_only() {
 fn rollback_warns_and_skips_when_no_token_resolvable() {
     let (cap, reqs) = run_hbc_rollback(
         vec![],
-        vec![hbc_target(false, Some("HOMEBREW_CORE_GITHUB_TOKEN"))],
+        vec![hbc_target(
+            false,
+            Some(TokenSource::EnvVar("HOMEBREW_CORE_GITHUB_TOKEN".into())),
+        )],
         None,
     );
     assert!(
@@ -1633,7 +1840,10 @@ fn rollback_warns_when_pr_query_fails() {
             response: leak_resp("500 Internal Server Error", "boom"),
             times: None,
         }],
-        vec![hbc_target(false, Some("HOMEBREW_CORE_GITHUB_TOKEN"))],
+        vec![hbc_target(
+            false,
+            Some(TokenSource::EnvVar("HOMEBREW_CORE_GITHUB_TOKEN".into())),
+        )],
         Some(("HOMEBREW_CORE_GITHUB_TOKEN", "ghp_x")),
     );
     assert!(
@@ -1661,7 +1871,10 @@ fn rollback_warns_when_no_open_pr_for_head() {
             response: leak_resp("200 OK", "[]"),
             times: None,
         }],
-        vec![hbc_target(false, Some("HOMEBREW_CORE_GITHUB_TOKEN"))],
+        vec![hbc_target(
+            false,
+            Some(TokenSource::EnvVar("HOMEBREW_CORE_GITHUB_TOKEN".into())),
+        )],
         Some(("HOMEBREW_CORE_GITHUB_TOKEN", "ghp_x")),
     );
     assert!(
@@ -1696,7 +1909,10 @@ fn rollback_treats_gone_pr_as_already_closed() {
                 times: None,
             },
         ],
-        vec![hbc_target(false, Some("HOMEBREW_CORE_GITHUB_TOKEN"))],
+        vec![hbc_target(
+            false,
+            Some(TokenSource::EnvVar("HOMEBREW_CORE_GITHUB_TOKEN".into())),
+        )],
         Some(("HOMEBREW_CORE_GITHUB_TOKEN", "ghp_x")),
     );
     assert!(
@@ -1737,7 +1953,10 @@ fn rollback_warns_on_failed_close() {
                 times: None,
             },
         ],
-        vec![hbc_target(false, Some("HOMEBREW_CORE_GITHUB_TOKEN"))],
+        vec![hbc_target(
+            false,
+            Some(TokenSource::EnvVar("HOMEBREW_CORE_GITHUB_TOKEN".into())),
+        )],
         Some(("HOMEBREW_CORE_GITHUB_TOKEN", "ghp_x")),
     );
     assert!(
@@ -1762,7 +1981,8 @@ fn snapshot_serde_round_trips_without_token_value() {
         branch: "bump-my-tool-1.2.3".into(),
         direct_commit: false,
         pr_url: Some("https://x/42".into()),
-        token_env_var: Some(TOKEN_ENV_VARS[0].into()),
+        token_source: Some(TokenSource::EnvVar(TOKEN_ENV_VARS[0].into())),
+        token_env_var: None,
     };
     let json = serde_json::to_string(&snap).unwrap();
     // The env-var NAME is carried; no token VALUE field exists on the type.
@@ -1942,7 +2162,10 @@ fn preflight_probes_the_pull_request_token_the_publish_opens_with() {
     let (addr, log) = spawn_scripted_responder(routes);
     let ctx = ctx_for(&addr);
     let publish_token = resolve_pr_token(&ctx, &cfg()).expect("renders");
-    assert_eq!(publish_token.as_deref(), Some("ghp_pr_token"));
+    assert_eq!(
+        publish_token.map(|t| t.token).as_deref(),
+        Some("ghp_pr_token")
+    );
     assert!(matches!(
         HomebrewCorePublisher::new()
             .preflight(&ctx)

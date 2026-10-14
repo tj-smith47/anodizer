@@ -1731,7 +1731,7 @@ fn resolve_project_root_falls_back_to_cwd_for_bare_filename() {
 /// Bare-filename `--config=anodizer.yaml` is almost always a
 /// misconfiguration: every repo-relative consumer (snapcraft icon
 /// lookup, extra-file globs, ...) will resolve against the process
-/// CWD rather than the repo root. The resolver must emit a `warn`
+/// CWD. The resolver must emit a `warn`
 /// so the misconfiguration is visible in CI logs without
 /// hard-failing the release (which would break the legitimate
 /// CWD == project-root case).

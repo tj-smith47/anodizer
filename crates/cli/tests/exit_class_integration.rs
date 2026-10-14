@@ -1,7 +1,7 @@
 //! Exit-code classification contract: deterministic config/usage errors
 //! exit 2 and stamp the `anodizer-error-class: deterministic` stderr
 //! marker; everything else keeps exit 1. Retry wrappers key off both
-//! signals, so each pinned row here is consumer-facing behavior.
+//! signals, so each row checked here is consumer-facing behavior.
 
 use std::fs;
 use std::path::Path;

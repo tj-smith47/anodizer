@@ -68,8 +68,8 @@ pub(crate) fn build_put_options(
 
     // Cache-Control: join array with ", ".
     // Each directive is validated against the RFC-7234 §5.2 response-directive
-    // set so a typo (e.g. `max_age` instead of `max-age`) is reported here rather
-    // than as a silent CDN miss in production.
+    // set so a typo (e.g. `max_age` for `max-age`) is reported here. Unchecked,
+    // it shows up only as a silent CDN miss in production.
     if let Some(ref cc) = config.cache_control
         && !cc.is_empty()
     {

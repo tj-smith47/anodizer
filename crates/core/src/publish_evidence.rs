@@ -534,8 +534,10 @@ pub struct SchemastoreExtra {
 /// PR targets. Stored in [`HomebrewCoreExtra::homebrew_core_targets`] so a
 /// later `anodizer tag rollback` can find and close the open PR.
 ///
-/// **CREDENTIAL CONTRACT**: no token field — the rollback token is
-/// resolved at rollback time from the env var named by `token_env_var`.
+/// **CREDENTIAL CONTRACT**: no token field. The rollback resolves its token
+/// again at rollback time; [`token_source`](Self::token_source) records only
+/// where the bump's token came from, so a rollback that finds none can say
+/// so.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct HomebrewCoreTargetSnapshot {
@@ -559,10 +561,61 @@ pub struct HomebrewCoreTargetSnapshot {
     /// URL of the opened pull request, when one was opened.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pr_url: Option<String>,
-    /// Env var NAME the rollback path consults for the close-PR token.
-    /// NEVER the token VALUE.
+    /// Where the bump's token came from. Never the token value.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token_source: Option<TokenSource>,
+    /// The variable that supplied the bump's token, as written by a build
+    /// that recorded no [`token_source`](Self::token_source). Read only so
+    /// such a report still decodes; [`Self::bump_token_source`] turns it
+    /// into a [`TokenSource::EnvVar`].
+    #[serde(default, skip_serializing)]
     pub token_env_var: Option<String>,
+}
+
+impl HomebrewCoreTargetSnapshot {
+    /// Where the bump's token came from: [`token_source`](Self::token_source),
+    /// else the variable an older report recorded, else `None`.
+    pub fn bump_token_source(&self) -> Option<TokenSource> {
+        self.token_source.clone().or_else(|| {
+            self.token_env_var
+                .as_ref()
+                .map(|name| TokenSource::EnvVar(name.clone()))
+        })
+    }
+}
+
+/// Where a publisher's repository token came from. Recorded in rollback
+/// evidence and printed in messages; it never holds the token itself.
+///
+/// ```
+/// use anodizer_core::publish_evidence::TokenSource;
+/// assert_eq!(TokenSource::EnvVar("COMMITTER_TOKEN".into()).to_string(), "$COMMITTER_TOKEN");
+/// assert_eq!(TokenSource::RepositoryField.to_string(), "`repository.token`");
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "name", rename_all = "snake_case")]
+pub enum TokenSource {
+    /// `repository.pull_request.token`, rendered.
+    PullRequestField,
+    /// `repository.token`, rendered.
+    RepositoryField,
+    /// The named environment variable.
+    EnvVar(String),
+    /// The run's GitHub token: `--token`, or the first of
+    /// `ANODIZER_GITHUB_TOKEN`, `GITHUB_TOKEN` and `GH_TOKEN` the CLI read at
+    /// startup when `--token` is unset.
+    RunToken,
+}
+
+impl std::fmt::Display for TokenSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TokenSource::PullRequestField => f.write_str("`repository.pull_request.token`"),
+            TokenSource::RepositoryField => f.write_str("`repository.token`"),
+            TokenSource::EnvVar(name) => write!(f, "${name}"),
+            TokenSource::RunToken => f.write_str("the run's GitHub token"),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]

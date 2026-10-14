@@ -64,7 +64,7 @@ fn decode_mcp_targets(extra: &anodizer_core::PublishEvidenceExtra) -> Vec<McpTar
 ///
 /// Re-resolves the auth token at call time by rendering
 /// `ctx.config.mcp.auth.token` — so token rotation between publish and
-/// rollback shows up as a per-target warn rather than a hard error.
+/// rollback shows up as a per-target warn.
 ///
 /// Returns `Ok(RollbackOutcome::DegradedToWarn)` when the registry
 /// indicates status mutation is unsupported (501), permissions are

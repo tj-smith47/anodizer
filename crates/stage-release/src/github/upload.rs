@@ -405,8 +405,8 @@ pub(crate) async fn upload_release_asset(
                             }
                             AlreadyExistsAction::BailReplaceForbidden => {
                                 // `replace_existing_artifacts: false` and the
-                                // bytes differ: report the conflict rather than
-                                // overwriting. Unrecoverable.
+                                // bytes differ: report the conflict and keep
+                                // the existing asset. Unrecoverable.
                                 return Step::Fail(UploadFailure::Fatal(
                                     anyhow::anyhow!(err).context(format!(
                                         "release: artifact '{}' already exists on release '{}' \

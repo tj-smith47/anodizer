@@ -73,8 +73,8 @@ pub(crate) fn validate_kms_provider_match(
 
 /// Verify the CLI tool needed for `provider`'s client-side encryption is on
 /// PATH. Runs `<tool> --version` (or equivalent) once before fanning out so
-/// missing-CLI failures are reported at config-validate time, not deep inside the
-/// upload phase where the failure shape is opaque.
+/// missing-CLI failures are reported at config-validate time with a clear
+/// message. Inside the upload phase the failure shape is opaque.
 pub(crate) fn preflight_kms_cli(provider: KmsProvider) -> Result<()> {
     let tool = match provider {
         KmsProvider::Aws => "aws",
@@ -435,7 +435,7 @@ mod tests {
     // validate_kms_provider_match — scheme↔provider compatibility gate.
     // Accepted: S3↔Aws, S3↔ServerSide, Gcs↔Gcp, AzBlob↔Azure. Every other
     // pairing must bail with a message naming the expected scheme so the
-    // misconfig is reported at config-validate, not deep in the upload phase.
+    // misconfig is reported at config-validate, before the upload phase.
 
     #[test]
     fn validate_match_accepts_each_native_pairing() {

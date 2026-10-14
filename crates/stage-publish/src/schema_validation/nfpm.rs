@@ -486,7 +486,7 @@ fn version_matches(actual: &str, expected: &str) -> bool {
 }
 
 /// Build the finding emitted when an inspection tool exits non-zero — a real
-/// failure must always be reported rather than silently passing.
+/// failure must always be reported.
 fn tool_failure_finding(tool: &str, path: &Path, stderr: &str) -> SchemaFinding {
     let trimmed = stderr.trim();
     let detail = if trimmed.is_empty() {

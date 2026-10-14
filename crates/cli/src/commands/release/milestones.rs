@@ -1128,8 +1128,7 @@ mod tests {
     #[test]
     fn resolve_repo_falls_back_to_any_block_when_active_provider_absent() {
         // Active provider is Gitea, but the only crate has just a GitHub
-        // block. The fallback (any provider) must report it rather than
-        // returning empty.
+        // block. The fallback (any provider) must still resolve that block.
         let config = Config {
             crates: vec![crate_with(release_with(
                 Some(("ghowner", "ghrepo")),
@@ -1516,8 +1515,7 @@ mod tests {
     fn gitea_close_404_on_patch_maps_to_not_found() {
         use std::sync::atomic::Ordering;
         // List finds the milestone, but the close PATCH 404s (deleted between
-        // list and close). The Gitea close maps that specific 404 to NotFound
-        // rather than reporting it as a hard error.
+        // list and close). The Gitea close maps that specific 404 to NotFound.
         let (addr, calls) = spawn_oneshot_http_responder(vec![
             "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 27\r\n\r\n[{\"id\":7,\"title\":\"v2.0.0\"}]",
             "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n",

@@ -72,7 +72,7 @@ pub(crate) fn run_git_in_envs(
 /// with no deadline. On expiry the whole git subtree is killed and the call
 /// returns a [`Retriable`](anodizer_core::retry::Retriable)-wrapped timeout
 /// error, so a call site inside a retry loop can route it to a retry and a
-/// non-looping caller reports a clear timeout instead of hanging.
+/// non-looping caller reports a clear timeout.
 ///
 /// `secret` is scrubbed from `argv`/`stderr`/`stdout` in the error embed
 /// exactly as [`run_git_in_redacted`] does (pass `None` when no element of

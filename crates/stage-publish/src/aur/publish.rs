@@ -32,8 +32,7 @@ pub(crate) struct AurRendered {
 /// underlying [`util::find_artifacts_by_os_with_variant`] returns `Err` when a
 /// MATCHED artifact is missing its sha256 (the same error the live publish path
 /// `?`s at [`aur_build_sources`]), and that `Err` flows through here so the
-/// caller reports a matched-but-broken artifact rather than silently skipping
-/// it. Only a clean `Ok(empty)` (true absence) skips.
+/// caller reports a matched-but-broken artifact. Only a clean `Ok(empty)` (true absence) skips.
 pub(crate) fn crate_has_aur_linux_archive(
     ctx: &Context,
     aur_cfg: &anodizer_core::config::AurConfig,

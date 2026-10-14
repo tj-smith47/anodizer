@@ -20,8 +20,8 @@ use super::formula::formula_is_current;
 use super::locate::locate_formula;
 use super::publish::publish_to_homebrew_core;
 use super::resolve::{
-    TOKEN_ENV_VARS, resolve_commit_message, resolve_download_url, resolve_formula_name,
-    resolve_pr_token, resolve_token, resolve_upstream, token_order_hint,
+    TOKEN_ENV_VARS, pr_token_order_hint, resolve_commit_message, resolve_download_url,
+    resolve_formula_name, resolve_pr_token, resolve_token, resolve_upstream, token_order_hint,
 };
 
 simple_publisher!(
@@ -248,7 +248,6 @@ impl anodizer_core::Publisher for HomebrewCorePublisher {
                 ));
                 continue;
             }
-            let env_hint = t.token_env_var.as_deref().unwrap_or(TOKEN_ENV_VARS[0]);
             // The entry that bumped this formula opened the pull request, so
             // its token closes it; an entry no longer in the config falls
             // back to the publisher's token variables.
@@ -265,7 +264,7 @@ impl anodizer_core::Publisher for HomebrewCorePublisher {
                 })
                 .unwrap_or(&fallback);
             let token = match resolve_pr_token(ctx, entry) {
-                Ok(token) => token,
+                Ok(token) => token.map(|t| t.token),
                 Err(e) => {
                     log.warn(&format!(
                         "skipped rollback for formula '{}' — {e:#}; manual cleanup required",
@@ -275,22 +274,19 @@ impl anodizer_core::Publisher for HomebrewCorePublisher {
                 }
             };
             let Some(token) = token else {
-                log.warn(&format!(
-                    "skipped rollback for formula '{}' — no GitHub token resolvable \
-                     (the bump read ${}; the order is {})",
-                    t.formula,
-                    env_hint,
-                    token_order_hint(),
-                ));
+                log.warn(&rollback_no_token_warning(ctx, t));
                 continue;
             };
+            let token_hint = t
+                .bump_token_source()
+                .map_or_else(|| "the bump token".to_string(), |s| s.to_string());
             let pr_numbers = match crate::util::find_open_pr_numbers_for_head_with_env(
                 &t.upstream_owner,
                 &t.upstream_repo,
                 &t.head_owner,
                 &t.branch,
                 Some(&token),
-                env_hint,
+                &token_hint,
                 env,
             ) {
                 Ok(v) => v,
@@ -387,7 +383,7 @@ impl anodizer_core::Publisher for HomebrewCorePublisher {
                         "homebrew-core: no GitHub token resolvable for the '{}' bump \
                          — set one of these, read in this order: {}",
                         formula,
-                        token_order_hint(),
+                        token_order_hint(ctx),
                     )),
                 );
             }
@@ -402,7 +398,11 @@ impl anodizer_core::Publisher for HomebrewCorePublisher {
                     continue;
                 }
             };
-            if let Some(pr_token) = pr_token.as_deref().filter(|t| *t != token_value) {
+            if let Some(pr_token) = pr_token
+                .as_ref()
+                .map(|t| t.token.as_str())
+                .filter(|t| *t != token_value)
+            {
                 let policy = anodizer_core::retry::RetryPolicy::PREFLIGHT;
                 let probe = anodizer_core::git::GithubRepoProbe {
                     owner: &up_owner,
@@ -493,4 +493,20 @@ impl anodizer_core::Publisher for HomebrewCorePublisher {
         }
         Ok(acc)
     }
+}
+
+/// The warning a rollback prints when no token closes a bump's pull
+/// request: the source the bump's token came from, as the snapshot recorded
+/// it, and the order the rollback read.
+pub(crate) fn rollback_no_token_warning(ctx: &Context, t: &HomebrewCoreTargetSnapshot) -> String {
+    let read = match t.bump_token_source() {
+        Some(source) => format!("the bump's token came from {source}"),
+        None => "the bump recorded no token source".to_string(),
+    };
+    format!(
+        "skipped rollback for formula '{}' — no GitHub token resolvable ({read}; the \
+         rollback read {})",
+        t.formula,
+        pr_token_order_hint(ctx),
+    )
 }

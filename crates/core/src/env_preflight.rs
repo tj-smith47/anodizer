@@ -76,8 +76,8 @@ pub struct SourcedRequirement {
     /// failure: the declaring stage degrades gracefully without it. The
     /// canonical case is the build stage's cross-compilation toolchain, which
     /// falls back `zigbuild → cargo → system gcc` per target — so a missing
-    /// `zig`/`cargo-zigbuild` must show as "recommended", never block a
-    /// release. `anodizer tools` still reports advisory requirements; only the
+    /// `zig`/`cargo-zigbuild` must show as "recommended" and let the
+    /// release proceed. `anodizer tools` still reports advisory requirements; only the
     /// pass/fail gate treats them as non-blocking.
     pub advisory: bool,
 }
@@ -911,7 +911,7 @@ mod tests {
     #[test]
     fn advisory_tool_failure_warns_and_does_not_fail_the_gate() {
         // A missing ADVISORY tool (the cross-compile toolchain the build stage
-        // falls back from) must show as a warning, never a gate failure —
+        // falls back from) must show as a warning and the gate passes —
         // the regression that made `anodizer release` abort on any box without
         // zig/cargo-zigbuild.
         let none = EnvProbes {

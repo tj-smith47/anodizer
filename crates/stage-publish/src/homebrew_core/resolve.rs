@@ -6,6 +6,7 @@
 //! no network calls, no orchestration — so each is unit-testable without
 //! standing up a GitHub API.
 
+use crate::util::TokenSource;
 use anodizer_core::config::HomebrewCoreConfig;
 use anodizer_core::context::Context;
 use anodizer_core::log::StageLogger;
@@ -21,26 +22,33 @@ pub(crate) const TOKEN_ENV_VARS: [&str; 2] = ["HOMEBREW_CORE_GITHUB_TOKEN", "COM
 const CORE_OWNER: &str = "Homebrew";
 const CORE_REPO: &str = "homebrew-core";
 
-/// A resolved bump token plus the env var that supplied it.
+/// A resolved token plus where it came from.
 pub(crate) struct ResolvedToken {
-    /// The token value used to authenticate the bump.
+    /// The token value used to authenticate.
     pub token: String,
-    /// The env var that supplied the token, recorded in the target snapshot
-    /// so a rollback that finds no token can name it in its message. The
-    /// rollback resolves the whole order again. `None` when the token came
-    /// from `repository.token` or the run token.
-    pub env_var: Option<String>,
+    /// Where the token came from, recorded in the target snapshot so a
+    /// rollback that finds no token can name the source the bump used.
+    pub source: TokenSource,
 }
 
-/// The token sources [`resolve_token`] reads, in its order, for a message
-/// that says what to set when none of them holds a token.
-pub(crate) fn token_order_hint() -> String {
-    format!(
-        "`homebrew_cores[].repository.token`, ${}, ${}, the run's GitHub token \
-         (`--token`), then ${}",
-        TOKEN_ENV_VARS[0],
-        TOKEN_ENV_VARS[1],
-        anodizer_core::git::GITHUB_TOKEN_ENV_LADDER.join(" / $"),
+/// The sources [`resolve_token`] reads, in its order, for a message that
+/// says what to set when none of them holds a token.
+pub(crate) fn token_order_hint(ctx: &Context) -> String {
+    crate::util::token_order_hint(
+        ctx,
+        crate::util::PUSH_TOKEN_ORDER,
+        "homebrew_cores[]",
+        &TOKEN_ENV_VARS,
+    )
+}
+
+/// The sources [`resolve_pr_token`] reads, in its order.
+pub(crate) fn pr_token_order_hint(ctx: &Context) -> String {
+    crate::util::token_order_hint(
+        ctx,
+        crate::util::PR_TOKEN_ORDER,
+        "homebrew_cores[]",
+        &TOKEN_ENV_VARS,
     )
 }
 
@@ -54,26 +62,27 @@ pub(crate) fn resolve_token(
     ctx: &Context,
     cfg: &HomebrewCoreConfig,
 ) -> Result<Option<ResolvedToken>> {
-    let configured =
-        crate::util::configured_push_token(cfg.repository.as_ref(), &|s| ctx.render_template(s))?;
-    if let Some(token) = configured {
-        return Ok(Some(ResolvedToken {
-            token,
-            env_var: None,
-        }));
-    }
-    Ok(crate::util::resolve_env_token_tracked(ctx, &TOKEN_ENV_VARS)
-        .map(|(token, env_var)| ResolvedToken { token, env_var }))
+    let configured = crate::util::configured_push_token_tracked(cfg.repository.as_ref(), &|s| {
+        ctx.render_template(s)
+    })?;
+    Ok(configured
+        .or_else(|| crate::util::resolve_env_token_tracked(ctx, &TOKEN_ENV_VARS))
+        .map(|(token, source)| ResolvedToken { token, source }))
 }
 
 /// Resolve the token the bump pull request opens with: `pull_request.token`,
-/// else `repository.token` ([`crate::util::configured_pr_token`]), else the
+/// else `repository.token` ([`crate::util::configured_pr_token_tracked`]), else the
 /// bump token ([`resolve_token`]). The publish opens the pull request with
 /// it, and the rollback closes it with the same one.
-pub(crate) fn resolve_pr_token(ctx: &Context, cfg: &HomebrewCoreConfig) -> Result<Option<String>> {
-    match crate::util::configured_pr_token(cfg.repository.as_ref(), &|s| ctx.render_template(s))? {
-        Some(token) => Ok(Some(token)),
-        None => Ok(resolve_token(ctx, cfg)?.map(|t| t.token)),
+pub(crate) fn resolve_pr_token(
+    ctx: &Context,
+    cfg: &HomebrewCoreConfig,
+) -> Result<Option<ResolvedToken>> {
+    match crate::util::configured_pr_token_tracked(cfg.repository.as_ref(), &|s| {
+        ctx.render_template(s)
+    })? {
+        Some((token, source)) => Ok(Some(ResolvedToken { token, source })),
+        None => resolve_token(ctx, cfg),
     }
 }
 

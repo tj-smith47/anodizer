@@ -703,15 +703,16 @@ fn test_validate_nix_license_invalid() {
     );
 }
 
-// Vendored snapshot of GoReleaser's authoritative `validLicenses` list,
+// Vendored snapshot of the upstream authoritative `validLicenses` list,
 // copied verbatim from upstream `internal/pipe/nix/licenses.go`. The vendored
-// file's header pins the exact GoReleaser revision it came from (currently
+// file's header records the exact upstream revision it came from (currently
 // v2.17.0-da7ce304-nightly@da7ce30) so a refresh diffs against a known base.
 // Refresh by re-copying that file over `goreleaser_licenses.go.vendored` and
-// updating the pinned revision in its header; the diff at refresh time
-// reports exactly which identifiers GoReleaser added or removed, and
+// updating the recorded revision in its header; the diff at refresh time
+// reports exactly which identifiers upstream added or removed, and
 // `test_nix_licenses_match_goreleaser` fails until VALID_NIX_LICENSES is
-// brought back in sync. This is what catches a GoReleaser bump automatically.
+// brought back in sync. This catches an upstream license-list change
+// automatically.
 const GORELEASER_LICENSES_GO: &str = include_str!("goreleaser_licenses.go.vendored");
 
 /// Parse the quoted license identifiers out of the vendored GoReleaser

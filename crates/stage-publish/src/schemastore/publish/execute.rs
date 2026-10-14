@@ -403,7 +403,7 @@ pub(super) fn run_real(
         &fork_owner,
         &branch,
         token.as_deref(),
-        TOKEN_ENV_VAR,
+        &format!("${TOKEN_ENV_VAR}"),
         ctx.env_source(),
     ) {
         Ok(prs) if !prs.is_empty() => {

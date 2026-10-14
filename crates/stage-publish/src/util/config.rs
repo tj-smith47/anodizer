@@ -113,26 +113,26 @@ pub(crate) fn resolve_token(ctx: &Context, env_var: Option<&str>) -> Option<Stri
 }
 
 /// [`resolve_token`] for a publisher with more than one variable of its own
-/// (`env_vars`, read in order), returning the token with the variable it came
-/// from: `None` for the run token, which no single variable holds. A
-/// publisher that records the variable in its rollback evidence reads it
-/// back from here.
+/// (`env_vars`, read in order), returning the token with the source it came
+/// from: the variable, or [`TokenSource::RunToken`](super::pr_token::TokenSource::RunToken).
+/// A publisher that records the source in its rollback evidence reads it
+/// from here.
 pub(crate) fn resolve_env_token_tracked(
     ctx: &Context,
     env_vars: &[&str],
-) -> Option<(String, Option<String>)> {
-    use super::pr_token::{PUSH_TOKEN_ORDER, TokenLink};
+) -> Option<(String, super::pr_token::TokenSource)> {
+    use super::pr_token::{PUSH_TOKEN_ORDER, TokenLink, TokenSource};
     let first_set = |names: &[&str]| {
         names.iter().find_map(|name| {
             ctx.env_var(name)
                 .as_deref()
                 .and_then(anodizer_core::git::non_blank_token)
-                .map(|token| (token, Some((*name).to_string())))
+                .map(|token| (token, TokenSource::EnvVar((*name).to_string())))
         })
     };
     PUSH_TOKEN_ORDER.iter().find_map(|link| match link {
         TokenLink::PublisherVariable => first_set(env_vars),
-        TokenLink::RunToken => run_github_token(ctx).map(|token| (token, None)),
+        TokenLink::RunToken => run_github_token(ctx).map(|token| (token, TokenSource::RunToken)),
         TokenLink::GithubVariables => first_set(anodizer_core::git::GITHUB_TOKEN_ENV_LADDER),
         TokenLink::PullRequestToken | TokenLink::RepositoryToken => None,
     })

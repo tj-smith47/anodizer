@@ -24,8 +24,7 @@ pub fn parse_static(name: &str, raw: &str) -> Result<tera::Tera> {
 
 /// Render a previously-registered Tera template with `ctx`, returning the
 /// rendered string. Stage label is included in the error context so a render
-/// failure is reported as `<stage>: render '<name>': <tera-msg>` rather than a
-/// panic.
+/// failure is reported as `<stage>: render '<name>': <tera-msg>`.
 pub fn render_static(
     tera: &tera::Tera,
     name: &str,

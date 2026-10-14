@@ -1293,8 +1293,8 @@ fn chocolatey_sha256_empty_metadata_bails_with_actionable_error() {
 }
 
 /// Two Windows amd64 archives are ambiguous: the offline validator that
-/// `check` and `--snapshot` run reports the disqualification instead of
-/// letting a coin-flip payload reach a nupkg.
+/// `check` and `--snapshot` run reports the disqualification, so no
+/// coin-flip payload reaches a nupkg.
 ///
 /// The live publish path absorbs the same `entry_skip` through
 /// `absorb_entry_skip`, so the crates after the ambiguous one still publish.

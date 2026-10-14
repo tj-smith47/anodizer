@@ -88,8 +88,9 @@ fn stage_primary_tool(stage: StageId) -> Option<&'static str> {
         // snapcraft is a config-gated (`snapcrafts:`) host-default Linux
         // producer, single-binary like nfpm/makeself. Gating it here makes a
         // missing `snapcraft` warn-skip in dev and hard-fail with the gate's
-        // remediation message under `--require-tools`, instead of appearing as
-        // a raw `Command::new` spawn failure deep in the child release run.
+        // remediation message under `--require-tools`. Without the gate it
+        // appears as a raw `Command::new` spawn failure deep in the child
+        // release run.
         StageId::Snapcraft => Some("snapcraft"),
         StageId::Dmg => Some(if cfg!(target_os = "macos") {
             "hdiutil"

@@ -1572,7 +1572,7 @@ fn retry_http_blocking_bytes_transport_error_retries_then_fails() {
 fn classify_http_sync_maps_status_and_transport_to_controlflow() {
     let client = reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(2))
-        // Pass 3xx to the classifier rather than following it.
+        // Hand 3xx responses to the classifier without following them.
         .redirect(reqwest::redirect::Policy::none())
         .build()
         .expect("client");

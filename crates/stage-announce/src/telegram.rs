@@ -209,7 +209,7 @@ mod tests {
         assert!(json.get("parse_mode").is_none());
     }
 
-    // token redaction (I2 regression)
+    // Token redaction
 
     #[test]
     fn redact_bot_token_strips_token_from_message() {

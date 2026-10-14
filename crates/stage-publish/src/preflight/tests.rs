@@ -415,8 +415,7 @@ fn aur_rpc_malformed_json_is_error() {
 #[test]
 fn winget_pr_422_maps_to_not_found() {
     // GitHub returns 422 for a malformed search query; that is a "no PR"
-    // signal, not a transient network blip, so the checker must report
-    // Clean rather than bubbling an Unknown.
+    // signal, so the checker must report Clean.
     let (addr, _calls) = spawn_oneshot_http_responder(vec![
         "HTTP/1.1 422 Unprocessable Entity\r\nContent-Length: 0\r\n\r\n",
     ]);
@@ -2033,7 +2032,7 @@ mod publish_simulation {
         use anodizer_core::config::StringOrBool;
         // An unterminated `skip:` template breaks `cargo_publish_plan` — the
         // same failure the real publish would hit — so the simulation must
-        // report it as a blocker, never silently skip the gate.
+        // report it as a blocker.
         let mut blob = cargo_crate("anodizer-stage-blob", &["anodizer-core"]);
         if let Some(ref mut p) = blob.publish
             && let Some(ref mut c) = p.cargo

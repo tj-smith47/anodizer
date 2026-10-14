@@ -111,7 +111,7 @@ fn apply_monorepo_to_top_level(config: &mut Config, dir: &str) {
     }
 }
 
-/// Walk every packaging config attached to a crate and prefix any
+/// Go through every packaging config attached to a crate and prefix any
 /// `extra_files` / `templated_extra_files` paths so monorepo intent is
 /// uniform across archive / release / installer / blob configs.
 fn prefix_publisher_extras(crate_cfg: &mut anodizer_core::config::CrateConfig, dir: &str) {

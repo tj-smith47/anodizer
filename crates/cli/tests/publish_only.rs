@@ -973,7 +973,7 @@ Expire-Date: 0
 /// out-of-band — verifying the literal here would only re-derive the
 /// value via the same hash function that the production code uses to
 /// satisfy `hash_verify_preserved_dist`, making the test tautological.
-/// Hand-pinned values force a real mismatch if the planted
+/// Hand-written values force a real mismatch if the planted
 /// bytes ever drift.
 const SHARD_A_SHA256: &str = "77831ad6a6f50f547137457e01f5013db8ab0850f1e7ac3377cf79531973e2ec";
 const SHARD_B_SHA256: &str = "a67a65f266ffc9cd4acd19945642328a831e1076fe2c30772c881a1f3b6bb974";

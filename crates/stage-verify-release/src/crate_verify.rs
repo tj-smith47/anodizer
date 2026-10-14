@@ -230,7 +230,7 @@ pub(crate) fn verify_one_crate(
             }
             Err(e) => {
                 // Failing to fetch the live release is itself a post-publish
-                // signal worth reporting, not a silent skip.
+                // signal worth reporting.
                 issues.push(format!(
                     "could not fetch published release assets for crate '{}': {e}",
                     crate_cfg.name

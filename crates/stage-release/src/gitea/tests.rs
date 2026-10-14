@@ -151,7 +151,7 @@ fn gitea_auth_header_format() {
     );
 }
 
-// gitea_create_release retry behaviour (P1.4)
+// gitea_create_release retry behaviour
 //
 // Pin: a 503 on the find-release-by-tag GET must retry through
 // `retry_http_async` rather than fast-fail, and a 404 there falls through to

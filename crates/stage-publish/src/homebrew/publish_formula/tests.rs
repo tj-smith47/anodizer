@@ -1183,7 +1183,7 @@ fn render_formula_emits_active_livecheck_strategy() {
 
 /// `skip: false` with NO strategy/url/regex is a no-op opt-in: an empty
 /// `livecheck do…end` is invalid Ruby, so the renderer falls back to `skip`
-/// (and warns — the warning is reported, not asserted here, since it goes to
+/// (and warns; this test leaves the warning unasserted, since it goes to
 /// stderr). The rendered formula must still carry a valid `skip` block.
 #[test]
 fn render_formula_livecheck_skip_false_without_strategy_falls_back_to_skip() {

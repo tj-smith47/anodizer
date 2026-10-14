@@ -14,8 +14,8 @@
 //! always-on structural floor (pure-Rust line scanning) and, when `bash` is on
 //! `PATH`, a real `bash -n` syntax check of the PKGBUILD. A structural defect (a
 //! missing required variable, an unbalanced template that produced broken Bash)
-//! shows up in the emission-validate pass rather than after a pushed PKGBUILD
-//! fails `makepkg` for every installer.
+//! shows up in the emission-validate pass, before a pushed PKGBUILD can fail
+//! `makepkg` for every installer.
 
 use anodizer_core::context::Context;
 use anodizer_core::log::StageLogger;

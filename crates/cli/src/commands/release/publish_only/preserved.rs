@@ -205,7 +205,7 @@ pub(super) fn check_no_unsuffixed_suffixed_collision(dist: &Path, base: &str) ->
 /// Semantics:
 /// - `artifacts` — concatenated in shard-name (path) order; duplicates
 ///   are preserved (a duplicate path across shards is a workflow bug
-///   worth reporting downstream rather than silently collapsing).
+///   worth reporting downstream).
 /// - `targets` — deduped + sorted; the union across all shards.
 /// - `version` / `commit` — taken from the first non-empty entry; ALL
 ///   non-empty values across shards must agree, else this fails closed.

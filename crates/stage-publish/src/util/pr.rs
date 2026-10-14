@@ -2202,8 +2202,8 @@ mod tests {
     }
 
     /// No token anywhere (repo config absent, env unset) AND gh absent =>
-    /// `NoneAvailable` => the function MUST report `Failed`, never a
-    /// silent `None` that dispatch would record as `succeeded`. End-to-end
+    /// `NoneAvailable` => the function MUST report `Failed`; a silent `None`
+    /// would be recorded by dispatch as `succeeded`. End-to-end
     /// proof of the silent-skip contract at the orchestration boundary.
     #[cfg(unix)]
     #[test]

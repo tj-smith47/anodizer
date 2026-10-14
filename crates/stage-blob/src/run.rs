@@ -648,7 +648,7 @@ impl BlobStage {
 
                 // Determine if client-side KMS encryption is needed.
                 // Validate KMS scheme matches the bucket provider so a misconfig
-                // is reported here, not deep inside the upload phase. Preflight
+                // is reported here, before the upload phase. Preflight
                 // the CLI tool too — a missing `aws`/`gcloud`/`az` binary on
                 // PATH used to fail per-artifact during fan-out, producing N
                 // identical errors. One check, one error.

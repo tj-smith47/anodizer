@@ -125,8 +125,8 @@ pub fn run_build_pipeline_subprocess(spec: &ChildInvocation<'_>) -> Result<()> {
 }
 
 /// Invocation knobs for the child `anodizer release` subprocess, grouped
-/// so the spawn function takes one spec instead of a positional argument
-/// list that grows with every new knob.
+/// so the spawn function takes one spec, and a new knob is a new field
+/// with no change to the function signature.
 pub struct ChildInvocation<'a> {
     /// Path to the running `anodizer` binary (see
     /// [`current_anodizer_binary`]).

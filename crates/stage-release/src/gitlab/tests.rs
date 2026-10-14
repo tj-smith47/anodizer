@@ -356,7 +356,7 @@ fn resolve_use_job_token_empty_ci_env() {
     assert!(!resolve_use_job_token_with_env(true, "", &env));
 }
 
-// gitlab_create_release retry behaviour (P1.4)
+// gitlab_create_release retry behaviour
 //
 // Pin: a 503 on the GET-release-by-tag probe must be retried (transient
 // GitLab 5xx), not fast-failed. Mirror the equivalent core::retry test

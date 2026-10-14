@@ -337,10 +337,10 @@ pub(super) fn register(tera: &mut tera::Tera) {
     tera.register_json_filter("contains_any", in_filter);
 
     // Go `slice` builtin (superset of Tera's native slice)
-    // Registered as a filter only, never a function: Tera's own `slice` is a
+    // Registered as a filter only: Tera's own `slice` is a
     // filter, so overriding in place keeps every existing `| slice(...)` call
     // working, and the Go call form `slice s 0 7` is rewritten to this filter
-    // by the preprocessor rather than needing a second, Go-shaped filter.
+    // by the preprocessor, so one filter serves both call forms.
     // slice(start=, end=) — substring of a string (char-boundary safe) or
     // sub-slice of an array, end-exclusive (`slice s 0 7` → first 7 chars).
     // `start` is OPTIONAL (default 0) and NEGATIVE indices count from the end

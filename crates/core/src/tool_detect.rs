@@ -39,8 +39,8 @@ pub enum ToolProbe {
     /// (stub binary / version-flag mismatch).
     Unavailable,
     /// The probe itself failed for a non-`NotFound` reason (permission
-    /// denied, exec-format error, …): presence is UNKNOWN, not "absent".
-    /// Callers must report the error rather than collapse it to
+    /// denied, exec-format error, …): presence is UNKNOWN.
+    /// Callers must report the error and keep it distinct from
     /// [`ToolProbe::Unavailable`].
     ProbeFailed(io::Error),
 }

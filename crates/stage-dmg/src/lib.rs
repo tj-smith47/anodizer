@@ -380,9 +380,9 @@ impl Stage for DmgStage {
                     let dmg_id_for_log = dmg_cfg.id.as_deref().unwrap_or("default").to_string();
 
                     // `dmg.if`: template-conditional skip (opt-in).
-                    // Render error => hard bail (avoids the W1 silent-skip
-                    // footgun: user's typo must be reported, not silently ship a
-                    // release without the DMG they asked for).
+                    // Render error => hard bail: a typo in the condition is
+                    // reported, since a silent skip would ship a release
+                    // without the DMG the user asked for.
                     let proceed = anodizer_core::config::evaluate_if_condition(
                         dmg_cfg.if_condition.as_deref(),
                         &format!("dmg config '{}' for crate '{}'", dmg_id_for_log, krate.name),

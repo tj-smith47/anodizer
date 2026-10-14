@@ -361,8 +361,7 @@ pub(crate) fn read_release_notes_template(opts: &ReleaseOpts) -> Result<Option<(
 
 /// Resolve the `--simulate-failure` list. The flag is test-only and gated by
 /// `ANODIZE_TEST_HARNESS=1`; production releases that accidentally set the
-/// flag get a hard error rather than silent pass-through so the flag
-/// cannot be weaponized.
+/// flag get a hard error so the flag cannot be weaponized.
 pub(crate) fn resolve_simulate_failure(simulate: &mut Vec<String>) -> Result<Vec<String>> {
     if std::env::var("ANODIZE_TEST_HARNESS").as_deref() == Ok("1") {
         Ok(std::mem::take(simulate))

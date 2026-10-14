@@ -246,9 +246,8 @@ pub fn planned_rollback_names(ctx: &Context, run_id: &str) -> Result<Vec<String>
 /// would revert-the-revert and re-publish the artifact the operator is
 /// removing.
 ///
-/// Corruption on `rollback.json` reports a clear error rather than
-/// silently falling back to `report.json` — falling back would re-roll
-/// everything, the exact regression this ordering exists to prevent.
+/// Corruption on `rollback.json` reports a clear error. Falling back to
+/// `report.json` would re-roll everything, the exact regression this ordering exists to prevent.
 ///
 /// `log` is `Some` only for the executing path; the read-only preview
 /// stays silent so a dry-run does not narrate file reads.
@@ -1320,9 +1319,8 @@ mod tests {
 
     #[test]
     fn rollback_errors_on_unparseable_rollback_json() {
-        // Corrupt rollback.json must report a clear error rather than
-        // silently falling back to report.json — that fallback would
-        // re-roll every Succeeded entry, which is exactly the regression
+        // Corrupt rollback.json must report a clear error. Falling back to
+        // report.json would re-roll every Succeeded entry, which is exactly the regression
         // being guarded against.
         let (mut ctx, _tmp) = ctx_with_dist();
         let mut report = PublishReport::default();

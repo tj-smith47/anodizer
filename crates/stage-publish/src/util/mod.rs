@@ -94,7 +94,10 @@ pub(crate) use pr::{
     maybe_submit_pr_with_env, reconcile_open_prs, resolve_upstream_coords,
     submit_pr_via_gh_with_opts, submit_pr_via_gh_with_opts_with_env,
 };
-pub(crate) use pr_token::{configured_pr_token, configured_push_token};
+pub(crate) use pr_token::{
+    PR_TOKEN_ORDER, PUSH_TOKEN_ORDER, TokenSource, configured_pr_token_tracked,
+    configured_push_token_tracked, token_order_hint,
+};
 pub(crate) use template::{
     UrlTarget, guard_no_unrendered, render_or_warn, render_or_warn_with_vars, render_url_template,
     render_url_template_with_ctx, render_url_template_with_ctx_and_artifact,

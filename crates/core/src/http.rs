@@ -102,11 +102,10 @@ pub fn body_read_error_message<E: std::fmt::Display>(err: E) -> String {
 ///
 /// Reads and scrubs an HTTP response body for error reporting after
 /// commit `8b77358`: a transport-level read error becomes
-/// `"could not read response body: <err>"` rather than silently truncating
-/// to an empty string. Callers typically pass the resulting text into a
-/// larger error context (e.g. `"GitHub API returned 422: {body}"`), so the
-/// placeholder still gives a usable diagnostic instead of a confusing
-/// empty payload.
+/// `"could not read response body: <err>"`. Callers typically pass the
+/// resulting text into a larger error context (e.g.
+/// `"GitHub API returned 422: {body}"`), so the placeholder still gives a
+/// usable diagnostic.
 ///
 /// Use this when the body will be interpolated into a downstream error
 /// message; use `resp.text().await?` directly when the caller will

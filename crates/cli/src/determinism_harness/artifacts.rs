@@ -1,6 +1,6 @@
 //! Per-run artifact discovery, hashing, and drift-bin dump/prune.
 //!
-//! - [`discover_artifacts`] walks `<worktree>/dist` and returns the
+//! - [`discover_artifacts`] scans `<worktree>/dist` and returns the
 //!   shipped raw cargo binaries under `<worktree>/.det-tmp/target/`. The
 //!   per-triple `<triple>/release/<bin>` outputs are always included; the
 //!   bare host `release/<bin>` is included only when no per-triple build

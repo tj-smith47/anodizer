@@ -402,7 +402,7 @@ mod already_exists_tests {
     #[test]
     fn bails_when_replace_forbidden_and_sizes_differ() {
         // `if !replace_existing_artifacts { return unrecoverable }`.
-        // Reports the conflict instead of silently overwriting.
+        // Reports the conflict and leaves the existing asset in place.
         assert_eq!(
             classify_already_exists(false, uploaded(100), 200, None),
             AlreadyExistsAction::BailReplaceForbidden,
@@ -710,7 +710,7 @@ mod already_exists_action_derive_tests {
 
 #[cfg(test)]
 mod spec_struct_surface_tests {
-    //! Pin the fields of the three "context bundles" passed
+    //! Check the fields of the three "context bundles" passed
     //! into `run_github_backend`. Each is `Clone + Copy` so a struct
     //! can be constructed, copied, and read field-by-field through
     //! the copy — a future field removal/rename breaks compilation

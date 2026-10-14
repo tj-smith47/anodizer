@@ -3940,7 +3940,7 @@ fn test_build_publish_patch_body_prerelease_with_discussion() {
     );
 }
 
-// Q11.1: header-access panic-freedom regression
+// Header-access panic-freedom regression
 //
 // An update-release call could panic when `resp`
 // was nil before accessing `resp.Header.Get(...)`. Anodizer is panic-free
@@ -4186,13 +4186,13 @@ fn test_populate_checksums_var_unreadable_artifact_errors_not_silent() {
 // upload-asset retry loop, the un-draft publish PATCH).
 //
 // The unit-level retry-loop contract (5xx-retries, 4xx-fast-fails, honors
-// `attempts`) is pinned by `github::retry_call::tests` against a real TCP
-// responder. The tests below pin the config-to-policy translation
+// `attempts`) is checked by `github::retry_call::tests` against a real TCP
+// responder. The tests below check the config-to-policy translation
 // (`RetryConfig::to_policy`) so the upload-loop locals
 // (`max_upload_attempts`, `initial_retry_delay`, `max_retry_delay`) and the
 // `retry_octocrab_call` policy argument trace back to the user's YAML.
 //
-// Invariant pinned: the upload loop's `max_upload_attempts` equals
+// Invariant held: the upload loop's `max_upload_attempts` equals
 // `ctx.config.retry.unwrap_or_default().to_policy().max_attempts`.
 
 /// Local helper that mirrors the resolution `run_github_backend` performs:
@@ -4230,7 +4230,7 @@ fn test_retry_config_default_yields_goreleaser_defaults_for_github_backend() {
 
 #[test]
 fn test_retry_config_attempts_one_short_circuits_github_backend_policy() {
-    // Pin the "user wants no retries" setting: `attempts: 1` in YAML must
+    // Check the "user wants no retries" setting: `attempts: 1` in YAML must
     // produce `max_attempts == 1` so every retry-wrapped octocrab call site
     // (find-draft list, delete, create, update, upload, publish) attempts
     // exactly once and fast-fails on the first transient error. This is the

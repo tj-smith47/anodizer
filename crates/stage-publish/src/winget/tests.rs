@@ -2859,7 +2859,7 @@ mod live_pr {
     /// The same residual `winget.description` template stays lenient in
     /// dry-run: `publish_to_winget` early-returns before the manifest
     /// render (and therefore before the guard) so it must still report
-    /// `Ok`, not report the residual as an error.
+    /// `Ok`.
     #[test]
     #[serial(path_env)]
     fn publish_residual_description_template_dry_run_stays_lenient() {

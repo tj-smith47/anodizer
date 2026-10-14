@@ -77,7 +77,7 @@ pub fn dispatch_filtered_announcers(
 /// announcer, the env vars its run path reads (webhook URLs and tokens,
 /// either as `{{ .Env.X }}` refs in the configured value or as the
 /// announcer's documented fallback var). A missing SMTP_PASSWORD or webhook
-/// secret otherwise only shows up at the very END of an otherwise-green
+/// secret otherwise only shows up at the very END of an otherwise-passing
 /// release — exactly the failure class preflight exists to kill. Values
 /// are never echoed — only referenced env-var names.
 ///

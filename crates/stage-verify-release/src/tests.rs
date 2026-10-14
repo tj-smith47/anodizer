@@ -1486,7 +1486,7 @@ fn linux_packages_resolves_absolute_path_and_basename() {
         "packages are isolated per crate"
     );
 
-    // A target-built package reports its triple so the smoke-test can pin
+    // A target-built package reports its triple so the smoke-test can set
     // the container platform to the package's architecture.
     ctx.artifacts.add(Artifact {
         kind: ArtifactKind::LinuxPackage,
@@ -3109,7 +3109,7 @@ fn run_asset_gate_submitter_only_still_blocks_missing_combined_checksum() {
 fn run_asset_gate_full_leg_still_blocks_combined_checksum_mismatch() {
     // In the leg that itself uploads the assets (github-release selected),
     // the combined checksum bytes MUST match — a mismatch there is real
-    // corruption (or a broken refresh), never a selection difference.
+    // corruption (or a broken refresh).
     let (addr, _log) = spawn_release_route(&["app.tar.gz", "app_checksums.txt"]);
     let dir = tempfile::tempdir().expect("tempdir");
     let mut ctx = asset_ctx(addr, vec![published_crate("app", None)]);

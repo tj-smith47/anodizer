@@ -3,6 +3,7 @@
 //! pushes.
 
 use anodizer_core::config::RepositoryConfig;
+pub(crate) use anodizer_core::publish_evidence::TokenSource;
 
 /// One place a publisher's repository token can come from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -90,11 +91,35 @@ pub(crate) fn configured_push_token(
     first_configured(repo, PUSH_TOKEN_ORDER, render)
 }
 
+/// [`configured_pr_token`] with the field the token came from.
+pub(crate) fn configured_pr_token_tracked(
+    repo: Option<&RepositoryConfig>,
+    render: &dyn Fn(&str) -> anyhow::Result<String>,
+) -> anyhow::Result<Option<(String, TokenSource)>> {
+    first_configured_tracked(repo, PR_TOKEN_ORDER, render)
+}
+
+/// [`configured_push_token`] with the field the token came from.
+pub(crate) fn configured_push_token_tracked(
+    repo: Option<&RepositoryConfig>,
+    render: &dyn Fn(&str) -> anyhow::Result<String>,
+) -> anyhow::Result<Option<(String, TokenSource)>> {
+    first_configured_tracked(repo, PUSH_TOKEN_ORDER, render)
+}
+
 fn first_configured(
     repo: Option<&RepositoryConfig>,
     order: &[TokenLink],
     render: &dyn Fn(&str) -> anyhow::Result<String>,
 ) -> anyhow::Result<Option<String>> {
+    Ok(first_configured_tracked(repo, order, render)?.map(|(token, _)| token))
+}
+
+fn first_configured_tracked(
+    repo: Option<&RepositoryConfig>,
+    order: &[TokenLink],
+    render: &dyn Fn(&str) -> anyhow::Result<String>,
+) -> anyhow::Result<Option<(String, TokenSource)>> {
     let Some(repo) = repo else {
         return Ok(None);
     };
@@ -104,10 +129,56 @@ fn first_configured(
         };
         let token = anodizer_core::git::render_secret(field, raw, render)?;
         if !token.is_empty() {
-            return Ok(Some(token));
+            let source = match link {
+                TokenLink::PullRequestToken => TokenSource::PullRequestField,
+                _ => TokenSource::RepositoryField,
+            };
+            return Ok(Some((token, source)));
         }
     }
     Ok(None)
+}
+
+/// The sources a resolver reading `order` tries, in that order, for a
+/// message that says what to set when none of them holds a token.
+/// `config_key` prefixes the config fields (`homebrew_cores[]` renders
+/// `` `homebrew_cores[].repository.token` ``), and `publisher_vars` are the
+/// publisher's own variables. The run token is listed only on a GitHub run,
+/// the one run whose token the resolvers read.
+pub(crate) fn token_order_hint(
+    ctx: &anodizer_core::context::Context,
+    order: &[TokenLink],
+    config_key: &str,
+    publisher_vars: &[&str],
+) -> String {
+    let field = |name: &str| format!("`{config_key}.{name}`");
+    let vars = |names: &[&str]| {
+        names
+            .iter()
+            .map(|n| TokenSource::EnvVar((*n).to_string()).to_string())
+            .collect::<Vec<_>>()
+    };
+    let mut items: Vec<String> = Vec::new();
+    for link in order {
+        match link {
+            TokenLink::PullRequestToken => items.push(field("repository.pull_request.token")),
+            TokenLink::RepositoryToken => items.push(field("repository.token")),
+            TokenLink::PublisherVariable => items.extend(vars(publisher_vars)),
+            TokenLink::RunToken => {
+                if ctx.token_type == anodizer_core::scm::ScmTokenType::GitHub {
+                    items.push(format!(
+                        "{} (`--token`, or {} read at startup when `--token` is unset)",
+                        TokenSource::RunToken,
+                        anodizer_core::git::GITHUB_TOKEN_ENV_LADDER.join("/"),
+                    ));
+                }
+            }
+            TokenLink::GithubVariables => {
+                items.extend(vars(anodizer_core::git::GITHUB_TOKEN_ENV_LADDER));
+            }
+        }
+    }
+    items.join(", then ")
 }
 
 #[cfg(test)]

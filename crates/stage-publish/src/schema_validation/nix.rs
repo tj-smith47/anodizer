@@ -15,8 +15,8 @@
 //! balance + required-attr scanning) and, when `nix-instantiate` is on `PATH`,
 //! a real `nix-instantiate --parse` of each file. A structural defect (a
 //! missing required attribute, an unbalanced template that produced broken
-//! Nix) shows up in the emission-validate pass rather than after a pushed
-//! overlay fails `nix build` for every installer.
+//! Nix) shows up in the emission-validate pass, before a pushed overlay can
+//! fail `nix build` for every installer.
 
 use anodizer_core::context::Context;
 use anodizer_core::log::StageLogger;

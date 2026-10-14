@@ -1509,3 +1509,25 @@ fn headroom_guard_unknown_free_space_is_noop() {
         "unknown free space must proceed (no manufactured abort)"
     );
 }
+
+/// A production key on a preserve-dist run leaves Sign out. A blank one
+/// counts as unset, so Sign stays and signs with the harness's ephemeral
+/// keys, and a run that preserves nothing always signs.
+#[test]
+fn a_blank_production_key_keeps_the_sign_stage_on_a_preserve_run() {
+    let keys =
+        |cosign: &'static str| move |name: &str| (name == "COSIGN_KEY").then(|| cosign.to_string());
+    assert!(super::run::skips_sign_for_preserve(
+        true,
+        &keys("cosign-key")
+    ));
+    assert!(
+        !super::run::skips_sign_for_preserve(true, &keys(" \n")),
+        "a blank COSIGN_KEY counts as unset, so Sign runs with the ephemeral keys"
+    );
+    assert!(!super::run::skips_sign_for_preserve(true, &|_| None));
+    assert!(!super::run::skips_sign_for_preserve(
+        false,
+        &keys("cosign-key")
+    ));
+}

@@ -3,7 +3,7 @@
 use super::preprocess;
 
 /// Force-touch every `LazyLock<Regex>` static in the preprocessor so an
-/// invalid literal fails here, not on the first real preprocess() call
+/// invalid literal fails here, before any real preprocess() call
 /// in the field. Each `LazyLock::new(|| static_regex(…))` panics on bad
 /// pattern; running them under the test binary turns a deferred panic into
 /// a deterministic test failure.

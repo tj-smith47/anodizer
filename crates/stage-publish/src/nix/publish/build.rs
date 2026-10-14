@@ -451,8 +451,7 @@ pub(super) fn run_formatter(nix_cfg: &NixConfig, nix_file: &Path, log: &StageLog
     // Detect-and-fail-loud (no runtime auto-install) — consistent with
     // cosign/syft being required-present. The CI base image
     // (anodizer-action `install:`) provisions the formatter. A genuine probe
-    // error (e.g. permission denied) shows up as itself rather than the
-    // misleading "not found on PATH" remedy.
+    // error (e.g. permission denied) shows up as itself.
     match anodizer_core::tool_detect::runs(formatter) {
         anodizer_core::tool_detect::ToolProbe::Available => {}
         anodizer_core::tool_detect::ToolProbe::Unavailable => {

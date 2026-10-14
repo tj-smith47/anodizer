@@ -10,8 +10,8 @@ use super::*;
 /// Returns `Ok(Some(cksum_hex))` if the index has this version (cksum may be
 /// an empty string if the index entry is malformed), `Ok(None)` if the crate
 /// or version isn't present, `Err` on transport errors. Used to make publishes
-/// idempotent across retries while reporting same-version drift instead of
-/// silently skipping a re-release that would install stale content.
+/// idempotent across retries while reporting same-version drift, since a
+/// skipped re-release with changed content would install stale content.
 ///
 /// The sparse-index GET routes through
 /// [`retry_http_blocking_deadline`](anodizer_core::retry::retry_http_blocking_deadline) so

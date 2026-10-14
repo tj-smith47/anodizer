@@ -5763,7 +5763,7 @@ crates:
 }
 
 /// E2E regression: a required-publisher failure in real-release mode
-/// (not snapshot, not dry-run) must show up as a non-zero exit. Two
+/// (neither snapshot nor dry-run) must show up as a non-zero exit. Two
 /// gates defend this, in layers:
 ///
 /// 1. The publish stage itself errors (`bail_on_required_failures` in
@@ -6089,7 +6089,7 @@ crates:
 
 /// E2E: `anodizer release --skip=announce --summary-json=<path>` writes
 /// the per-publisher summary even when the announce stage is operator-
-/// skipped. Binary-level coverage for B6 finding I1; the unit-level
+/// skipped. This is the binary-level coverage; the unit-level
 /// equivalent lives at `pipeline/builders.rs::tests::pipeline_emits_summary_when_announce_is_skipped_via_skip_flag`.
 ///
 /// Snapshot + dry-run mode keep the test self-contained (no network,

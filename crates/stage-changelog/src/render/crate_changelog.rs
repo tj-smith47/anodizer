@@ -146,7 +146,7 @@ pub(crate) fn render_crate_changelog(
     }
     // A precise `changelog.paths` glob narrowing applies only to `use: git`
     // (the SCM compare APIs already warn that path filtering is coarse /
-    // unsupported above). Report the limitation rather than silently widen.
+    // unsupported above). Warn about the wider scope.
     if scope.narrow.is_some() && (use_github || use_gitlab || use_gitea) {
         log.warn(
             "`changelog.paths` narrows the per-crate scope, but the \

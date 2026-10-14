@@ -1633,7 +1633,7 @@ mod tests {
         };
 
         // Two from-clean serializations must produce equal bytes. This
-        // pins the file that `release --split` re-runs against —
+        // checks the file that `release --split` re-runs against —
         // `cmp -s dist/<subdir>/context.json{,.prev}` would pass.
         let first = serde_json::to_string_pretty(&make_ctx()).unwrap();
         let second = serde_json::to_string_pretty(&make_ctx()).unwrap();

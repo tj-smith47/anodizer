@@ -76,9 +76,8 @@ pub(crate) trait AiProvider {
 ///
 /// A non-2xx status is returned as an error including the status and the
 /// (decoded) response body so an API error message reaches the operator.
-/// A body that fails to decode is returned as an error (rather than being
-/// swallowed behind a placeholder string), since a body the transport could
-/// not read is itself a transport failure worth reporting.
+/// A body that fails to decode is returned as an error, since a body the
+/// transport could not read is itself a transport failure worth reporting.
 fn post_for_json(
     timeout: std::time::Duration,
     url: &str,

@@ -2616,7 +2616,7 @@ fn publish_residual_description_template_errors_before_push() {
 /// The same residual `krew.description` template stays lenient in
 /// dry-run: `publish_to_krew` early-returns before the manifest render
 /// (and therefore before the guard), so the call must still report a
-/// `Skipped` outcome rather than report the residual as an error.
+/// `Skipped` outcome.
 #[test]
 fn publish_residual_description_template_dry_run_stays_lenient() {
     let mut c = pr_direct_crate("widget", "kubectl-widget", "/unused");

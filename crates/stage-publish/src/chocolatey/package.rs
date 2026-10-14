@@ -624,10 +624,9 @@ mod tests {
 
     #[test]
     fn push_nupkg_403_with_html_body_fast_fails() {
-        // A 403 is an authorization decision, not a transient edge challenge: it
-        // must NOT retry (a push client cannot satisfy a JS challenge), and the
-        // reported error must carry the registry's own message rather than an
-        // optimistic "edge challenge" guess. Regression for the moderation /
+        // A 403 is an authorization decision: it must NOT retry (a push client
+        // cannot satisfy a JS challenge), and the reported error must carry the
+        // registry's own message. Regression for the moderation /
         // credential 403 that previously force-retried 10× and burned the release.
         use std::sync::atomic::Ordering;
 

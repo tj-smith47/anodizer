@@ -107,7 +107,7 @@ pub(super) fn run_cargo_publish_simulation_with(
         Ok(p) => p,
         Err(e) => {
             // A render failure in `skip:`/`if:` would also break the real
-            // publish; report it as a blocker rather than silently skipping.
+            // publish; report it as a blocker.
             report
                 .blockers
                 .push(format!("cargo publish-simulation: {e:#}"));
@@ -540,7 +540,7 @@ pub(super) fn first_nonempty_line(stderr: &str) -> String {
 
 // Rollback-scope + publisher-preflight extension
 
-/// Walk the trait-based publisher registry and report two classes of
+/// Go through the trait-based publisher registry and report two classes of
 /// resilience concerns into the report:
 ///
 /// 1. Rollback scope availability — every publisher whose

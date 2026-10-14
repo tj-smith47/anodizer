@@ -625,7 +625,7 @@ mod tests {
     fn absence_probe_treats_connectivity_failure_as_a_hard_error() {
         // A DNS/network fault ("could not find host …") must NOT masquerade as
         // an unregistered snap — it carries no snap-does-not-exist wording, so
-        // the promote probe reports it honestly rather than silently skipping.
+        // the promote probe reports it as an error.
         let msg = "snapcraft: error: could not find host api.snapcraft.io";
         assert!(
             !is_snap_absent_from_store(msg),

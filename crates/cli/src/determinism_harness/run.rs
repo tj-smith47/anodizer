@@ -1,5 +1,25 @@
 use super::*;
 
+/// Whether the harness leaves out the Sign stage: on a preserve-dist run
+/// with a production key on the runner (`COSIGN_KEY` or `GPG_PRIVATE_KEY`,
+/// read through `key`). A blank key counts as unset. cosign reads
+/// `COSIGN_KEY` itself (`--key=env://COSIGN_KEY`) and fails on a blank
+/// value, so a blank key leaves Sign in place, signing with the harness's
+/// ephemeral keys; the publish-only path strips those signatures before it
+/// signs with the production keys.
+pub(crate) fn skips_sign_for_preserve(
+    preserve_dist: bool,
+    key: &dyn Fn(&str) -> Option<String>,
+) -> bool {
+    let key_set = |name: &str| {
+        key(name)
+            .as_deref()
+            .and_then(anodizer_core::git::non_blank_token)
+            .is_some()
+    };
+    preserve_dist && (key_set("COSIGN_KEY") || key_set("GPG_PRIVATE_KEY"))
+}
+
 impl Harness {
     /// Apply the external-tool availability gate to `effective_stages`,
     /// returning the stages whose backing tool is reachable.
@@ -90,24 +110,17 @@ impl Harness {
         // `COSIGN_KEY` / `GPG_PRIVATE_KEY` exported on the runner), the
         // harness's ephemeral signatures would end up in the preserved dist
         // and have to be stripped before re-signing with production keys.
-        // Cleaner to never write them: skip the Sign stage entirely.
+        // Skipping the Sign stage writes none.
         //
         // KNOWN COVERAGE GAP: byte-stability of the Sign stage is no
-        // longer exercised in CI when this branch fires. Acceptable
-        // tradeoff — the `harness_signing` unit tests already pin the
-        // SDE-based key derivation (cosign-keygen + GPG `--faked-system-
-        // time`) so the deterministic-keys property has direct coverage,
-        // and the production sign stage is exercised by every release.
-        // A blank key counts as unset, the same way the sign stage reads it.
-        let key_set = |name: &str| {
-            std::env::var(name)
-                .ok()
-                .as_deref()
-                .and_then(anodizer_core::git::non_blank_token)
-                .is_some()
-        };
+        // longer exercised in CI when this branch fires. The
+        // `harness_signing` unit tests cover the SDE-based key derivation
+        // (cosign-keygen + GPG `--faked-system-time`), and the production
+        // sign stage runs in every release.
         let skip_sign_for_preserve =
-            self.preserve_dist.is_some() && (key_set("COSIGN_KEY") || key_set("GPG_PRIVATE_KEY"));
+            skips_sign_for_preserve(self.preserve_dist.is_some(), &|name| {
+                std::env::var(name).ok()
+            });
         let effective_stages: Vec<StageId> = if skip_sign_for_preserve {
             self.stages
                 .iter()
@@ -293,7 +306,7 @@ impl Harness {
             // peak = free-before − min-free-observed; fold it into
             // `max_prior_peak` so run-(idx+1)'s guard is gated on the
             // largest real peak seen so far. Emitted at verbose so the
-            // first CI run reports run-0's true number (B1.3 / W1).
+            // first CI run reports run-0's true number.
             let min_free_during = sampler.stop();
             if let (Some(before), Some(min_free)) = (free_before, min_free_during) {
                 let peak = anodizer_core::disk::RunPeak {

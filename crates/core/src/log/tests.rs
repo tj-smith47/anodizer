@@ -290,9 +290,8 @@ fn test_header_paths_emit_identical_bytes() {
             );
         }
         // The sentinel survived one swap but not the other — a real capture
-        // anomaly (a flaky/half-redirected environment), not the documented
-        // all-or-nothing fallback. Report it loudly instead of silently
-        // running the weaker check.
+        // anomaly (a flaky/half-redirected environment) outside the documented
+        // all-or-nothing fallback, so it is reported loudly.
         (flushed, stepped) => panic!(
             "inconsistent stderr capture: flush={} step={}",
             flushed.is_some(),

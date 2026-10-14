@@ -106,7 +106,7 @@ pub fn git_status_porcelain_in(cwd: &Path) -> String {
 }
 
 /// Return the `git status --porcelain` output from a repository at `cwd`,
-/// returning the underlying git failure instead of swallowing it.
+/// returning the underlying git failure as an error.
 ///
 /// `Ok(String)` carries the porcelain output (empty = clean tree); `Err`
 /// signals that the `git status` invocation itself could not run or determine

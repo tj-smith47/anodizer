@@ -58,8 +58,7 @@ pub fn lock_recover<'a, T>(m: &'a Mutex<T>, log: &StageLogger, label: &str) -> M
 /// Translate a `thread::JoinHandle::join` result's panic payload into
 /// an `anyhow::Error` tagged with `label`. The two common panic
 /// payload shapes (`&'static str` / `String`) are downcast so the
-/// reported message is readable rather than the opaque `Any`
-/// placeholder.
+/// reported message carries the readable panic text.
 ///
 /// Accepts `Result<T, Box<dyn Any + Send>>` rather than the handle
 /// itself so a single helper covers both [`std::thread::JoinHandle`]

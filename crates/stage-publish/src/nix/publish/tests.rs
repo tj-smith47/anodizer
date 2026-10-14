@@ -362,8 +362,8 @@ fn build_archive_tuples_excludes_watchos_darwin_keeps_linux() {
 #[test]
 fn build_archive_tuples_only_apple_non_macos_bails_as_no_archive() {
     // A full build whose only Apple archive is tvOS has no nix-installable
-    // system: build_archive_tuples must bail (failure reported), not emit a
-    // bogus aarch64-darwin package.
+    // system: build_archive_tuples must bail (failure reported) and emit no
+    // aarch64-darwin package.
     let sha = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
     let arts = vec![os_artifact_with_target(
         "darwin",
@@ -1288,7 +1288,7 @@ fn crate_has_nix_archive_false_when_only_non_nix_systems() {
 #[test]
 fn crate_has_nix_archive_errors_on_present_but_sha_less_artifact() {
     // A matched artifact missing its sha256 is present-but-broken: the
-    // collect step bails so the publisher reports it rather than skipping.
+    // collect step bails so the publisher reports it.
     let arts = vec![archive_artifact(
         "x86_64-unknown-linux-gnu",
         "https://e/x.tar.gz",
@@ -1965,7 +1965,7 @@ mod subprocess {
     /// The same residual `nix.description` template stays lenient in
     /// dry-run: `publish_to_nix` early-returns before the derivation
     /// render (and therefore before the guard), so the call must still
-    /// report `Ok(false)` rather than report the residual as an error.
+    /// report `Ok(false)`.
     #[test]
     fn publish_residual_description_template_dry_run_stays_lenient() {
         let (bare_url, bare) = make_bare_repo("main");

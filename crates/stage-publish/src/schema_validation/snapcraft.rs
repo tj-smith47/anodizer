@@ -8,8 +8,8 @@
 //! exact YAML the live build stages — via the same render path — and checks
 //! it against a schema transcribed from snapd's own validators, so a
 //! structural defect (an over-long summary, an out-of-enum confinement, a
-//! malformed name) shows up in the emission-validate pass rather than after a
-//! release has packed and uploaded a registry-rejected snap.
+//! malformed name) shows up in the emission-validate pass, before a release
+//! packs and uploads a registry-rejected snap.
 //!
 //! This validates `snap.yaml` (the snap's final metadata), NOT a
 //! `snapcraft.yaml` build recipe — anodizer does not emit a recipe, and the

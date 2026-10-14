@@ -101,7 +101,7 @@ pub(crate) fn classify_delete_status(status: reqwest::StatusCode) -> DeleteOutco
 /// `PublishEvidence::extra` resolved to a configured basic-auth pair;
 /// otherwise `bearer` falls back to `ARTIFACTORY_TOKEN` /
 /// `ARTIFACTORY_SECRET`. Both `None` is acceptable — the DELETE will
-/// report a 401 in the failed bucket rather than silently 200ing.
+/// report a 401 in the failed bucket.
 #[derive(Clone, Debug)]
 pub(crate) struct RollbackJob {
     pub(crate) url: String,

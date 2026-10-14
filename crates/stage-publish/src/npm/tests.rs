@@ -2484,7 +2484,7 @@ fn preflight_skip_metapackage_without_artifacts_does_not_block() {
 fn preflight_skip_metapackage_layout_error_blocks() {
     // Artifacts ARE present but the config is invalid (optional-deps mode with
     // no scope and no platform_name_template): generate_layout errors, and
-    // preflight must report it as a Blocker rather than swallow it.
+    // preflight must report it as a Blocker.
     let (_tmp, mut ctx) = optional_deps_ctx();
     let cfg = NpmConfig {
         mode: NpmMode::OptionalDeps,
@@ -3072,8 +3072,8 @@ fn publish_optional_deps_residual_description_template_dry_run_stays_lenient() {
 /// it feeds into every per-platform package, and the per-platform packages
 /// stage (and guard) first — see
 /// `publish_optional_deps_residual_description_template_errors_before_staging`,
-/// whose residual shows up as `"npm platform package.json"`, never reaching
-/// the metapackage call site. No publish-level test can isolate this guard.
+/// whose residual shows up as `"npm platform package.json"` before the
+/// metapackage call site is reached. No publish-level test can isolate this guard.
 ///
 /// This test instead proves the guard itself is correct and reachable in
 /// principle: it takes a real `generate_layout`-produced metapackage

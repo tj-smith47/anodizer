@@ -2471,3 +2471,45 @@ fn every_overlay_mutation_is_rewound_by_the_guard() {
         );
     }
 }
+
+/// The signatures and certificates a harness signed with its ephemeral keys
+/// (a blank production key leaves Sign in the harness) are taken out of the
+/// registry and off the disk before the publish signs again; every other
+/// artifact stays.
+#[test]
+fn ephemeral_signatures_are_stripped_before_the_publish_signs() {
+    use anodizer_core::artifact::{Artifact, ArtifactKind};
+    use anodizer_core::context::ContextOptions;
+    let tmp = tempfile::tempdir().unwrap();
+    let mut ctx = Context::new(Config::default(), ContextOptions::default());
+    let seeds = [
+        (ArtifactKind::Archive, "widget.tar.gz"),
+        (ArtifactKind::Signature, "widget.tar.gz.sig"),
+        (ArtifactKind::Certificate, "widget.tar.gz.pem"),
+    ];
+    for (kind, name) in seeds {
+        let path = tmp.path().join(name);
+        std::fs::write(&path, name).unwrap();
+        ctx.artifacts.add(Artifact {
+            kind,
+            name: name.to_string(),
+            path,
+            target: None,
+            crate_name: String::new(),
+            metadata: Default::default(),
+            size: None,
+        });
+    }
+    let log = StageLogger::new("test", anodizer_core::log::Verbosity::Quiet);
+    super::per_crate::strip_ephemeral_signatures(&mut ctx, &log);
+    let left: Vec<&str> = ctx
+        .artifacts
+        .all()
+        .iter()
+        .map(|a| a.name.as_str())
+        .collect();
+    assert_eq!(left, vec!["widget.tar.gz"]);
+    assert!(tmp.path().join("widget.tar.gz").exists());
+    assert!(!tmp.path().join("widget.tar.gz.sig").exists());
+    assert!(!tmp.path().join("widget.tar.gz.pem").exists());
+}

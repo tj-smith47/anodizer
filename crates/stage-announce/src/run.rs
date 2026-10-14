@@ -229,7 +229,7 @@ fn announce_body(_stage: &AnnounceStage, ctx: &mut Context) -> Result<()> {
         AnnounceDecision::Deselected => {
             // Unreachable: the deselect short-circuit above runs first, before
             // snapshot/nightly/refresh. Handled for exhaustiveness so a future
-            // reordering is caught here rather than silently broadcasting.
+            // reordering is caught here and broadcasts nothing.
             log.status(&ctx.deselected_reason("announce"));
             return Ok(());
         }
@@ -1450,7 +1450,7 @@ mod summary_tests {
 
     /// A publish stage that aborts on a pre-dispatch guard (here: an
     /// `--allow-nondeterministic` name matching no emitted artifact) must
-    /// show up as the `aborted before dispatch` placeholder row. This pins
+    /// show up as the `aborted before dispatch` placeholder row. This checks
     /// two things at once: the disposition derivation in `emit_summary` AND
     /// that `set_publish_attempted()` fires BEFORE the pre-dispatch guards —
     /// moving it below them (or deleting it) regresses the row to the

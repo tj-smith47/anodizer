@@ -306,8 +306,8 @@ pub(super) async fn wait_for_release_readable(
                         delay = std::cmp::min(delay * 2, READINESS_GUARD_MAX_DELAY);
                     }
                 }
-                // A non-404 hard error (auth, validation) is not a propagation
-                // lag; return it rather than silently consuming the budget.
+                // A non-404 hard error (auth, validation) is no propagation
+                // lag; return it at once so it keeps the retry budget intact.
                 Err(err) => return Err(anyhow::Error::new(err)),
             }
         }

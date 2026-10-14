@@ -180,9 +180,9 @@ fn release_snapshot_skips_publish_chain() {
 
 /// Row: `anodizer release --prepare` adds release/publish/announce to
 /// the skip list. The integration test
-/// `test_release_prepare_matches_explicit_skip` already pins skip-set
+/// `test_release_prepare_matches_explicit_skip` already checks skip-set
 /// equality vs explicit `--skip=release,publish,announce`; this test
-/// pins the docs-row contract directly so a docs/binary drift shows up
+/// checks the docs-row contract directly so a docs/binary drift shows up
 /// here even if the equality test is later refactored.
 #[test]
 fn release_prepare_skips_publish_release_announce() {

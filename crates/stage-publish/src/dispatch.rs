@@ -1553,9 +1553,9 @@ mod tests {
         // Mirrors chocolatey's in-moderation skip path: `run()` returns
         // `Ok(evidence)` but the publisher's actual terminal state is
         // `PendingModeration` because the push was skipped. Dispatch
-        // must report that on the per-publisher row instead of the
-        // default `Succeeded` mapping, or the summary table silently
-        // misreports the skip as success.
+        // must report that on the per-publisher row; the default
+        // `Succeeded` mapping would make the summary table silently
+        // misreport the skip as success.
         let mut ctx = Context::test_fixture();
         let publishers = vec![fake_with_pending_outcome(
             "chocolatey",

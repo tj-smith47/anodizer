@@ -160,7 +160,7 @@ fn declared_tag_for_crate(ctx: &Context, crate_cfg: &CrateConfig) -> Option<Stri
 /// and ship a release under a tag the operator did not ask for.
 ///
 /// This is the version-PARAMETERISED half of [`resolve_release_tag`], for the
-/// code paths that emit a template rather than a tag — the `curl | sh` installer
+/// code paths that emit a version template — the `curl | sh` installer
 /// and cargo-binstall's `pkg_url` both resolve a version at install time and
 /// reconstruct the tag from it. They deliberately stop short of the
 /// `nightly.tag_name` rung: both point at whatever the project's newest STABLE
@@ -423,7 +423,7 @@ mod tests {
         let config = Config {
             crates: vec![cfg.clone()],
             // `smartsemver` lists the tags up front, so a directory that is no
-            // repository is reported as an error rather than "no previous tag".
+            // repository is reported as an error.
             git: Some(crate::config::GitConfig {
                 tag_sort: Some("smartsemver".to_string()),
                 ..Default::default()

@@ -434,7 +434,7 @@ impl Stage for VerifyReleaseStage {
 /// this stage (`verify_one_crate`'s `github_selected` branch), runnable
 /// standalone against an already-published release, without the landing /
 /// smoke / libc axes (those verify a specific successful publisher's own
-/// landing, not the assets every one-way-door publisher depends on).
+/// landing).
 ///
 /// Installed once into [`Context::verify_gate`](anodizer_core::context::Context::verify_gate)
 /// by the CLI's pipeline-composition layer and invoked by `stage-publish`'s

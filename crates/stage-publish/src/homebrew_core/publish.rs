@@ -16,10 +16,10 @@ use super::formula::{
 use super::locate::locate_formula;
 use super::publisher::HomebrewCoreTargetSnapshot;
 use super::resolve::{
-    ResolvedToken, TOKEN_ENV_VARS, bump_branch, is_homebrew_core, resolve_commit_identity,
-    resolve_commit_message, resolve_download_url, resolve_formula_name, resolve_token,
-    resolve_upstream, token_order_hint,
+    ResolvedToken, bump_branch, is_homebrew_core, resolve_commit_identity, resolve_commit_message,
+    resolve_download_url, resolve_formula_name, resolve_token, resolve_upstream, token_order_hint,
 };
+use crate::util::TokenSource;
 
 /// Top-level publish entrypoint. Iterates each `homebrew_cores[]` entry and
 /// bumps its formula. `targets` is an out-param so a mid-loop error still
@@ -68,8 +68,10 @@ pub(crate) fn publish_to_homebrew_core(
             log,
             "homebrew-core",
             &label,
-            crate::util::configured_pr_token(cfg.repository.as_ref(), &|s| ctx.render_template(s))
-                .map_err(|e| anodizer_core::pipe_skip::entry_skip(format!("{e:#}"))),
+            crate::util::configured_pr_token_tracked(cfg.repository.as_ref(), &|s| {
+                ctx.render_template(s)
+            })
+            .map_err(|e| anodizer_core::pipe_skip::entry_skip(format!("{e:#}"))),
         )?
         else {
             continue;
@@ -92,17 +94,27 @@ pub(crate) fn publish_to_homebrew_core(
             continue;
         }
 
-        let Some(ResolvedToken { token, env_var }) = resolve_token(ctx, cfg)? else {
+        let Some(ResolvedToken {
+            token,
+            source: bump_source,
+        }) = resolve_token(ctx, cfg)?
+        else {
             bail!(
                 "homebrew-core: a GitHub token is required to bump {}/{} (entry '{}'). \
                  Set one of these, read in this order: {}.",
                 up_owner,
                 up_repo,
                 label,
-                token_order_hint(),
+                token_order_hint(ctx),
             );
         };
-        let token_env_var = env_var;
+        // The rollback closes the pull request with the token that opened it,
+        // so the snapshot records that token's source.
+        let token_source = Some(
+            pr_token
+                .as_ref()
+                .map_or_else(|| bump_source.clone(), |(_, source)| source.clone()),
+        );
         let api = GithubApi::new(ctx.env_source(), &token)?;
 
         // Resolve base branch + commit path
@@ -267,7 +279,7 @@ pub(crate) fn publish_to_homebrew_core(
                 "",
                 true,
                 None,
-                token_env_var.clone(),
+                token_source.clone(),
             );
             continue;
         }
@@ -286,7 +298,7 @@ pub(crate) fn publish_to_homebrew_core(
             &head_owner,
             &branch,
             Some(&token),
-            token_env_var.as_deref().unwrap_or(TOKEN_ENV_VARS[0]),
+            &bump_source.to_string(),
             ctx.env_source(),
         )
         .map_err(|e| anyhow::anyhow!("{}", e))?;
@@ -329,7 +341,7 @@ pub(crate) fn publish_to_homebrew_core(
                 &branch,
                 false,
                 existing[0].html_url.clone(),
-                token_env_var.clone(),
+                token_source.clone(),
             );
             continue;
         }
@@ -374,8 +386,8 @@ pub(crate) fn publish_to_homebrew_core(
         // The pull request may open with a token of its own: the fork token
         // commonly cannot open pull requests against the upstream repository.
         let pr_api = pr_token
-            .as_deref()
-            .map(|t| GithubApi::new(ctx.env_source(), t))
+            .as_ref()
+            .map(|(t, _)| GithubApi::new(ctx.env_source(), t))
             .transpose()?;
         let pr_url = match pr_api.as_ref().unwrap_or(&api).create_pr(
             &up_owner,
@@ -411,7 +423,7 @@ pub(crate) fn publish_to_homebrew_core(
                     &branch,
                     false,
                     None,
-                    token_env_var.clone(),
+                    token_source.clone(),
                 );
                 continue;
             }
@@ -426,7 +438,7 @@ pub(crate) fn publish_to_homebrew_core(
             &branch,
             false,
             pr_url,
-            token_env_var.clone(),
+            token_source.clone(),
         );
     }
     Ok(())
@@ -446,7 +458,7 @@ fn push_target(
     branch: &str,
     direct_commit: bool,
     pr_url: Option<String>,
-    token_env_var: Option<String>,
+    token_source: Option<TokenSource>,
 ) {
     targets.push(HomebrewCoreTargetSnapshot {
         formula: formula.to_string(),
@@ -457,6 +469,7 @@ fn push_target(
         branch: branch.to_string(),
         direct_commit,
         pr_url,
-        token_env_var,
+        token_source,
+        token_env_var: None,
     });
 }

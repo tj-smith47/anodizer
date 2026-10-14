@@ -83,8 +83,8 @@ impl fmt::Display for SchemaFinding {
 ///
 /// `publisher` is the registry id stamped onto each finding. `schema_src` is the
 /// vendored schema JSON text (embedded via `include_str!`). A malformed schema
-/// or schema text is an error, not a finding — the vendored schema is the tool's
-/// own asset, so a parse failure is a bug to report, never a manifest defect.
+/// or schema text is an error. The vendored schema is the tool's own asset,
+/// so a parse failure is a bug in the tool to report as an error.
 pub(crate) fn validate_json(
     publisher: &str,
     instance: &Value,
@@ -162,11 +162,12 @@ pub(crate) struct ExternalValidator<'a> {
     /// Set `true` only for moderation one-way-door publishers (chocolatey):
     /// their submission queue is irreversible, so a missing validator on the
     /// real publish/preflight gate would let a malformed artifact clear the
-    /// floor and show up only after the registry already holds it. For those,
-    /// `strict` (the pre-publish guard, or global `--strict`) turns an absent
-    /// tool into a `(root)` [`SchemaFinding`] that fails the floor. Reversible
-    /// publishers leave it `false`: a missing tool stays a warn+skip in every
-    /// mode, so a dev without the validator installed locally is never blocked.
+    /// validation gate and show up only after the registry already holds it.
+    /// For those, `strict` (the pre-publish guard, or global `--strict`) turns
+    /// an absent tool into a `(root)` [`SchemaFinding`] that fails the gate.
+    /// Reversible publishers leave it `false`: a missing tool stays a
+    /// warn+skip in every mode, so a dev without the validator installed
+    /// locally is never blocked.
     pub tool_required: bool,
 }
 
@@ -623,8 +624,8 @@ mod tests {
         .expect("a missing tool is never an Err — it escalates to a finding or skips")
     }
 
-    /// F2: a REQUIRED validator missing on the STRICT pre-publish gate reports a
-    /// `(root)` finding (fails the floor) rather than passing — the moderation
+    /// A REQUIRED validator missing on the STRICT pre-publish gate reports a
+    /// `(root)` finding, which fails the validation gate. This is the moderation
     /// one-way-door case where an unchecked artifact must not clear here.
     #[test]
     fn missing_required_tool_under_strict_surfaces_a_root_finding() {
