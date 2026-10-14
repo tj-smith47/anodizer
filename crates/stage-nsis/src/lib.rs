@@ -796,6 +796,7 @@ mod tests {
     /// regression; do NOT allow-list the installer. Hermetic: skips when
     /// makensis is absent.
     #[test]
+    #[serial_test::serial(path_env)]
     fn nsis_setup_is_byte_reproducible_across_time() {
         if !anodizer_core::tool_detect::on_path("makensis") {
             eprintln!("makensis unavailable; test skipped hermetically");
