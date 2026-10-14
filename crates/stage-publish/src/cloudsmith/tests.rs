@@ -2234,3 +2234,78 @@ fn live_auth_header_present_on_every_cloudsmith_call() {
         s3.headers
     );
 }
+
+/// The live upload sends the secret variable's token without the whitespace
+/// around it, and a token that is only whitespace is reported as not set
+/// before any request is made.
+#[test]
+fn live_upload_sends_the_env_token_trimmed() {
+    let upload_with = |token: &str| {
+        let tmp = tempfile::tempdir().unwrap();
+        let art = tmp.path().join("app_1.0.0_amd64.deb");
+        std::fs::write(&art, b"bytes").unwrap();
+        let (addr, log) = spawn_scripted_responder_with(move |addr| {
+            let base = format!("http://{addr}");
+            vec![
+                ScriptedRoute {
+                    method: "POST",
+                    path_pattern: "/files/myorg/myrepo/",
+                    response: Box::leak(files_create_ok(&base, "id-t").into_boxed_str()),
+                    times: None,
+                },
+                ScriptedRoute {
+                    method: "POST",
+                    path_pattern: "/s3-presigned/",
+                    response: PRESIGNED_204,
+                    times: None,
+                },
+                ScriptedRoute {
+                    method: "POST",
+                    path_pattern: "/packages/myorg/myrepo/upload/deb/",
+                    response: Box::leak(http_json(r#"{"slug_perm":"s"}"#).into_boxed_str()),
+                    times: None,
+                },
+            ]
+        });
+        let base = format!("http://{addr}");
+        let cfg = CloudSmithConfig {
+            organization: Some("myorg".to_string()),
+            repository: Some("myrepo".to_string()),
+            republish: Some(StringOrBool::Bool(true)),
+            ..Default::default()
+        };
+        let mut ctx = ctx_with_one_artifact(
+            cfg,
+            &base,
+            ArtifactKind::LinuxPackage,
+            "app_1.0.0_amd64.deb",
+            art,
+            None,
+        );
+        ctx.set_env_source(
+            MapEnvSource::new()
+                .with("CLOUDSMITH_TOKEN", token)
+                .with("ANODIZE_CLOUDSMITH_API_BASE", &base),
+        );
+        let result = publish_to_cloudsmith(&ctx, &StageLogger::new("cloudsmith", Verbosity::Quiet));
+        let entries = log.lock().unwrap().clone();
+        (result, entries)
+    };
+
+    let (result, entries) = upload_with("  padded \n");
+    result.expect("upload with a padded token");
+    let api_calls: Vec<Option<&str>> = entries
+        .iter()
+        .filter(|e| e.path != "/s3-presigned/")
+        .map(|e| e.header("Authorization"))
+        .collect();
+    assert_eq!(api_calls, vec![Some("token padded"), Some("token padded")]);
+
+    let (result, entries) = upload_with(" \t\n");
+    let msg = format!("{:#}", result.expect_err("a blank token is not set"));
+    assert!(
+        msg.contains("'CLOUDSMITH_TOKEN' not set"),
+        "the error names the unset variable: {msg}"
+    );
+    assert!(entries.is_empty(), "no request is made: {entries:?}");
+}

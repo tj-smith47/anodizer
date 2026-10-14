@@ -656,10 +656,8 @@ fn test_docker_retry_precedence_per_pipe_top_level_defaults() {
     assert_eq!(d, Duration::from_millis(250));
     assert_eq!(m, Some(Duration::from_secs(7)));
 
-    // Case 3: per-pipe set (overrides top-level, fires deprecation warn).
-    // Intercepting tracing output here would need a subscriber,
-    // so the assertion covers the values taken from per-pipe and relies on the
-    // OnceLock + tracing::warn! contract documented in retry.rs.
+    // Case 3: per-pipe set (overrides top-level, fires deprecation warn;
+    // `test_docker_retry_deprecation_warn_emits_once` covers the warning).
     let per_pipe = Some(DockerRetryConfig {
         attempts: Some(2),
         delay: Some("100ms".to_string()),
@@ -671,26 +669,36 @@ fn test_docker_retry_precedence_per_pipe_top_level_defaults() {
     assert_eq!(m, Some(Duration::from_millis(500)));
 
     // Case 4: per-pipe set, top-level absent — same precedence, still uses
-    // per-pipe. (The OnceLock means the warn fired once in case 3 and
-    // won't fire again here, but the value resolution must still be correct.)
+    // per-pipe.
     let (a, d, m) = resolve_retry_params(&per_pipe, &None).unwrap();
     assert_eq!(a, 2);
     assert_eq!(d, Duration::from_millis(100));
     assert_eq!(m, Some(Duration::from_millis(500)));
 }
 
-// Captures the intent that `resolve_retry_params` must fire its deprecation
-// warning at most once per process when a per-pipe `DockerRetryConfig` is
-// supplied. Verifying this end-to-end requires a `tracing-subscriber` test
-// fixture that captures the warn event, deliberately not pulled in
-// just for one assertion. The contract is enforced by the `OnceLock` guard
-// in `retry::warn_docker_retry_deprecated_once` and reviewed at code-review.
+/// A per-pipe `retry:` block warns that it is deprecated once per process, so
+/// two docker pipes that both carry one produce a single warning.
 #[test]
-#[ignore = "warn-capture requires tracing-subscriber fixture; OnceLock semantics verified by code-review"]
+#[serial_test::serial(tracing)]
 fn test_docker_retry_deprecation_warn_emits_once() {
-    // Documented intent: per_pipe = Some(...) drives
-    // `warn_docker_retry_deprecated_once()` exactly once across N calls
-    // regardless of crate count, due to the OnceLock guard.
+    use super::retry::resolve_retry_params_warning_through;
+    use anodizer_core::config::DockerRetryConfig;
+    let per_pipe = Some(DockerRetryConfig {
+        attempts: Some(2),
+        delay: Some("100ms".to_string()),
+        max_delay: None,
+    });
+    let warned = std::sync::OnceLock::new();
+    let captured = anodizer_core::test_helpers::tracing_capture::capture_tracing_warnings(|| {
+        for _ in 0..2 {
+            resolve_retry_params_warning_through(&per_pipe, &None, &warned).unwrap();
+        }
+    });
+    assert_eq!(
+        captured.matches("docker.retry is deprecated").count(),
+        1,
+        "two calls must warn exactly once: {captured}"
+    );
 }
 
 // -----------------------------------------------------------------------

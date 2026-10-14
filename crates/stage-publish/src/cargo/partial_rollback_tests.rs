@@ -1656,3 +1656,61 @@ fn token_path_never_consults_existence_probe() {
     result.expect("token path publishes exactly as before the guard existed");
     assert_eq!(publish_count(&argv_log, "alpha"), 1);
 }
+
+/// Install a `cargo` stub that records each invocation's argv followed by the
+/// `CARGO_REGISTRY_TOKEN` the child saw, in brackets, and exits 0.
+fn install_token_recording_stub(dir: &Path, argv_log: &Path) -> String {
+    let stub = dir.join("cargo");
+    let script = format!(
+        "#!/bin/sh\n\
+             printf '%s [%s]\\n' \"$*\" \"$CARGO_REGISTRY_TOKEN\" >> '{log}'\n\
+             exit 0\n",
+        log = argv_log.display(),
+    );
+    anodizer_core::test_helpers::fake_tool::write_executable_script(&stub, &script);
+    let prev = std::env::var("PATH").unwrap_or_default();
+    format!("{}:{}", dir.display(), prev)
+}
+
+/// The yank sends `CARGO_REGISTRY_TOKEN` without the whitespace around it,
+/// and a value that is only whitespace is not sent, so the yank inherits the
+/// process environment's token.
+#[test]
+#[serial(cargo_stub_path, path_env)]
+fn rollback_yank_sends_the_env_token_trimmed() {
+    let yank_with = |ctx_token: &str| -> Vec<String> {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let argv_log = tmp.path().join("argv.log");
+        let mut ctx = TestContextBuilder::new()
+            .tag("v1.0.0")
+            .project_root(tmp.path().to_path_buf())
+            .build();
+        ctx.set_env_source(
+            anodizer_core::MapEnvSource::new().with("CARGO_REGISTRY_TOKEN", ctx_token),
+        );
+        let mut evidence = anodizer_core::PublishEvidence::new("cargo");
+        evidence.extra = encode_cargo_yank_targets(&[CargoYankTarget {
+            name: "crate-t".into(),
+            version: "1.0.0".into(),
+            registry: None,
+            index: None,
+        }]);
+        let new_path = install_token_recording_stub(tmp.path(), &argv_log);
+        with_path(&new_path, || {
+            let _ambient =
+                anodizer_core::test_helpers::env::EnvGuard::set("CARGO_REGISTRY_TOKEN", "ambient");
+            CargoPublisher::new().rollback(&mut ctx, &evidence)
+        })
+        .expect("rollback ok");
+        read_argv_log(&argv_log)
+    };
+
+    assert_eq!(
+        yank_with("  cio-padded \n"),
+        vec!["yank --version 1.0.0 crate-t [cio-padded]".to_string()]
+    );
+    assert_eq!(
+        yank_with(" \t\n"),
+        vec!["yank --version 1.0.0 crate-t [ambient]".to_string()]
+    );
+}

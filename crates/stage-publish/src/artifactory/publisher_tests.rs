@@ -376,3 +376,47 @@ fn rollback_issues_delete_for_recorded_url() {
     assert_eq!(entries[0].method, "DELETE");
     assert_eq!(entries[0].path, "/repo/foo.tar.gz");
 }
+
+/// The URL-only rollback sends the `ARTIFACTORY_TOKEN` bearer without the
+/// whitespace around it, and a token that is only whitespace falls through to
+/// `ARTIFACTORY_SECRET`.
+#[test]
+fn rollback_sends_the_env_bearer_trimmed() {
+    let bearer_for = |env: anodizer_core::MapEnvSource| -> Option<String> {
+        let (addr, log_recorder) = spawn_scripted_responder(vec![ScriptedRoute {
+            method: "DELETE",
+            path_pattern: "/repo/foo.tar.gz",
+            response: "HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n",
+            times: None,
+        }]);
+        let mut ctx = TestContextBuilder::new().build();
+        ctx.set_env_source(env);
+        let mut evidence = PublishEvidence::new("artifactory");
+        evidence.artifact_paths = vec![std::path::PathBuf::from(format!(
+            "http://{addr}/repo/foo.tar.gz"
+        ))];
+        ArtifactoryPublisher::new()
+            .rollback(&mut ctx, &evidence)
+            .expect("rollback ok");
+        let entries = log_recorder.lock().unwrap();
+        entries
+            .first()
+            .and_then(|e| e.header("Authorization"))
+            .map(str::to_string)
+    };
+
+    assert_eq!(
+        bearer_for(anodizer_core::MapEnvSource::new().with("ARTIFACTORY_TOKEN", "  tok \n"))
+            .as_deref(),
+        Some("Bearer tok")
+    );
+    assert_eq!(
+        bearer_for(
+            anodizer_core::MapEnvSource::new()
+                .with("ARTIFACTORY_TOKEN", " \t\n")
+                .with("ARTIFACTORY_SECRET", "sec")
+        )
+        .as_deref(),
+        Some("Bearer sec")
+    );
+}

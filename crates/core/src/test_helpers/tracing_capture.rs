@@ -74,15 +74,22 @@ pub fn capture_tracing_warnings<F: FnOnce()>(body: F) -> String {
 #[cfg(test)]
 mod tests {
     use super::super::test_sources;
-    use std::path::{Path, PathBuf};
+    use std::path::PathBuf;
 
-    /// Every `.rs` file under the crate's `src/`, production and test halves
-    /// alike: an inline `#[cfg(test)]` module lives in a production file, so
-    /// asking only for the test half would miss most of the call sites.
+    /// Every `.rs` file under every workspace crate's `src/`, production and
+    /// test halves alike: an inline `#[cfg(test)]` module lives in a
+    /// production file, so asking only for the test half would miss most of
+    /// the call sites, and any crate with the `test-helpers` feature can call
+    /// the helper.
     fn every_source() -> Vec<PathBuf> {
-        let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-        let mut all = test_sources::rust_sources(&src);
-        all.extend(test_sources::test_sources(&src));
+        let mut all = Vec::new();
+        for krate in test_sources::workspace_crate_dirs() {
+            let src = krate.join("src");
+            if src.is_dir() {
+                all.extend(test_sources::rust_sources(&src));
+                all.extend(test_sources::test_sources(&src));
+            }
+        }
         // This file's own tests carry the scanner's fixture as a string
         // literal, which the line scan cannot tell from a call site.
         all.retain(|p| !p.ends_with("tracing_capture.rs"));
@@ -136,11 +143,23 @@ mod tests {
             if !attrs.contains("#[test]") {
                 continue;
             }
-            sites.push((name, attrs.contains("serial(tracing)")));
+            sites.push((name, takes_tracing_key(&attrs)));
         }
         sites.sort();
         sites.dedup();
         sites
+    }
+
+    /// Whether a `serial(…)` attribute in `attrs` lists the `tracing` key,
+    /// alone or beside others (`serial(cwd, tracing)`).
+    fn takes_tracing_key(attrs: &str) -> bool {
+        attrs.split("serial(").skip(1).any(|rest| {
+            rest.split(')')
+                .next()
+                .unwrap_or_default()
+                .split(',')
+                .any(|key| key.trim() == "tracing")
+        })
     }
 
     #[test]
@@ -180,15 +199,36 @@ fn marked() {
 fn unmarked() {
     let out = capture_tracing_warnings(|| {});
 }
+
+#[test]
+fn shares_a_key_list() {
+    let out = capture_tracing_warnings(|| {});
+}
+
+#[test]
+fn other_key() {
+    let out = capture_tracing_warnings(|| {});
+}
 ";
-        let src = src.replace(
-            "#[test]\nfn marked()",
-            "#[test]\n#[serial_test::serial(tracing)]\nfn marked()",
-        );
+        let src = src
+            .replace(
+                "#[test]\nfn marked()",
+                "#[test]\n#[serial_test::serial(tracing)]\nfn marked()",
+            )
+            .replace(
+                "#[test]\nfn shares_a_key_list()",
+                "#[test]\n#[serial_test::serial(cwd, tracing)]\nfn shares_a_key_list()",
+            )
+            .replace(
+                "#[test]\nfn other_key()",
+                "#[test]\n#[serial_test::serial(tracing_other)]\nfn other_key()",
+            );
         assert_eq!(
             capture_call_sites(&src),
             vec![
                 ("marked".to_string(), true),
+                ("other_key".to_string(), false),
+                ("shares_a_key_list".to_string(), true),
                 ("unmarked".to_string(), false)
             ]
         );

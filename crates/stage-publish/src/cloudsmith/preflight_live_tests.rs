@@ -67,3 +67,49 @@ fn cloudsmith_preflight_skips_deselected_without_request() {
     ));
     assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
 }
+
+/// The preflight probe sends the entry's token without the whitespace around
+/// it, and a token that is only whitespace counts as unset, so the entry is
+/// not probed at all.
+#[test]
+fn cloudsmith_preflight_sends_the_env_token_trimmed() {
+    use anodizer_core::test_helpers::scripted_responder::{
+        ScriptedRoute, spawn_scripted_responder,
+    };
+    let probe_with = |token: &str| {
+        let (addr, log_recorder) = spawn_scripted_responder(vec![ScriptedRoute {
+            method: "GET",
+            path_pattern: "/packages/myorg/myrepo/?page_size=1",
+            response: "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n[]",
+            times: None,
+        }]);
+        let ctx = make_ctx(&format!("http://{addr}"), Some(token), false);
+        let check = CloudsmithPublisher::new()
+            .preflight(&ctx)
+            .expect("preflight ok");
+        let headers: Vec<Option<String>> = log_recorder
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|e| e.header("Authorization").map(str::to_string))
+            .collect();
+        (check, headers)
+    };
+
+    let (check, headers) = probe_with("  good \n");
+    assert!(
+        matches!(check, anodizer_core::PreflightCheck::Pass),
+        "{check:?}"
+    );
+    assert_eq!(headers, vec![Some("Token good".to_string())]);
+
+    let (check, headers) = probe_with(" \t\n");
+    assert!(
+        matches!(check, anodizer_core::PreflightCheck::Pass),
+        "{check:?}"
+    );
+    assert!(
+        headers.is_empty(),
+        "a blank token skips the probe: {headers:?}"
+    );
+}

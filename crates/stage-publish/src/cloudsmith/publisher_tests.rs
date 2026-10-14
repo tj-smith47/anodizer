@@ -435,3 +435,52 @@ fn the_publish_token_satisfies_the_rollback_scope() {
     );
     assert_eq!(p.missing_rollback_scope(&ctx), None);
 }
+
+/// The rollback DELETE sends `CLOUDSMITH_API_KEY` without the whitespace
+/// around it, and a key that is only whitespace falls through to the publish
+/// token of the entry that uploaded the package.
+#[test]
+fn rollback_sends_the_env_key_trimmed() {
+    use anodizer_core::test_helpers::scripted_responder::{
+        ScriptedRoute, spawn_scripted_responder,
+    };
+    let authorization_for = |api_key: &str| -> Option<String> {
+        let (addr, log_recorder) = spawn_scripted_responder(vec![ScriptedRoute {
+            method: "DELETE",
+            path_pattern: "/packages/acme/widget/slug-1/",
+            response: "HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n",
+            times: None,
+        }]);
+        let mut ctx = TestContextBuilder::new().build();
+        ctx.config.cloudsmiths = Some(vec![CloudSmithConfig {
+            organization: Some("acme".to_string()),
+            repository: Some("widget".to_string()),
+            ..Default::default()
+        }]);
+        ctx.set_env_source(
+            anodizer_core::MapEnvSource::new()
+                .with("ANODIZE_CLOUDSMITH_API_BASE", format!("http://{addr}"))
+                .with("CLOUDSMITH_API_KEY", api_key)
+                .with("CLOUDSMITH_TOKEN", "pub"),
+        );
+        let target = CloudsmithTarget {
+            org: "acme".to_string(),
+            repo: "widget".to_string(),
+            filename: "widget_1.0.0_amd64.deb".to_string(),
+            slug: Some("slug-1".to_string()),
+        };
+        let mut evidence = PublishEvidence::new("cloudsmith");
+        evidence.extra = encode_cloudsmith_targets(std::slice::from_ref(&target));
+        CloudsmithPublisher::new()
+            .rollback(&mut ctx, &evidence)
+            .expect("rollback ok");
+        let entries = log_recorder.lock().unwrap();
+        entries
+            .first()
+            .and_then(|e| e.header("Authorization"))
+            .map(str::to_string)
+    };
+
+    assert_eq!(authorization_for("  key \n").as_deref(), Some("token key"));
+    assert_eq!(authorization_for(" \t\n").as_deref(), Some("token pub"));
+}

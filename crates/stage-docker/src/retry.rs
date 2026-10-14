@@ -10,8 +10,8 @@ use anodizer_core::config::{DockerRetryConfig, RetryConfig};
 // process so a config with N docker pipes doesn't spam the user.
 static DOCKER_RETRY_DEPRECATED_WARNED: OnceLock<()> = OnceLock::new();
 
-fn warn_docker_retry_deprecated_once() {
-    if DOCKER_RETRY_DEPRECATED_WARNED.set(()).is_ok() {
+fn warn_docker_retry_deprecated_once(warned: &OnceLock<()>) {
+    if warned.set(()).is_ok() {
         tracing::warn!("docker.retry is deprecated; prefer top-level retry config (Project.Retry)");
     }
 }
@@ -46,13 +46,23 @@ pub fn resolve_retry_params(
     per_pipe: &Option<DockerRetryConfig>,
     top_level: &Option<RetryConfig>,
 ) -> Result<(u32, Duration, Option<Duration>)> {
+    resolve_retry_params_warning_through(per_pipe, top_level, &DOCKER_RETRY_DEPRECATED_WARNED)
+}
+
+/// [`resolve_retry_params`] with the once-per-process deprecation flag passed
+/// in, so a test can start from a flag no earlier call has set.
+pub(crate) fn resolve_retry_params_warning_through(
+    per_pipe: &Option<DockerRetryConfig>,
+    top_level: &Option<RetryConfig>,
+    warned: &OnceLock<()>,
+) -> Result<(u32, Duration, Option<Duration>)> {
     // Default max_delay of 5 minutes prevents exponential backoff from growing
     // to unreasonably long waits (e.g. 42 minutes at attempt 9 with 10s base).
     let default_max_delay = Some(Duration::from_secs(300));
 
     if let Some(cfg) = per_pipe {
         // Per-pipe wins — but warn (once) that this surface is deprecated.
-        warn_docker_retry_deprecated_once();
+        warn_docker_retry_deprecated_once(warned);
         let attempts = cfg.attempts.unwrap_or(10);
         let base_delay = match &cfg.delay {
             Some(d) => parse_duration_string(d)?,
