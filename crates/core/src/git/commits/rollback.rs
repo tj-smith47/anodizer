@@ -211,23 +211,3 @@ pub fn push_branch_in(cwd: &Path, branch: &str) -> Result<()> {
     }
     Ok(())
 }
-
-/// `git -C <repo> log -1 --format=%ct HEAD` — return HEAD's committer
-/// timestamp (seconds since UNIX epoch) for the given repository. Used by
-/// the determinism harness as the non-snapshot SDE seed.
-pub fn head_commit_timestamp_in(repo: &std::path::Path) -> Result<i64> {
-    let out = crate::git::git_command()
-        .arg("-C")
-        .arg(repo)
-        .args(["log", "-1", "--format=%ct", "HEAD"])
-        .output()
-        .context("failed to invoke git log -1 --format=%ct HEAD")?;
-    if !out.status.success() {
-        let stderr_raw = String::from_utf8_lossy(&out.stderr);
-        let raw = format!("git log -1 --format=%ct HEAD failed: {}", stderr_raw.trim());
-        bail!("{}", crate::redact::redact_process_env(&raw));
-    }
-    let text = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    text.parse::<i64>()
-        .with_context(|| format!("git log --format=%ct returned non-i64 timestamp: {}", text))
-}

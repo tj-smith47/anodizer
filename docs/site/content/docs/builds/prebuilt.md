@@ -275,7 +275,7 @@ anodizer does not derive `cargo publish` metadata for prebuilt imports;
 disable binstall per-crate via `binstall: { enabled: false }` if you do not
 want a placeholder metadata block written into the crate's `Cargo.toml`.
 
-### binstall metadata is auto-derived — `enabled: true` is the norm
+### Derived binstall metadata
 
 You do **not** hand-write `pkg_url` or per-target `overrides`. When `binstall`
 is enabled and you supply neither, anodizer derives a per-target
@@ -308,7 +308,7 @@ the archive template can't express — supplying a top-level `pkg_url` **or** an
 
 `cargo-binstall`'s own tokens only ever expand to its target words —
 `{ target }` yields the Rust triple and the OS/arch tokens resolve to
-`macos`/`x86_64`/`aarch64`, never `darwin`/`amd64`/`arm64`. To pin each Rust
+`macos`/`x86_64`/`aarch64`; they cannot produce `darwin`, `amd64` or `arm64`. To pin each Rust
 target triple to a specific asset name, map it under `binstall.overrides`.
 Each entry overrides `pkg_url`/`pkg_fmt`/`bin_dir` for that triple and is
 emitted as a `[package.metadata.binstall.overrides.<triple>]` sub-table.

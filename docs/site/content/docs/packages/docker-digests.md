@@ -67,12 +67,12 @@ Not applicable — digest capture reads from the local Docker daemon (`docker in
 
 ## Republish / update behavior
 
-Not applicable — this is a local artifact-capture step, not a publisher.
+Not applicable — this is a local artifact-capture step and publishes nothing.
 
-## Using digests
+## Digest uses
 
 Digests are primarily useful for:
 
-- **Docker signing** — tools like `cosign` sign by digest rather than tag
+- **Docker signing** — tools like `cosign` sign an image by its digest
 - **Manifest pinning** — Docker manifests use digests to reference specific image layers
 - **Immutable references** — digests guarantee the exact image content, unlike mutable tags

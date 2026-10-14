@@ -439,12 +439,12 @@ homebrew_casks:
 
 ### Livecheck (`livecheck`) {#livecheck}
 
-By default the cask emits `livecheck do skip "Auto-generated on release." end` —
+By default the cask emits `livecheck do skip "Auto-generated on release." end`:
 a binary cask's `url`/`sha256` are rewritten on every release, so there is
-nothing stable for `brew livecheck` to poll. Set a `strategy` (and optionally
-`url`/`regex`) to opt into active version detection. For a GitHub-released
-project, `github_latest` against the cask's own `url` stanza (`:url`, the
-idiomatic cask shorthand) is the right pairing:
+nothing stable for `brew livecheck` to poll. Setting any of `strategy`, `url`
+or `regex` turns on active version detection. For a GitHub-released project,
+`github_latest` against the cask's own `url` stanza (`:url`) is the usual
+pairing, and `:url` is also what an active livecheck reads when `url` is unset:
 
 ```yaml
 homebrew_casks:
@@ -454,7 +454,6 @@ homebrew_casks:
       name: homebrew-tap
     livecheck:
       strategy: github_latest
-      url: url
 ```
 
 renders into the cask:
@@ -469,17 +468,17 @@ renders into the cask:
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `strategy` | string | none | Livecheck strategy symbol (e.g. `github_latest`, `git`, `page_match`) |
-| `url` | string | `url` | `:url` / `:homepage` symbol shorthand, or a literal URL string |
+| `url` | string | `url` | `url` or `homepage` symbol, or a literal URL string |
 | `regex` | string | none | Raw Ruby regex (e.g. `%r{v(\d+\.\d+)}i`) for `page_match`-style strategies |
-| `skip` | bool | auto | `true` forces the skip stanza; defaults to skip when no `strategy`/`url`/`regex` is set |
+| `skip` | bool | auto | `true` forces the skip stanza; with `skip` unset the stanza is active when any of `strategy`/`url`/`regex` is set and skips otherwise |
 | `skip_reason` | string | `Auto-generated on release.` | Custom message for the skip stanza |
 
-`url` accepts a Ruby symbol shorthand (`url` / `stable` / `head` / `homepage` →
-`url :url`) or a literal URL string. Setting `skip: false` without any of
-`strategy`/`url`/`regex` falls back to `skip` with a warning — an empty
-`livecheck do … end` is invalid. anodizer's cask `livecheck` is fully
-configurable (`strategy`, `url`, `regex`, `skip`), matching how the
-overwhelming majority of real Homebrew casks declare version detection.
+`url` takes `url` (`url :url`, the cask's download URL), `homepage`
+(`url :homepage`) or a literal URL string (`url "https://…"`). Homebrew
+resolves `:stable` and `:head` for a formula only, so the cask stage fails
+with an error naming the field when `url` is `stable` or `head`. Setting
+`skip: false` without any of `strategy`/`url`/`regex` falls back to `skip`
+with a warning, because an empty `livecheck do … end` is invalid.
 
 ## Multi-architecture casks
 

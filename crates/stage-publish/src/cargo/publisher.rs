@@ -427,7 +427,10 @@ impl anodizer_core::Publisher for CargoPublisher {
         // the ambient `CARGO_REGISTRY_TOKEN` under `auth: token`. Read through
         // the context env source so both paths resolve uniformly; injected via
         // env, never argv.
-        let registry_token = ctx.env_var("CARGO_REGISTRY_TOKEN");
+        let registry_token = ctx
+            .env_var("CARGO_REGISTRY_TOKEN")
+            .as_deref()
+            .and_then(anodizer_core::git::non_blank_token);
         for t in &targets {
             // crates.io versions are immutable, so `cargo yank` is the
             // strongest unwind available; the version slot stays burned

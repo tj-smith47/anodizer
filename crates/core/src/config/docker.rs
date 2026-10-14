@@ -30,12 +30,13 @@ pub struct DockerRetryConfig {
     /// Number of retry attempts for failed docker push operations
     /// (default: 10, set in `crates/stage-docker/src/lib.rs::resolve_retry_settings`).
     pub attempts: Option<u32>,
-    /// Duration string for the initial retry delay (default: `"10s"`).
-    /// Examples: `"1s"`, `"500ms"`.
+    /// Duration string for the initial retry delay (default: `"10s"`), in
+    /// the duration format every config field uses, at most one year. A bare
+    /// number is read as seconds. Examples: `"1s"`, `"500ms"`, `"10"`.
     pub delay: Option<String>,
-    /// Maximum delay between retries (default: `"5m"`). Caps the exponential
-    /// backoff so attempt-9 with a 10s base does not stretch to ~42 min.
-    /// Example: `"30s"`.
+    /// Maximum delay between retries (default: `"5m"`), in the same format
+    /// as `delay`. Caps the exponential backoff so attempt-9 with a 10s base
+    /// does not stretch to ~42 min. Example: `"30s"`.
     pub max_delay: Option<String>,
 }
 

@@ -129,7 +129,7 @@ To preview or refresh `CHANGELOG.md` outside of tagging, use the standalone
 [`anodizer changelog`](@/docs/more/changelog.md) command (`anodizer changelog`
 to preview, `--write` to apply).
 
-#### When the refresh runs
+#### Refresh timing
 
 The refresh is **opt-in** via `--changelog` and only acts when a `changelog:`
 block is configured. `tag` and `bump --commit` share one gate, so the same
@@ -162,7 +162,7 @@ The refresh follows the same per-mode file placement as the bump itself:
 `--push-dry-run` vs `--dry-run`: `--dry-run` previews the whole run, touching
 nothing (no bump commit, no tag, no push). `--push-dry-run` is narrower — it
 still creates the tag and the version-sync bump commit **locally**, then prints
-the `git push …` commands the push step would run rather than executing them.
+the `git push …` commands the push step would run, and runs none of them.
 Use it to confirm exactly which refs `--push` would publish (and to which
 remote) before you commit to the push; combine with `--dry-run` to preview the
 tagging too.
@@ -190,7 +190,7 @@ in this order (highest precedence first):
 
 | # | Signal | Beats | Notes |
 |---|--------|-------|-------|
-| 1 | Explicit token `#major` > `#minor` > `#patch` | everything | Literal operator intent — never lowered by the pre-1.0 demotion below. |
+| 1 | Explicit token `#major` > `#minor` > `#patch` | everything | Literal operator intent; the pre-1.0 demotion below does not lower it. |
 | 2 | `#none` | conventional marker, `default_bump` | Operator intent too: anywhere in the range it holds every inferred bump, so commits can be pushed without releasing. Only an explicit token outranks it. |
 | 3 | Conventional marker — `feat!`/`BREAKING CHANGE` → major, `feat` → minor, `fix`/`perf`/`revert` → patch | `default_bump` | `chore`/`docs`/`style`/`refactor`/`test`/`build`/`ci` are not release-worthy and contribute nothing. |
 | 4 | `default_bump` | — | Used when nothing above matched. Default `none`. |
@@ -224,7 +224,7 @@ bump:
 
 | Field | Effect while major is `0` | Default |
 |-------|---------------------------|---------|
-| `bump_minor_pre_major` | conventional major (`feat!`/`BREAKING CHANGE`) → minor (`0.5.0` → `0.6.0`, not `1.0.0`) | `false` |
+| `bump_minor_pre_major` | conventional major (`feat!`/`BREAKING CHANGE`) → minor (`0.5.0` → `0.6.0`) | `false` |
 | `bump_patch_for_minor_pre_major` | conventional minor (`feat`) → patch (`0.5.0` → `0.5.1`) | `false` |
 
 The two axes are independent (no cascade). They apply **only** to bumps inferred
@@ -254,7 +254,7 @@ tag:
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `default_bump` | string | `none` | Bump when a range has no `#` token and no conventional marker. `none` = chore/docs/ci-only ranges no-op (conventional-commit contract); `patch`/`minor` = release every range |
-| `bump_minor_pre_major` | bool | `false` | While major is `0`, demote a conventional breaking change to a minor bump (`0.5.0` → `0.6.0`, not `1.0.0`) |
+| `bump_minor_pre_major` | bool | `false` | While major is `0`, demote a conventional breaking change to a minor bump (`0.5.0` → `0.6.0`) |
 | `bump_patch_for_minor_pre_major` | bool | `false` | While major is `0`, demote a conventional `feat` to a patch bump (`0.5.0` → `0.5.1`) |
 | `tag_prefix` | string | `v` | Prefix added to tags |
 | `initial_version` | string | `0.1.0` | Starting version when no tags exist |
@@ -276,7 +276,7 @@ tag:
 
 ## Version source of truth
 
-The bumped version comes from the latest git tag, not `Cargo.toml`. Given a
+The bumped version comes from the latest git tag. Given a
 `patch` bump and the latest tag `v0.3.4`, the result is `v0.3.5` — regardless
 of what `Cargo.toml` currently says.
 
@@ -364,8 +364,8 @@ anodizer-output versions={"alpha":"0.2.0","beta":"0.2.0"}
 A bare `anodizer tag --dry-run` (no `--push`) prints the same
 `anodizer-output` lines with no push line — the tags would be created locally.
 
-One shared `v0.2.0` tag covers both members — never `v0.2.0` AND `v0.1.1`
-in the same namespace.
+One shared `v0.2.0` tag covers both members, so `v0.2.0` and `v0.1.1` never
+both appear in the same namespace.
 
 **First-ever tags.** Change detection includes every crate that has no tag
 matching its `tag_template` yet. In a repo that adds a mixed config (or adds
@@ -395,7 +395,7 @@ The trade-off depends on how your release workflow is triggered:
 | Release trigger | `skip_ci_on_bump` | Why |
 |---|---|---|
 | `on: push: tags:` (GoReleaser-style) | **off** (default) | `[skip ci]` would suppress the tag-push trigger and the release never fires |
-| `on: workflow_run:` (decoupled) | may be **on** | The release fires off the completed CI run, not the tag push, so `[skip ci]` only skips the redundant master-push CI re-run (which is already crate-gated and harmless) |
+| `on: workflow_run:` (decoupled) | may be **on** | The release is triggered by the completed CI run, and the tag push triggers nothing, so `[skip ci]` only skips the redundant master-push CI re-run (which is already crate-gated and harmless) |
 
 ```yaml
 tag:
@@ -441,8 +441,8 @@ anodizer tag --no-sign   # unsigned tag even if tag.sign: true in config
 
 Signing is mutually exclusive with `git_api_tagging: true` on a pushed tag. The
 GitHub API creates the tag object on the remote, where your local GPG/SSH key
-cannot sign it — so rather than ship a silently-unsigned tag, anodizer errors on
-that combination. Signing works with local tagging and with `--push-tags-only`
+cannot sign it, so anodizer fails on that combination and never pushes an
+unsigned tag. Signing works with local tagging and with `--push-tags-only`
 (both cut the tag locally before any push); drop `git_api_tagging` to sign a
 pushed tag.
 
@@ -521,8 +521,7 @@ anodizer tag rollback --dry-run HEAD       # preview without mutation
 This never runs automatically: a failed `anodizer release` leaves the tag
 exactly where it is under [`on_failure: hold`](./release-resilience.md#release-on-failure)
 — the only accepted behavior. Recovering a step failure is
-[re-running the identical release command](./release-resilience.md#convergent-re-run),
-never a rollback. Reach for `tag rollback` only when you have decided a
+[re-running the identical release command](./release-resilience.md#convergent-re-run). Reach for `tag rollback` only when you have decided a
 release should not exist at all. See
 [Release resilience — Recovering a poisoned tag](./release-resilience.md#poisoned-tag-recovery-with-tag-rollback)
 for the full flag matrix (`--scope`, `--mode`, `--branch`, `--no-push`) and

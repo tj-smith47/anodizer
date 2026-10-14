@@ -25,7 +25,7 @@ announce:
 |----------|----------|-------------|
 | `LINKEDIN_ACCESS_TOKEN` | Yes | OAuth 2.0 access token for the posting account |
 
-## How it works
+## Behavior
 
 Anodizer posts to LinkedIn via the v2 Share API. Each run:
 

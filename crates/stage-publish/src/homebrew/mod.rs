@@ -20,6 +20,7 @@ mod cask_custom_block;
 mod cask_scope;
 mod commit_msg;
 mod formula;
+mod livecheck;
 mod publish_cask;
 mod publish_formula;
 mod publish_top;
@@ -41,8 +42,9 @@ pub(crate) use cask_scope::{
 pub(crate) use commit_msg::{render_commit_msg, render_commit_msg_with_prev};
 pub use formula::{
     FormulaOptions, build_completion_and_manpage_install_lines, generate_formula,
-    generate_formula_with_opts, render_formula_license, render_livecheck,
+    generate_formula_with_opts, render_formula_license,
 };
+pub use livecheck::render_livecheck;
 pub use publish_cask::publish_cask;
 pub(crate) use publish_cask::{CrateCask, render_homebrew_cask_for_crate};
 pub use publish_formula::publish_to_homebrew;

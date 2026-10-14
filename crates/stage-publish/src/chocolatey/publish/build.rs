@@ -639,27 +639,24 @@ pub(super) fn stage_package(
     })
 }
 
-/// Resolves the NuGet API key from `choco.api_key` (template-rendered; a
-/// value that renders blank falls through) with `CHOCOLATEY_API_KEY`
-/// env-var fallback. An empty result signals "skip push" at the call site.
-pub(super) fn resolve_api_key(
+/// Resolves the NuGet API key: `choco.api_key` rendered through
+/// [`util::render_secret`], else the `CHOCOLATEY_API_KEY` env var. Each value
+/// is trimmed, and one that is empty or only whitespace falls through. An
+/// empty result signals "skip push" at the call site; an `api_key` template
+/// that does not render is an error naming the field. Preflight probes the
+/// key this function resolves.
+pub(crate) fn resolve_api_key(
     ctx: &Context,
     choco_cfg: &anodizer_core::config::ChocolateyConfig,
-    log: &StageLogger,
 ) -> Result<String> {
-    // Template-render APIKey.
-    // Empty default is checked by the caller — the empty branch logs a
-    // warn and returns Ok(false) (skip push) rather than letting an empty
-    // key reach the NuGet push API where it would surface as opaque 403.
-    let rendered = choco_cfg
-        .api_key
-        .as_deref()
-        .map(|k| util::render_or_warn(ctx, log, "chocolatey.api_key", k))
-        .transpose()?;
-    Ok(rendered
-        .filter(|k| !k.is_empty())
-        .or_else(|| ctx.env_var("CHOCOLATEY_API_KEY"))
-        .unwrap_or_default())
+    // An empty key is turned into a skip by the caller rather than reaching
+    // the NuGet push API, where it would surface as an opaque 403.
+    util::config_or_env_secret(
+        ctx,
+        "chocolatey.api_key",
+        choco_cfg.api_key.as_deref(),
+        "CHOCOLATEY_API_KEY",
+    )
 }
 
 /// Inspects the feed for the current `pkg_name@version` and decides

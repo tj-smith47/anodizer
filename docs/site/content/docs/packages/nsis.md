@@ -49,7 +49,7 @@ Not applicable — NSIS installer creation is a local build step with no externa
 
 ## Republish / update behavior
 
-Not applicable — this is a local packaging stage, not a publisher.
+Not applicable — this is a local packaging stage and publishes nothing.
 
 ## NSIS config fields
 
@@ -77,7 +77,7 @@ The `name` default also differs: anodizer matches GoReleaser's `'{{ProjectName}}
 
 ## Template engine
 
-NSIS scripts go through the [Tera](https://keats.github.io/tera/) template engine, not Go's `text/template`. Most simple variable substitutions port directly, but more complex constructs do not — Go's `{{ range $i, $v := .Files }}…{{ end }}` becomes Tera's `{% for v in Files %}…{% endfor %}`. Imported GoReleaser scripts that use control flow will need a port.
+NSIS scripts go through the [Tera](https://keats.github.io/tera/) template engine. Most simple variable substitutions port directly, but more complex constructs do not — Go's `{{ range $i, $v := .Files }}…{{ end }}` becomes Tera's `{% for v in Files %}…{% endfor %}`. Imported GoReleaser scripts that use control flow will need a port.
 
 ## Template variables
 

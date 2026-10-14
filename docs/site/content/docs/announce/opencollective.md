@@ -29,7 +29,7 @@ announce:
 |----------|----------|-------------|
 | `OPENCOLLECTIVE_TOKEN` | Yes | Personal API token from your OpenCollective account |
 
-## How it works
+## Behavior
 
 Anodizer uses the OpenCollective GraphQL v2 API at
 `https://api.opencollective.com/graphql/v2` with your personal token in the

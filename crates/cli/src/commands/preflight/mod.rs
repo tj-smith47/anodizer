@@ -564,7 +564,10 @@ fn verify_gpg_faked_system_time(
     ctx: &Context,
     log: &StageLogger,
 ) -> bool {
-    let sde_set = ctx.env_var("SOURCE_DATE_EPOCH").is_some();
+    let sde_set = matches!(
+        anodizer_core::sde::ambient_epoch_with_env(ctx.env_source()),
+        Ok(Some(_))
+    );
     verify_gpg_faked_system_time_with(requirements, sde_set, log, |cmd| {
         // A gpg missing from PATH entirely is already reported by the Tool
         // requirement's own evaluation — don't double-report it as a

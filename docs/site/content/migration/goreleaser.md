@@ -7,7 +7,7 @@ template = "docs.html"
 
 If you're coming from GoReleaser, anodizer will feel familiar. The config structure, CLI verbs, and template vocabulary are intentionally similar.
 
-## What you gain
+## Benefits
 
 GoReleaser builds Rust binaries, but anodizer is Rust-first — it understands the Cargo ecosystem your release lives in:
 
@@ -44,12 +44,13 @@ Everything else maps over directly — the table below is the field-by-field tra
 
 Both GoReleaser and anodizer template styles work:
 
-```yaml
-# GoReleaser style (works in anodizer):
-name_template: "{{ .ProjectName }}-{{ .Version }}-{{ .Os }}-{{ .Arch }}"
+```yaml,fragment
+archives:
+  # GoReleaser style (works in anodizer):
+  - name_template: "{{ .ProjectName }}-{{ .Version }}-{{ .Os }}-{{ .Arch }}"
 
-# Native Tera style:
-name_template: "{{ ProjectName }}-{{ Version }}-{{ Os }}-{{ Arch }}"
+  # Native Tera style:
+  - name_template: "{{ ProjectName }}-{{ Version }}-{{ Os }}-{{ Arch }}"
 ```
 
 ## Key differences
@@ -78,6 +79,7 @@ name_template: "{{ ProjectName }}-{{ Version }}-{{ Os }}-{{ Arch }}"
 Where a GoReleaser workflow looks like:
 
 ```yaml
+# not an anodizer config
 - uses: goreleaser/goreleaser-action@v6
   with:
     version: latest
@@ -89,6 +91,7 @@ Where a GoReleaser workflow looks like:
 The anodizer equivalent is:
 
 ```yaml
+# not an anodizer config
 - uses: tj-smith47/anodizer-action@v1
   with:
     auto-install: true          # auto-installs nfpm, cosign, etc. from .anodizer.yaml
@@ -99,27 +102,29 @@ The anodizer equivalent is:
 
 `auto-install: true` parses `.anodizer.yaml` and installs pipeline dependencies (nfpm for linux packages, cosign for signing, zig/cargo-zigbuild for cross-compilation, ...) — the anodizer action's equivalent of GoReleaser's bundled Go-native implementations. See [anodizer-action reference](@/docs/ci/anodizer-action.md) for all inputs.
 
-## v0.5.x → v0.6.x: installer default name template changed {#v05x-v06x-installer-name}
+## v0.5.x → v0.6.x: installer default name template change {#v05x-v06x-installer-name}
 
 The `pkg`, `nsis`, `msi`, and `dmg` stages now default to
-`'{{ ProjectName }}_{{ Arch }}'` (matching GoReleaser's convention) instead of
-the prior `'{{ ProjectName }}_{{ Version }}_{{ Arch }}.<ext>'`. If you relied on
+`'{{ ProjectName }}_{{ Arch }}'` (matching GoReleaser's convention). The prior
+default was `'{{ ProjectName }}_{{ Version }}_{{ Arch }}.<ext>'`. If you relied on
 the version being part of the installer filename, pin `name:` explicitly in each
 stage config block:
 
 ```yaml
 # Pin to preserve the old naming:
-pkgs:
-  - name: "{{ ProjectName }}_{{ Version }}_{{ Arch }}"
+crates:
+  - name: myapp
+    pkgs:
+      - name: "{{ ProjectName }}_{{ Version }}_{{ Arch }}"
 
-msis:
-  - name: "{{ ProjectName }}_{{ Version }}_{{ Arch }}"
+    msis:
+      - name: "{{ ProjectName }}_{{ Version }}_{{ Arch }}"
 
-nsis:
-  - name: "{{ ProjectName }}_{{ Version }}_{{ Arch }}"
+    nsis:
+      - name: "{{ ProjectName }}_{{ Version }}_{{ Arch }}"
 
-dmgs:
-  - name: "{{ ProjectName }}_{{ Version }}_{{ Arch }}"
+    dmgs:
+      - name: "{{ ProjectName }}_{{ Version }}_{{ Arch }}"
 ```
 
 ## `brews` → `homebrew_casks` {#brews-homebrew_casks}
@@ -201,8 +206,8 @@ homebrew_casks:
 | `dependencies[].name` | `dependencies[].cask` or `dependencies[].formula` | Cask requires the dependency kind |
 | `dependencies[].os`, `dependencies[].type`, `dependencies[].version` | not yet on Cask | Upstream HomebrewCask omits these — see [Homebrew Cask Cookbook depends_on](https://docs.brew.sh/Cask-Cookbook#stanza-depends_on) |
 | `conflicts[]` (string or `{name, because}`) | `conflicts[].cask` | Casks can only conflict with casks; `conflicts[].formula` is deprecated and dropped |
-| `install`, `extra_install`, `post_install`, `test` | `hooks.pre.install`, `hooks.post.install` (preflight / postflight) + `generate_completions_from_executable` | Cask uses Ruby DSL hooks instead of formula install/test blocks |
-| `plist`, `service` | _(no equivalent)_ | A cask `service` installs a macOS Services bundle (`service "MyTool.workflow"`), not a launchd service |
+| `install`, `extra_install`, `post_install`, `test` | `hooks.pre.install`, `hooks.post.install` (preflight / postflight) + `generate_completions_from_executable` | Formula install/test blocks map to Cask's Ruby DSL hooks |
+| `plist`, `service` | _(no equivalent)_ | A cask `service` installs a macOS Services bundle (`service "MyTool.workflow"`), which is unrelated to a formula's launchd service |
 | `amd64_variant`, `arm_variant` | _(no upstream equivalent on `homebrew_casks`)_ | Variant filters were Formula-only on GoReleaser. On an anodizer formula `arm_variant` is deprecated and ignored: Homebrew has no 32-bit ARM variant, so a formula never carries a 32-bit ARM archive |
 | `custom_require` | _(not applicable)_ | Custom Ruby `require` is a Formula download-strategy concern; Casks use `url.using` instead |
 | `cask:` (sub-block under `publish.homebrew`) | `publish.homebrew_cask:` | `publish.homebrew.cask:` is the same setting as `publish.homebrew_cask:`; set one of the two |

@@ -1416,7 +1416,10 @@ fn head_commit_timestamp_in_returns_pinned_committer_epoch() {
     init_bare_repo(dir);
     // Pinned GIT_COMMITTER_DATE in `g` is 1715000000 +0000.
     commit_file(dir, "a", "0", "initial");
-    assert_eq!(head_commit_timestamp_in(dir).unwrap(), 1_715_000_000);
+    assert_eq!(
+        crate::git::head_commit_timestamp_in(dir).unwrap(),
+        1_715_000_000
+    );
 }
 
 // ---- log_subjects_for_range ----

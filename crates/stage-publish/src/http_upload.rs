@@ -41,8 +41,12 @@ pub(crate) struct CredentialResolveSpec<'a> {
 /// Resolve `(username, password)` for an HTTP-based publisher entry.
 ///
 /// Cascade per field: rendered config value → `<PREFIX>_<NAME>_USERNAME` /
-/// `<PREFIX>_<NAME>_SECRET` env var. Empty-after-render falls through to
-/// env so a half-edited YAML does not silently ship anonymous.
+/// `<PREFIX>_<NAME>_SECRET` env var, where `<NAME>` is the entry name upper
+/// cased with `-` written as `_`. Every value is trimmed; a value that is
+/// empty or only whitespace falls through to the next source, so a
+/// half-edited YAML does not silently ship anonymous. A
+/// password template that does not render is an error naming the field
+/// ([`crate::util::render_secret`]).
 ///
 /// Disqualifies the ENTRY — an `Err` carrying
 /// [`anodizer_core::pipe_skip::entry_skip`], which callers route through
@@ -62,7 +66,8 @@ pub(crate) fn resolve_http_credentials(
             .get(name)
             .cloned()
             .or_else(|| ctx.env_var(name))
-            .filter(|s| !s.is_empty())
+            .as_deref()
+            .and_then(anodizer_core::git::non_blank_token)
     };
 
     let name_upper = spec.entry_name.to_uppercase().replace('-', "_");
@@ -78,20 +83,22 @@ pub(crate) fn resolve_http_credentials(
                     spec.publisher, spec.entry_name
                 )
             })?;
-            if rendered.is_empty() {
-                lookup_env(&username_env).unwrap_or_default()
-            } else {
-                rendered
+            match anodizer_core::git::non_blank_token(&rendered) {
+                Some(username) => username,
+                None => lookup_env(&username_env).unwrap_or_default(),
             }
         }
         None => lookup_env(&username_env).unwrap_or_default(),
     };
 
     // Password: config wins over env so a YAML setting isn't shadowed by
-    // a stale shell env var.
-    let password = spec
-        .config_password
-        .and_then(|p| ctx.render_template(p).ok())
+    // a stale shell env var. A template that does not render is an error, so
+    // its literal text is never sent as the password.
+    let configured_password = match spec.config_password {
+        Some(p) => crate::util::render_secret(ctx, &format!("{}.password", spec.publisher), p)?,
+        None => String::new(),
+    };
+    let password = Some(configured_password)
         .filter(|p| !p.is_empty())
         .or_else(|| lookup_env(&password_env))
         .unwrap_or_default();

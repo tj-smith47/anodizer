@@ -162,7 +162,7 @@ pub fn publish_to_chocolatey(
 
     let staged = stage_package(pkg_name, &version, &nuspec, &install_script, log)?;
 
-    let api_key = resolve_api_key(ctx, choco_cfg, log)?;
+    let api_key = resolve_api_key(ctx, choco_cfg)?;
     if api_key.is_empty() {
         log.warn(&format!(
             "skipped push for '{}' — no chocolatey API key",

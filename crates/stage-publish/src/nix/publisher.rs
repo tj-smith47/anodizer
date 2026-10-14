@@ -146,7 +146,7 @@ pub(crate) fn build_nix_reconcile_target(
         return Ok(None);
     };
     let token =
-        crate::util::resolve_repo_token(ctx, nix_cfg.repository.as_ref(), Some("NIX_PKGS_TOKEN"));
+        crate::util::resolve_pr_token(ctx, nix_cfg.repository.as_ref(), Some("NIX_PKGS_TOKEN"))?;
     // run() submits through `maybe_submit_pr`, which resolves base-else-fork.
     // Probing the bare fork searches a repo the PR never ends up in whenever
     // `pull_request.base` is set.
@@ -393,9 +393,16 @@ impl anodizer_core::Publisher for NixPublisher {
     ) -> anyhow::Result<()> {
         let targets = decode_nix_targets(&evidence.extra);
         let unique = dedup_nix_targets(&targets);
+        let repos: Vec<_> = ctx
+            .config
+            .crate_universe()
+            .into_iter()
+            .filter_map(|c| c.publish.as_ref()?.nix.as_ref()?.repository.as_ref())
+            .collect();
         crate::util::run_token_revert_rollback(
             ctx,
             &unique,
+            &repos,
             "nix",
             "NIX_PKGS_TOKEN",
             "overlay clone targets",
@@ -413,6 +420,7 @@ impl anodizer_core::Publisher for NixPublisher {
             ctx,
             &policy,
             "NIX_PKGS_TOKEN",
+            None,
             active_nix_configs(ctx).into_iter(),
             |_n| true,
             |n| n.repository.as_ref(),

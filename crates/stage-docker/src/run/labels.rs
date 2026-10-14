@@ -65,14 +65,14 @@ pub(crate) fn auto_oci_labels(
         }
     };
 
-    // created — reproducible build date from the resolved SOURCE_DATE_EPOCH
-    // (seeded by the build stage). NEVER wall-clock: a non-deterministic
-    // `created` would defeat byte-reproducibility. Omitted when no source
-    // date is resolvable.
+    // A wall-clock `created` would break byte-reproducibility, so the label is
+    // left out when the run has no reproducible date. A malformed source date
+    // cannot reach here: setting up the context already refused it.
     let created = ctx
-        .determinism
-        .as_ref()
-        .and_then(|d| anodizer_core::sde::rfc3339_utc_from_epoch(d.sde));
+        .reproducible_epoch()
+        .ok()
+        .flatten()
+        .and_then(anodizer_core::sde::rfc3339_utc_from_epoch);
     push("created", created);
 
     // source / revision — the release repo URL and the released commit SHA,

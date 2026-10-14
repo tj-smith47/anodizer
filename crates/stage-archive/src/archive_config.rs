@@ -24,9 +24,7 @@ use crate::file_specs::{
 use crate::formats;
 use crate::plan::{CratePlan, seed_target_context};
 use crate::run::resolve_host_binary;
-use crate::run_helpers::{
-    render_archive_templated_files, resolve_archive_mtime, write_archive_in_format,
-};
+use crate::run_helpers::{render_archive_templated_files, write_archive_in_format};
 
 /// Write every output the plan holds for one crate, appending one `Archive`
 /// (or per-binary `UploadableBinary`) artifact per produced output to
@@ -314,7 +312,7 @@ pub(crate) fn write_crate_archives(
             let base_entries: Vec<ArchiveEntry> =
                 binary_entries.into_iter().chain(extra_entries).collect();
 
-            let source_date_epoch: Option<u64> = resolve_archive_mtime(ctx);
+            let source_date_epoch: Option<u64> = ctx.resolve_reproducible_mtime()?;
 
             for format_plan in &target_plan.formats {
                 if let Some(note) = &format_plan.skip {
@@ -470,9 +468,9 @@ pub(crate) fn write_crate_archives(
                     }
                     if dry_run {
                         log.status(&format!(
-                            "(dry-run) would create {} with {} files",
+                            "(dry-run) would create {} with {}",
                             archive_path.display(),
-                            all_entries.len()
+                            anodizer_core::text::count_noun(all_entries.len(), "file", "files")
                         ));
                     } else {
                         log.status(&format!("creating {}", archive_path.display()));

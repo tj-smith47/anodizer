@@ -145,8 +145,8 @@ model for "improvement" would mutate the operator's text without an
 opt-in.
 
 If you want template-driven enhancement (project-aware sections, custom
-intro paragraphs, etc.), bake the template logic into the AI prompt
-itself rather than into a separate notes file:
+intro paragraphs, etc.), put the template logic in the AI prompt
+itself:
 
 ```yaml
 changelog:
@@ -207,7 +207,7 @@ anodizer release --allow-ai-failure
 
 With the flag set, a provider error is logged as a warning and the
 pre-AI release notes are kept verbatim. Use this when AI enhancement
-is a "nice to have" rather than a hard requirement (e.g., local
+is optional for the release (e.g., local
 Ollama in CI where transient unavailability shouldn't block a tag).
 
 ## Snapshot mode

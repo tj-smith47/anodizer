@@ -18,7 +18,7 @@ Two distribution modes are supported, selected by `mode:`:
 
 | Group | Required (default) | Rollback | Token scope |
 |-------|--------------------|----------|-------------|
-| Manager | `true` | `npm unpublish` (72h window) | `NPM_TOKEN` |
+| Submitter | `true` | `npm unpublish` (72h window) | `NPM_TOKEN` |
 
 ## Quick start (optional-deps)
 
@@ -37,7 +37,7 @@ Run with `NPM_TOKEN=<your token>` exported. For each built target anodizer:
 3. Emits the metapackage, listing every per-platform package under `optionalDependencies` and shipping a `bin` shim that resolves the installed one via `require.resolve` and execs it.
 4. Publishes the per-platform packages first, then the metapackage, so the optional dependencies resolve at install time.
 
-The `os`/`cpu`/`libc` triples are **always derived from the actual built targets** — never hand-written — so `npm install` resolves the right package on every consumer's platform. npm's naming differs from anodizer's internal naming (npm `os`: `linux`/`darwin`/`win32`; npm `cpu`: `x64`/`arm64`/`ia32`; npm `libc`: `musl`/`glibc`), and anodizer maps between them automatically (including `gnu` → npm's `glibc`).
+The `os`/`cpu`/`libc` triples are **always derived from the actual built targets**, so `npm install` resolves the right package on every consumer's platform. npm's naming differs from anodizer's internal naming (npm `os`: `linux`/`darwin`/`win32`; npm `cpu`: `x64`/`arm64`/`ia32`; npm `libc`: `musl`/`glibc`), and anodizer maps between them automatically (including `gnu` → npm's `glibc`).
 
 ### Generated layout (optional-deps)
 
@@ -75,7 +75,7 @@ Beyond the standard release template context, four platform variables are availa
 | `Os` | anodizer target mapping | `linux` | `darwin` | `windows` |
 | `Arch` | anodizer target mapping | `amd64` | `arm64` | `amd64` |
 
-Use `Os` when you want `windows` in the name (git-cliff-style) rather than npm's `win32`:
+Use `Os` when you want `windows` in the name (git-cliff-style) in place of npm's `win32`:
 
 ```yaml
 npms:
@@ -91,7 +91,7 @@ myapp-darwin-arm64     package.json: { name: myapp-darwin-arm64, os:[darwin], cp
 myapp-windows-x64      package.json: { name: myapp-windows-x64,  os:[win32],  cpu:[x64] }
 ```
 
-The npm `os`/`cpu`/`libc` selector **fields** inside each `package.json` always keep npm's tokens (`win32`, not `windows`) regardless of the name template — the template shapes only the package *name*, never the platform resolution.
+The npm `os`/`cpu`/`libc` selector **fields** inside each `package.json` always keep npm's tokens (such as `win32`) whatever the name template says; the template shapes only the package *name*.
 
 If the template renders the same name for two distinct platforms — the classic case is omitting `{{ NpmLibc }}` while `libc_aware: true` keeps musl and glibc separate — the publisher fails with a config error naming the colliding packages:
 
@@ -103,7 +103,7 @@ NpmLibc) to make every per-platform name unique
 
 `platform_name_template` applies to `optional-deps` mode only; setting it in `postinstall` mode is a hard error.
 
-### Publishing platform packages only
+### Platform packages only {#publishing-platform-packages-only}
 
 `skip_metapackage` emits and publishes **only** the per-platform packages — no metapackage, no `optionalDependencies` aggregate, no `bin` shim. Use it when the base npm package is hand-maintained — e.g. a TypeScript library that owns the package name and lists the binary packages under its own `optionalDependencies` — while anodizer owns building and publishing the per-platform binary packages:
 
@@ -127,7 +127,7 @@ npms:
 
 `skip_metapackage` applies to `optional-deps` mode only; setting it in `postinstall` mode (which has no metapackage) is a hard error.
 
-### Publishing a subset of targets
+### Target subsets {#publishing-a-subset-of-targets}
 
 A project may build more targets than it publishes to npm. `targets:` restricts this publisher to a subset of the built target triples — only artifacts whose triple is listed become packages; the rest are silently skipped (a target left out of scope is *not* the same as a target with no npm `os`/`cpu` mapping, which is warned about). It is orthogonal to `ids:` — both filters apply.
 
@@ -147,7 +147,7 @@ npms:
       - aarch64-apple-darwin
 ```
 
-A listed triple that no selected build produces is a config error naming the offending triple, so a typo fails preflight instead of silently narrowing the publisher to nothing.
+A listed triple that no selected build produces is a config error naming the offending triple, so a typo fails preflight and cannot narrow the publisher to nothing.
 
 ## postinstall mode
 
@@ -218,8 +218,8 @@ The `auth` field selects the strategy:
 | `auth` | Behaviour |
 |--------|-----------|
 | `auto` (default) | Decide per package by probing the registry for the package's existence. An **existing** package prefers OIDC when an OIDC context is present (else the token); a **brand-new** package always uses the token (Trusted Publishing cannot create a non-existent package). On a failed OIDC publish, `auto` falls back to the token — see [OIDC failure fallback](#oidc-failure-fallback). |
-| `token` | Always use the token; never attempt OIDC. Errors if no token is set. The historical behaviour. |
-| `oidc` | Always use OIDC; never fall back to a token. Errors if no OIDC context is present. A failed exchange fails the release loudly. |
+| `token` | Uses only the token, with no OIDC attempt. Errors if no token is set. The historical behaviour. |
+| `oidc` | Uses only OIDC, with no token fallback. Errors if no OIDC context is present. A failed exchange fails the npm publisher, and so the release while npm is `required` (the default). |
 
 ### Preflight severity for an unusable token
 
@@ -240,7 +240,7 @@ The Warning rows exist because a preflight Blocker aborts the **whole** check, i
 
 An OIDC context means both `ACTIONS_ID_TOKEN_REQUEST_URL` and `ACTIONS_ID_TOKEN_REQUEST_TOKEN` are set and non-empty; GitHub injects them into a job that grants `permissions: id-token: write`.
 
-### Why per-package selection matters
+### Per-package selection
 
 In `optional-deps` mode a single `npms[]` entry publishes a **metapackage plus one package per platform**. The metapackage often already exists (with a Trusted Publisher configured) while the per-platform sub-packages are brand new on a given release. With `auth: auto` and `NPM_TOKEN` set, anodizer publishes the **new sub-packages via the token** (Trusted Publishing cannot create them) and the **existing metapackage via OIDC** — in one run, no per-package config:
 
@@ -263,7 +263,7 @@ WARN  OIDC / Trusted Publishing publish FAILED for '@anodizer/demo'; falling bac
       package's Trusted Publisher config (registry, repository, workflow).
 ```
 
-The release succeeds via the token, but the operator clearly sees that Trusted Publishing did not work for that package and can fix its Trusted Publisher config. In `oidc` mode there is **no fallback** — a failed exchange fails the release. In `token` mode OIDC is never attempted.
+The release succeeds via the token, but the operator clearly sees that Trusted Publishing did not work for that package and can fix its Trusted Publisher config. In `oidc` mode there is **no fallback**: a failed exchange fails the npm publisher, and so the release while npm is `required` (the default). In `token` mode OIDC is never attempted.
 
 ### Trusted Publishing (tokenless OIDC) — recommended
 
@@ -287,7 +287,7 @@ Configure the Trusted Publisher once per package: **npmjs.com → the package �
 The Trusted Publisher matches the **file that actually runs the publish**. Anodizer's
 own release runs the OIDC publishers from a standalone `publish-oidc.yml`
 (see [below](#provenance-needs-a-github-hosted-runner)), so that is the filename to
-register — not `release.yml`, which only dispatches it. Name whichever workflow file
+register; `release.yml` only dispatches it. Name whichever workflow file
 in your repo invokes `anodizer release --publish-only --publishers npm`.
 
 Once configured, anodizer detects the OIDC context (the GitHub-injected `ACTIONS_ID_TOKEN_REQUEST_URL` / `ACTIONS_ID_TOKEN_REQUEST_TOKEN` env vars), writes a process-private `.npmrc` carrying **no token line**, and threads those OIDC request vars into the `npm publish` subprocess so the npm CLI performs the exchange itself. No secret is read or written.
@@ -298,17 +298,17 @@ npm provenance attestations are produced through GitHub's OIDC provenance flow, 
 npm only accepts from a **GitHub-hosted** runner. On a self-hosted runner the provenance
 exchange is unavailable, and npm rejects a publish that requests it.
 
-This github-hosted requirement is specific to **npm's provenance policy**, not a property
-of GitHub Actions OIDC in general. GitHub creates a valid OIDC id-token on self-hosted
+This github-hosted requirement comes from **npm's provenance policy**. GitHub Actions
+OIDC in general has no such limit. GitHub creates a valid OIDC id-token on self-hosted
 runners too; npm's provenance verifier is what rejects the `self-hosted` runner-environment
 claim. Anodizer's other OIDC-authenticated publisher — the [MCP registry](./mcp-registry.md)
 (`auth.type: github-oidc`) — runs on a self-hosted runner without issue, because that
-registry verifies repository ownership (issuer, audience, and `repository_owner`), not the
-runner environment. So only npm needs the separate github-hosted job.
+registry verifies repository ownership (issuer, audience, and `repository_owner`) and
+does not check the runner environment. So only npm needs the separate github-hosted job.
 
 Anodizer degrades gracefully: when it detects that provenance cannot be produced on the
-current runner, it publishes **without** provenance and emits a warning rather than
-failing the release. The package still ships; only the provenance attestation is absent.
+current runner, it publishes **without** provenance, emits a warning, and the release
+goes on. The package still ships; only the provenance attestation is absent.
 
 To keep provenance, run npm on a separate GitHub-hosted job. Anodizer's own release does
 exactly this — and peels **every** publisher that authenticates from a GitHub Actions
@@ -318,14 +318,14 @@ Publishing](./crates-io.md#trusted-publishing-oidc)). The main publish runs on a
 self-hosted runner with `--skip=npm,pypi,cargo`; the complementary
 `--publishers npm,pypi,cargo` runs in a **standalone `publish-oidc.yml`**.
 
-That workflow is standalone (not an inline job, not a reusable `workflow_call`) for a
-hard reason: crates.io and PyPI Trusted Publishing **reject the `workflow_run` event**
+That workflow is a standalone workflow (neither an inline job nor a reusable
+`workflow_call`) because crates.io and PyPI Trusted Publishing **reject the `workflow_run` event**
 that anodizer's `release.yml` fires on (`"does not support the workflow_run event
 trigger — use push, release, or workflow_dispatch"`). The OIDC `event_name` claim is
 fixed per workflow-run, so no job inside `release.yml` can present an accepted trigger.
 `publish-oidc.yml` is `on: workflow_dispatch` — an accepted trigger — and `release.yml`
 dispatches it after the main publish succeeds, then waits on its verdict. npm alone is
-unaffected (its provenance only *records* the trigger, never gates on it), but it rides
+unaffected (its provenance only *records* the trigger and does not gate on it), but it rides
 the same hosted workflow so a single job owns the whole OIDC surface.
 
 ```yaml
@@ -450,7 +450,7 @@ Each built target's npm `os`/`cpu`/`libc` triple is derived automatically from
 its real target triple (see [Quick start](#quick-start-optional-deps) above); a
 target npm has no mapping for at all — an unmapped arch, or `darwin-universal`
 (npm has no universal-arch selector) — is excluded from npm coverage with a
-warning rather than silently dropped.
+warning.
 
 Apple **non-macOS** targets (`aarch64-apple-ios`, `*-tvos`, `*-watchos`) are the
 one systematic exclusion: npm has no `ios` platform value, and a `darwin`-tagged
@@ -458,7 +458,8 @@ package built from a watchOS/tvOS archive would be wrongly selected by `npm
 install` on a real macOS host. They never appear in the generated package or its
 optional-dependency set.
 
-If the build produces **no** eligible archive at all, anodizer fails the release
-rather than emitting an empty package. See
+If the build produces **no** eligible archive at all, the npm publisher fails
+with an error ending `nothing to publish`, and no package is emitted. While
+npm is `required` (the default), that fails the release. See
 [Artifact eligibility](./selecting-publishers.md#artifact-eligibility) for how
 npm's coverage compares to the other install aggregators.

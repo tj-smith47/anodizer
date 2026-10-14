@@ -11,8 +11,8 @@ impl Context {
     /// - `FullCommit`, `Commit` — full commit SHA (`Commit` is alias for `FullCommit`)
     /// - `ShortCommit` — abbreviated commit SHA
     /// - `Branch` — current git branch
-    /// - `CommitDate` — ISO 8601 author date of HEAD commit
-    /// - `CommitTimestamp` — unix timestamp of HEAD commit
+    /// - `CommitDate` — ISO 8601 committer date of the HEAD commit
+    /// - `CommitTimestamp` — committer time of the HEAD commit in Unix seconds
     /// - `IsGitDirty` — "true"/"false"
     /// - `IsGitClean` — "true"/"false" (inverse of `IsGitDirty`)
     /// - `GitTreeState` — "clean"/"dirty"
@@ -226,20 +226,17 @@ impl Context {
     ///
     /// Time source resolution (first match wins):
     ///
-    /// 1. `SOURCE_DATE_EPOCH` env var — the standard reproducibility contract
-    ///    (set by the determinism harness on every child release subprocess,
-    ///    and the conventional way external CI / packagers signal a fixed
-    ///    epoch). This is required for byte-stability of `metadata.json`
-    ///    (which embeds `Date`) and any user template that consumes `Date` /
-    ///    `Timestamp` / `Now`. Without this branch, two from-clean runs of
-    ///    the same commit emit metadata.json files that differ in the `date`
-    ///    field, defeating release-asset idempotency.
-    /// 2. `chrono::Utc::now()` — wall-clock fallback. The
-    ///    legacy semantics for runs without SDE wired in. Note that the
-    ///    template docs explicitly call `.Now` "not deterministic"
-    ///    — under SDE-aware reproducible builds that claim is deliberately
-    ///    not true.
-    pub fn populate_time_vars(&mut self) {
+    /// 1. The source date from [`crate::sde::ambient_epoch_with_env`]
+    ///    (`SOURCE_DATE_EPOCH`, then `ANODIZE_SOURCE_DATE_EPOCH`). Two runs of
+    ///    the same commit then emit the same `metadata.json` `date` and the
+    ///    same value in any template that reads `Date`, `Timestamp` or `Now`.
+    /// 2. `chrono::Utc::now()`.
+    ///
+    /// Fails with the reader's error when a source date variable holds a
+    /// malformed value. Every command sets up its context through this call,
+    /// so a malformed value stops the run before any stage reads it.
+    pub fn populate_time_vars(&mut self) -> anyhow::Result<()> {
+        crate::sde::ambient_epoch_with_env(self.env_source())?;
         // Resolution order (SDE first, else wall-clock) is centralized in
         // `crate::sde::resolve_now_with_env` so any caller —
         // `populate_time_vars`, Tera built-ins, stage-srpm's `%changelog`
@@ -261,6 +258,7 @@ impl Context {
             .set("Hour", &now.format("%H").to_string());
         self.template_vars
             .set("Minute", &now.format("%M").to_string());
+        Ok(())
     }
 
     /// Populate runtime environment variables.

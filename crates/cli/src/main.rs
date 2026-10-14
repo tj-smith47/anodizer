@@ -32,7 +32,7 @@ fn exit_clap_error(e: clap::Error) -> ! {
 
 /// Parse a --timeout value or exit with an error message.
 fn parse_timeout_or_exit(timeout: &str) -> std::time::Duration {
-    timeout::parse_duration(timeout).unwrap_or_else(|e| {
+    timeout::parse_timeout(timeout).unwrap_or_else(|e| {
         exit_usage_error(&format!("invalid --timeout value '{timeout}': {e}"));
     })
 }

@@ -10,7 +10,7 @@
 //!   auth-failure / repo-not-found from genuine empty results via
 //!   [`FindPrError`] so callers can surface actionable warns at
 //!   `anodizer tag rollback` time.
-//! - [`close_pr_via_api`] — `PATCH /repos/{owner}/{repo}/pulls/{n}` with
+//! - [`close_pr_via_api_with_env`] — `PATCH /repos/{owner}/{repo}/pulls/{n}` with
 //!   `{"state": "closed"}`. Returns a [`CloseOutcome`] enum: `Closed`
 //!   on 2xx, `AlreadyClosed` on 404 / 410 / 422 (the PR was already
 //!   deleted / gone / in a state GitHub refused the transition for —
@@ -33,7 +33,7 @@
 
 use std::time::Duration;
 
-use anodizer_core::{EnvSource, ProcessEnvSource};
+use anodizer_core::EnvSource;
 use anyhow::Context as _;
 
 use anodizer_core::http::github_api_base;
@@ -43,7 +43,7 @@ use anodizer_core::http::github_api_base;
 // ---------------------------------------------------------------------------
 
 /// Outcome of one `PATCH /pulls/{n} {"state":"closed"}` attempt against
-/// a single upstream PR. Returned by [`close_pr_via_api`] so the per-PR
+/// a single upstream PR. Returned by [`close_pr_via_api_with_env`] so the per-PR
 /// response can be aggregated into the summary line.
 ///
 /// Mirrors the artifactory rollback bucketing in
@@ -71,7 +71,7 @@ pub(crate) enum CloseOutcome {
 /// Classify a `PATCH /pulls/{n}` response's status code + body into the
 /// rollback summary bucket. Pure helper so the bucket boundary can be
 /// unit-tested without firing an HTTP request — production callers go
-/// through [`close_pr_via_api`].
+/// through [`close_pr_via_api_with_env`].
 ///
 /// `body` is only consulted for the `Failed(_)` carrier-string;
 /// success / already-closed buckets do not surface the body.
@@ -251,9 +251,9 @@ pub(crate) fn classify_find_pr_status(
 /// The GitHub API base is resolved through `env` (honoring
 /// `ANODIZER_GITHUB_API_BASE`) so a rollback driven by an injected
 /// [`MapEnvSource`](anodizer_core::MapEnvSource) can be pointed at an
-/// in-process responder without touching the process env. Production passes
-/// [`ProcessEnvSource`], where the override is unset and the base resolves to
-/// the canonical `https://api.github.com`.
+/// in-process responder without touching the process env. A rollback passes
+/// the run's context env, where the override is unset and the base resolves
+/// to the canonical `https://api.github.com`.
 pub(crate) fn find_open_pr_numbers_for_head_with_env<E: EnvSource + ?Sized>(
     upstream_owner: &str,
     upstream_repo: &str,
@@ -421,25 +421,11 @@ pub(crate) fn parse_link_header_next(header: &str) -> Option<String> {
 /// true), `Failed` for anything else. Callers should bucket
 /// outcomes into closed/already-closed/failed counters and surface
 /// per-failure warns on `Failed` only.
-pub(crate) fn close_pr_via_api(
-    upstream_owner: &str,
-    upstream_repo: &str,
-    pr_number: u64,
-    token: &str,
-) -> CloseOutcome {
-    close_pr_via_api_with_env(
-        upstream_owner,
-        upstream_repo,
-        pr_number,
-        token,
-        &ProcessEnvSource,
-    )
-}
-
-/// Env-injectable form of [`close_pr_via_api`] — resolves the GitHub API base
-/// through `env` (honoring `ANODIZER_GITHUB_API_BASE`) so a rollback can be
-/// driven against an in-process responder without mutating the process env.
-/// Production passes [`ProcessEnvSource`] and reaches `https://api.github.com`.
+///
+/// The GitHub API base is read through `env` (honoring
+/// `ANODIZER_GITHUB_API_BASE`), so a rollback reads it from the run's
+/// [`Context`](anodizer_core::context::Context) env and a test can point it
+/// at an in-process responder.
 pub(crate) fn close_pr_via_api_with_env<E: EnvSource + ?Sized>(
     upstream_owner: &str,
     upstream_repo: &str,
@@ -508,7 +494,7 @@ mod tests {
         );
     }
 
-    /// `close_pr_via_api` against an unreachable target must bucket into
+    /// `close_pr_via_api_with_env` against an unreachable target must bucket into
     /// `Failed(_)` (transport-error variant), not panic. Driven through
     /// the `_with_env` point with the GitHub API base pointed at a
     /// guaranteed-dead local URL (`127.0.0.1:1`) so the transport always

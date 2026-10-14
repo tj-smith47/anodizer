@@ -704,6 +704,7 @@ fn run_krew_rollback_over(
     let capture = anodizer_core::log::LogCapture::new();
     let mut ctx = TestContextBuilder::new()
         .env("KREW_INDEX_TOKEN", "krew-tok")
+        .env("ANODIZER_GITHUB_API_BASE", format!("http://{addr}"))
         .build();
     ctx.with_log_capture(capture.clone());
     let mut evidence = PublishEvidence::new("krew");
@@ -719,14 +720,6 @@ fn run_krew_rollback_over(
                 token_env_var: Some("KREW_INDEX_TOKEN".into()),
             }],
         });
-
-    let _g = anodizer_core::test_helpers::env::env_mutex()
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
-    let _base = anodizer_core::test_helpers::env::EnvGuard::set(
-        "ANODIZER_GITHUB_API_BASE",
-        format!("http://{addr}"),
-    );
 
     let res = KrewPublisher::new().rollback(&mut ctx, &evidence);
     res.expect("rollback is best-effort and returns Ok");

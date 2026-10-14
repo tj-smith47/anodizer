@@ -187,7 +187,7 @@ impl anodizer_core::Publisher for ChocolateyPublisher {
                 // plain HTTPS (no choco CLI).
                 if let Some(req) = crate::publisher_helpers::secret_requirement(
                     ch.api_key.as_deref(),
-                    "CHOCOLATEY_API_KEY",
+                    &["CHOCOLATEY_API_KEY"],
                 ) {
                     reqs.push(req);
                 }
@@ -474,7 +474,13 @@ impl anodizer_core::Publisher for ChocolateyPublisher {
                 .source_repo
                 .as_deref()
                 .unwrap_or("https://push.chocolatey.org/");
-            let api_key = resolve_choco_api_key(ctx, ch);
+            let api_key = match crate::chocolatey::publish::resolve_api_key(ctx, ch) {
+                Ok(key) => key,
+                Err(e) => {
+                    acc = merge(acc, PreflightCheck::Blocker(format!("{e:#}")));
+                    continue;
+                }
+            };
             if api_key.is_empty() {
                 acc = merge(
                     acc,
@@ -508,18 +514,6 @@ impl anodizer_core::Publisher for ChocolateyPublisher {
 /// push.chocolatey.org, short enough that a wedged endpoint cannot stall the
 /// pre-tag gate.
 const CHOCO_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
-
-/// Resolve the push API key the same way [`super::publish`] does: the
-/// template-rendered `api_key` config, else the `CHOCOLATEY_API_KEY` env var.
-/// Empty string when neither resolves.
-fn resolve_choco_api_key(ctx: &Context, ch: &anodizer_core::config::ChocolateyConfig) -> String {
-    ch.api_key
-        .as_deref()
-        .and_then(|k| ctx.render_template(k).ok())
-        .filter(|k| !k.is_empty())
-        .or_else(|| ctx.env_var("CHOCOLATEY_API_KEY"))
-        .unwrap_or_default()
-}
 
 /// Normalize a NuGet V2 source URL to its `…/api/v2/` service document,
 /// the one route of the feed a GET can succeed on. The push endpoint

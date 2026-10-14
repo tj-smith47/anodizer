@@ -43,8 +43,8 @@ performs a two-step flow against `https://bsky.social`:
 
 If `{{ ReleaseURL }}` is present in the rendered message, anodizer
 automatically adds a rich-text facet marking the URL as a clickable link.
-Bluesky requires explicit facet annotations for links to be rendered as
-hyperlinks rather than plain text, so this happens without any extra
+Bluesky renders a link as a hyperlink only when it carries an explicit
+facet annotation, so this happens without any extra
 configuration.
 
 ## App passwords

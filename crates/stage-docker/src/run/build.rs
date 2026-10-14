@@ -513,20 +513,18 @@ fn queue_v2_build_for_platforms(
 
         // Pair with `--rewrite-timestamp` above: BuildKit needs
         // `SOURCE_DATE_EPOCH` in the build subprocess env to know what value
-        // to rewrite layer mtimes to. Inherited from the harness's hermetic
-        // env block; re-exported here so non-harness release runs with
-        // determinism seeded also get reproducible images. User-supplied
-        // `SOURCE_DATE_EPOCH` in `env:` blocks wins via the `or_insert` path.
+        // to rewrite layer mtimes to. A `SOURCE_DATE_EPOCH` in the image's
+        // `env:` wins through `or_insert`.
         let mut env_vars: std::collections::BTreeMap<String, String> = ctx
             .template_vars()
             .all_config_env()
             .iter()
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect();
-        if let Some(det) = ctx.determinism.as_ref() {
+        if let Some(epoch) = ctx.reproducible_epoch()? {
             env_vars
-                .entry("SOURCE_DATE_EPOCH".to_string())
-                .or_insert_with(|| det.sde.to_string());
+                .entry(anodizer_core::sde::SOURCE_DATE_EPOCH.to_string())
+                .or_insert_with(|| epoch.to_string());
         }
 
         let backend_label = if is_podman { "podman" } else { "buildx" };

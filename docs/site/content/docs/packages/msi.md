@@ -56,7 +56,7 @@ Not applicable — MSI generation is a local build step with no external service
 
 ## Republish / update behavior
 
-Not applicable — this is a local packaging stage, not a publisher.
+Not applicable — this is a local packaging stage and publishes nothing.
 
 ## Required tools
 
@@ -182,7 +182,7 @@ Windows Installer uses GUIDs to identify products and track upgrade history. Get
 **Rules:**
 
 - `UpgradeCode` **must** be a hardcoded GUID that never changes across releases. It is the stable identity of your product.
-- `Package.Id` (WiX v4) and `Product.Id` (WiX v3) **must not** use `Id="*"` (auto-generate) if you want upgrades to work correctly. A fresh GUID per build means Windows cannot detect that the new package replaces the old one — it installs side-by-side instead of upgrading.
+- `Package.Id` (WiX v4) and `Product.Id` (WiX v3) **must not** use `Id="*"` (auto-generate) if you want upgrades to work correctly. A fresh GUID per build means Windows cannot detect that the new package replaces the old one — it installs side-by-side and the old one stays.
 
 **Recommended pattern:**
 

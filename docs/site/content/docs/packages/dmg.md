@@ -52,7 +52,7 @@ Not applicable — DMG creation is a local build step with no external service c
 
 ## Republish / update behavior
 
-Not applicable — this is a local packaging stage, not a publisher.
+Not applicable — this is a local packaging stage and publishes nothing.
 
 ## Required tools
 

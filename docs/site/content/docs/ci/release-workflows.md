@@ -361,7 +361,7 @@ jobs:
 
 **Race situation:** none — all crates build deterministically under one run; `--publish-only` iterates in topo order.
 
-#### Pitfalls when adapting this structure
+#### Pitfalls in adapting this structure
 
 **Uploading `preserved-dist/` with your own `actions/upload-artifact` step.**
 If you replace `upload-dist: "true"` with a manual upload step (e.g. to control
@@ -405,7 +405,7 @@ Produce one inline on the publish runner — the build-less harness is cheap
 
 **Splitting publish into per-crate jobs with rollback-on-failure.** Every
 downstream leg's `if:` must require ALL upstream legs to be
-success-or-skipped — not just its direct `needs:` parent. A failed upstream
+success-or-skipped, its direct `needs:` parent and every leg above it. A failed upstream
 leg fires rollback (deleting the run's tags) while sibling legs are still
 running; each survivor then resolves the *previous* release's tag and aborts
 on a tag-vs-HEAD mismatch, or worse, races the rollback's push to the release
@@ -840,15 +840,15 @@ permissions:
 
 **Leader election among parallel triggered runs.** Using a lock artifact or environment variable to elect one "winner" among N simultaneously triggered runs still pays the N× resource cost (checkout, toolchain, cache hydration) before the losers bail out.
 
-**Polling crates.io for upstream deps.** Sleeping and retrying `cargo publish` until the upstream index entry appears treats the symptom (publish race) rather than the cause (fan-out). `anodizer release`'s topo-sorted sequential publish makes this unnecessary.
+**Polling crates.io for upstream deps.** Sleeping and retrying `cargo publish` until the upstream index entry appears treats the symptom (a publish race) and leaves the cause (fan-out) in place. `anodizer release`'s topo-sorted sequential publish makes this unnecessary.
 
 **Per-crate determinism jobs without a shared rust-cache key.** When the determinism matrix uses a different cache key per crate, each shard cold-compiles the full dependency tree. Pin `Swatinem/rust-cache` to the same workspace-level key across all matrix entries.
 
-**Bash loops invoking `anodizer tag --crate X` repeatedly.** Calling `anodizer tag` once per crate in a shell loop duplicates the change-detection logic, creates one bump commit and tag push per crate (N pushes instead of 1), and can trigger N downstream release runs. `anodizer tag` without `--crate` handles the entire workspace in one atomic commit + push.
+**Bash loops invoking `anodizer tag --crate X` repeatedly.** Calling `anodizer tag` once per crate in a shell loop duplicates the change-detection logic, creates one bump commit and tag push per crate, and can trigger N downstream release runs. `anodizer tag` without `--crate` handles the entire workspace in one atomic commit + push.
 
 **`[workspace.package].version` set "just in case" when crates are per-crate-versioned.** Before the per-crate detection fix, setting a shared workspace version caused all crates to be treated as lockstep even when individual `[package].version` fields were present. The current detection order is: `.anodizer.yaml workspaces:` first, then `[workspace.package].version`, then per-crate `[package].version`. Setting `[workspace.package].version` on a per-crate workspace forces lockstep behavior regardless of what the individual `[package].version` fields say.
 
-**`tag.skip_ci_on_bump: true` with an `on: push: tags:` release.** GitHub suppresses tag-push triggers when the tag target commit's message contains `[skip ci]`. Since the version-sync bump commit *is* the tag target, enabling `skip_ci_on_bump` under a tag-push-triggered release silently skips the release entirely. Only enable it with a `workflow_run`-triggered release, where the trigger is the completed CI run rather than the tag push (see below).
+**`tag.skip_ci_on_bump: true` with an `on: push: tags:` release.** GitHub suppresses tag-push triggers when the tag target commit's message contains `[skip ci]`. Since the version-sync bump commit *is* the tag target, enabling `skip_ci_on_bump` under a tag-push-triggered release silently skips the release entirely. Only enable it with a `workflow_run`-triggered release, where the completed CI run is the trigger (see below).
 
 ## `[skip ci]` on the bump commit vs. the release trigger
 
@@ -857,7 +857,7 @@ permissions:
 | Release trigger | `tag.skip_ci_on_bump` | Effect |
 |---|---|---|
 | `on: push: tags:` (GoReleaser-style) | **off** (default) | The bump-commit push re-runs CI (its auto-tag job no-ops); the tag push fires the release. Marking `[skip ci]` here would kill the release. |
-| `on: workflow_run:` (decoupled CI → release) | may be **on** | The release fires off CI completion, not the tag push, so `[skip ci]` only skips the redundant master-push CI re-run. |
+| `on: workflow_run:` (decoupled CI → release) | may be **on** | The release is triggered by CI completion, and the tag push triggers nothing, so `[skip ci]` only skips the redundant master-push CI re-run. |
 
 ```yaml
 # .anodizer.yaml — only with a workflow_run-triggered release.yml
@@ -865,7 +865,7 @@ tag:
   skip_ci_on_bump: true
 ```
 
-## Migrating from per-tag fan-out
+## Migration from per-tag fan-out
 
 The old pattern triggered one workflow run per tag and resolved the crate inside the run. Replace it with a `workflow_run` trigger and let `anodizer tag` emit the crate list.
 
@@ -1014,7 +1014,7 @@ jobs:
 ```
 
 Key changes:
-- Trigger: `on: push: tags:` → `on: workflow_run:` (one run per CI completion, not one per tag)
+- Trigger: `on: push: tags:` → `on: workflow_run:` (one run per CI completion)
 - Concurrency group: per-tag ref → repo-wide
 - CI: bash loop → single `anodizer tag` step with `crates` output
 - Release: per-crate `--crate X` → `--publish-only` (topo order from tags at HEAD)

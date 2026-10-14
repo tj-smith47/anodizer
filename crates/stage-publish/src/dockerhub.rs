@@ -1,10 +1,14 @@
 use crate::publisher_helpers::count_noun;
-use anodizer_core::config::DockerHubFullDescription;
 use anodizer_core::context::Context;
 use anodizer_core::log::StageLogger;
 use anodizer_core::redact::redact_bearer_tokens;
 use anodizer_core::retry::{RetryLog, RetryPolicy, SuccessClass, retry_http_blocking_deadline};
 use anyhow::{Context as _, Result, anyhow, bail};
+
+mod description;
+
+use description::effective_description;
+pub use description::resolve_full_description;
 
 /// Serialized shape of a recorded DockerHub PATCH. One entry per
 /// `(entry, image)` cell that was actually mutated this run.
@@ -52,102 +56,6 @@ fn dockerhub_api_base<E: anodizer_core::EnvSource + ?Sized>(env: &E) -> String {
         .unwrap_or_else(|| "https://hub.docker.com".to_string())
         .trim_end_matches('/')
         .to_string()
-}
-
-// ---------------------------------------------------------------------------
-// resolve_full_description
-// ---------------------------------------------------------------------------
-
-/// Resolve the full description content from either a local file or a URL.
-/// `from_file` takes precedence over `from_url` when both are set.
-///
-/// The `from_url` branch routes through [`retry_http_blocking_deadline`] so
-/// transient 5xx / 429 / network failures retry per the user's top-level
-/// `retry:` policy and stop once the invocation's wall-clock budget is spent;
-/// 4xx fast-fails so a typo'd URL surfaces immediately.
-///
-/// Both `from_file.path` and `from_url.url` are template-rendered through
-/// `ctx` before use so configs like
-/// `from_url: { url: "https://raw.githubusercontent.com/{{ .Env.OWNER }}/.../README.md" }`
-/// work as documented.
-pub fn resolve_full_description(
-    desc: &DockerHubFullDescription,
-    ctx: &Context,
-    client: &reqwest::blocking::Client,
-    policy: &RetryPolicy,
-    log: &StageLogger,
-) -> Result<String> {
-    if let Some(ref from_file) = desc.from_file {
-        let path = ctx.render_template(&from_file.path).with_context(|| {
-            format!(
-                "dockerhub: render full_description from_file path '{}'",
-                from_file.path
-            )
-        })?;
-        return std::fs::read_to_string(&path)
-            .with_context(|| format!("dockerhub: failed to read file '{}'", path));
-    }
-
-    if let Some(ref from_url) = desc.from_url {
-        let url = ctx.render_template(&from_url.url).with_context(|| {
-            format!(
-                "dockerhub: render full_description from_url '{}'",
-                from_url.url
-            )
-        })?;
-        let headers = from_url.headers.clone();
-        let label = format!("dockerhub: fetch full_description from {}", url);
-        let (_, body) = retry_http_blocking_deadline(
-            RetryLog::new(&label, log),
-            policy,
-            ctx.retry_deadline(),
-            SuccessClass::Strict,
-            |_| {
-                let mut req = client.get(&url);
-                if let Some(ref h) = headers {
-                    for (key, value) in h {
-                        req = req.header(key, value);
-                    }
-                }
-                req.send()
-            },
-            |status, body| {
-                format!(
-                    "dockerhub: GET {} returned HTTP {}: {}",
-                    url,
-                    status,
-                    redact_bearer_tokens(body)
-                )
-            },
-        )?;
-        return Ok(body);
-    }
-
-    bail!("dockerhub: full_description has neither from_file nor from_url set")
-}
-
-/// Resolve the short description for a DockerHub entry. Returns
-/// `entry.description` when set non-empty; otherwise falls back to the
-/// top-level `metadata.description` via
-/// [`Config::meta_description`](anodizer_core::config::Config::meta_description).
-/// Returns `None` when both sources are unset/empty so the caller can
-/// short-circuit the PATCH and avoid clobbering an existing remote
-/// description with the empty string.
-fn effective_description(
-    entry: &anodizer_core::config::DockerHubConfig,
-    ctx: &Context,
-) -> Option<String> {
-    entry
-        .description
-        .as_deref()
-        .filter(|s| !s.is_empty())
-        .map(str::to_string)
-        .or_else(|| {
-            ctx.config
-                .meta_description_project()
-                .filter(|s| !s.is_empty())
-                .map(str::to_string)
-        })
 }
 
 /// The config half of the username ladder: `entry.username`, non-empty.
@@ -338,8 +246,12 @@ fn publish_to_dockerhub_into(
         // rendered before the env lookup, or the literal template string is
         // looked up, never found, and the credential is silently treated as
         // absent on a live publish.
-        let secret_name =
-            crate::util::resolve_secret_name(ctx, entry.secret_name.as_deref(), "DOCKER_PASSWORD");
+        let secret_name = crate::util::resolve_secret_name(
+            ctx,
+            "dockerhub.secret_name",
+            entry.secret_name.as_deref(),
+            "DOCKER_PASSWORD",
+        )?;
         if ctx.is_dry_run() && ctx.env_var(&secret_name).is_none() {
             log.warn(&format!(
                 "dockerhub secret env '{}' is not set; live mode will fail authentication",
@@ -388,9 +300,13 @@ fn publish_to_dockerhub_into(
         let token = if let Some(cached) = jwt_cache.get(&cache_key) {
             cached.clone()
         } else {
-            let password = ctx.env_var(&secret_name).ok_or_else(|| {
-                anyhow!("dockerhub: environment variable '{}' not set", secret_name)
-            })?;
+            let password = ctx
+                .env_var(&secret_name)
+                .as_deref()
+                .and_then(anodizer_core::git::non_blank_token)
+                .ok_or_else(|| {
+                    anyhow!("dockerhub: environment variable '{}' not set", secret_name)
+                })?;
 
             let login_body = serde_json::json!({
                 "username": username,
@@ -751,11 +667,15 @@ impl anodizer_core::Publisher for DockerhubPublisher {
             // from `secret_name` (default DOCKER_PASSWORD); username env
             // refs when the config value is templated, the DOCKER_USERNAME
             // fallback when the config value is absent.
+            // A `secret_name` that does not render is reported by the
+            // publish path; here it falls back to the default name.
             let secret = crate::util::resolve_secret_name(
                 ctx,
+                "dockerhub.secret_name",
                 entry.secret_name.as_deref(),
                 "DOCKER_PASSWORD",
-            );
+            )
+            .unwrap_or_else(|_| "DOCKER_PASSWORD".to_string());
             out.push(anodizer_core::EnvRequirement::EnvAllOf { vars: vec![secret] });
             match configured_username(entry) {
                 Some(u) => {
@@ -908,16 +828,25 @@ impl anodizer_core::Publisher for DockerhubPublisher {
                     continue;
                 }
             };
-            let secret_name = crate::util::resolve_secret_name(
+            let secret_name = match crate::util::resolve_secret_name(
                 ctx,
+                "dockerhub.secret_name",
                 entry.secret_name.as_deref(),
                 "DOCKER_PASSWORD",
-            );
+            ) {
+                Ok(name) => name,
+                Err(e) => {
+                    acc = merge(acc, PreflightCheck::Blocker(format!("dockerhub: {e:#}")));
+                    continue;
+                }
+            };
             // An unresolved credential is `requirements()`'s job to flag; this
             // probe only validates a credential that IS present.
             let (Some(username), Some(password)) = (
                 username,
-                ctx.env_var(&secret_name).filter(|p| !p.is_empty()),
+                ctx.env_var(&secret_name)
+                    .as_deref()
+                    .and_then(anodizer_core::git::non_blank_token),
             ) else {
                 continue;
             };
@@ -1975,7 +1904,8 @@ dockerhub:
 mod live_http_tests {
     use super::*;
     use anodizer_core::config::{
-        Config, DockerHubConfig, DockerHubFromFile, HumanDuration, RetryConfig,
+        Config, DockerHubConfig, DockerHubFromFile, DockerHubFullDescription, HumanDuration,
+        RetryConfig,
     };
     use anodizer_core::context::{Context, ContextOptions};
     use anodizer_core::test_helpers::scripted_responder::{

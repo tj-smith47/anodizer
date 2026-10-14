@@ -53,7 +53,7 @@ Given a source file `scripts/myapp-install.sh.tpl`:
 curl -L https://github.com/myorg/{{ ProjectName }}/releases/download/{{ Tag }}/{{ ProjectName }}-{{ Os }}-{{ Arch }}.tar.gz | tar xz
 ```
 
-## Setting file permissions
+## File permissions
 
 Use the `mode` field to set executable permissions on generated scripts:
 
@@ -90,7 +90,7 @@ Six template variables carry engine-generated POSIX-`sh` snippets for a
 `curl | sh` installer script, derived from the release's configured targets and
 the archive stage's own asset naming — so the script never hardcodes an asset
 name that 404s, and the detection arms track the same vocabulary that keys the
-asset arms instead of a hand-written `uname` mapping that silently drifts:
+asset arms, so no hand-written `uname` mapping can drift from it:
 
 | Variable | Contents |
 |----------|----------|
@@ -161,8 +161,8 @@ not split either — a static musl binary runs on glibc hosts too, and neither
 does a release whose two libc builds are archived under one asset name: two
 arms naming one file would advertise a platform the release never uploads.
 
-**Match the case on `InstallerAssetCaseSubject`, never on a hand-written
-`"${OS}-${ARCH}"`.** A template that reads `InstallerAssetCases` but keeps its
+**Match the case on `InstallerAssetCaseSubject`.** A hand-written
+`"${OS}-${ARCH}"` subject is the failure case: a template that reads `InstallerAssetCases` but keeps its
 own subject matches nothing the day its project starts shipping both libcs —
 every host would fall through to the unsupported-platform error. anodizer
 refuses that render instead, failing the templatefiles stage with:
@@ -174,7 +174,7 @@ template_files id 'install' (src 'scripts/install.sh.tpl') builds an installer f
 The mips family is deliberately absent from the generated `uname -m` arms:
 `uname -m` reports `mips`/`mips64` for both endiannesses, so the script cannot
 safely choose between same-name big- and little-endian assets — mips hosts get
-the explicit unsupported-platform error rather than a wrong-endian binary.
+the explicit unsupported-platform error, and none receives a wrong-endian binary.
 illumos hosts (`uname -s` = `SunOS`, mapped to `solaris`) are likewise
 undetectable. Releasing such a target still emits its asset arm, but anodizer
 prints a warning naming the stranded target so you know those hosts fall

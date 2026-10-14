@@ -30,7 +30,7 @@ The `channel`, `username`, and `icon_url` fields are all optional. An omitted `u
 
 ### Environment variables
 
-Store the webhook URL in an environment variable rather than committing it to your config file. When `webhook_url` is unset, anodizer falls back to the `MATTERMOST_WEBHOOK` env var:
+Store the webhook URL in an environment variable so it stays out of your committed config file. When `webhook_url` is unset, anodizer falls back to the `MATTERMOST_WEBHOOK` env var:
 
 ```yaml
 announce:
@@ -45,7 +45,7 @@ announce:
 | `channel` | string | Optional channel override |
 | `username` | string | Display name of the bot post. Default: `anodizer` |
 | `icon_url` | string | Optional bot avatar URL (templates supported) |
-| `icon_emoji` | string | Emoji used as the bot avatar instead of `icon_url` (e.g. `:rocket:`; templates supported) |
+| `icon_emoji` | string | Emoji used as the bot avatar, overriding `icon_url` (e.g. `:rocket:`; templates supported) |
 | `color` | string | Attachment color as a hex string. Default: `#2D313E` |
 | `title_template` | string | Attachment title (templates supported). Default: `{{ ProjectName }} {{ Tag }} is out!` |
 | `message_template` | string | Message body (templates supported). Default: `{{ ProjectName }} {{ Tag }} is out! Check it out at {{ ReleaseURL }}` |

@@ -54,7 +54,11 @@ pub fn publish_to_nix(ctx: &mut Context, crate_name: &str, log: &StageLogger) ->
         log,
         "nix",
         crate_name,
-        crate::publisher_helpers::pr_token_before_push(ctx, nix_cfg.repository.as_ref()),
+        crate::publisher_helpers::pr_token_before_push(
+            ctx,
+            nix_cfg.repository.as_ref(),
+            "NIX_PKGS_TOKEN",
+        ),
     )?
     else {
         return Ok(false);
@@ -82,7 +86,7 @@ pub fn publish_to_nix(ctx: &mut Context, crate_name: &str, log: &StageLogger) ->
     let name = name.as_str();
     util::guard_no_unrendered(ctx, log, "nix derivation", &nix_expr)?;
 
-    let token = util::resolve_repo_token(ctx, nix_cfg.repository.as_ref(), Some("NIX_PKGS_TOKEN"));
+    let token = util::resolve_repo_token(ctx, nix_cfg.repository.as_ref(), Some("NIX_PKGS_TOKEN"))?;
 
     let tmp_dir = tempfile::tempdir().context("nix: create temp dir")?;
     let repo_path = tmp_dir.path();

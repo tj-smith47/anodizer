@@ -173,7 +173,7 @@ Point an nfpm `contents:` entry at the staging dir to install them system-wide:
 ```yaml
 crates:
   - name: myapp
-    nfpm:
+    nfpms:
       - contents:
           - src: "dist/.completions/rg/*"
             dst: /usr/share/bash-completion/completions/

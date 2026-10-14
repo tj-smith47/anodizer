@@ -177,7 +177,7 @@ impl HomebrewConflict {
     }
 }
 
-/// `livecheck` stanza configuration for a Homebrew formula.
+/// `livecheck` stanza configuration for a Homebrew formula or cask.
 ///
 /// Default (the struct absent from config): the formula emits a
 /// `livecheck { skip "Auto-generated on release." }` block — correct for a
@@ -212,10 +212,12 @@ pub struct HomebrewLivecheck {
     /// `livecheck` strategy symbol (e.g. `github_latest`, `git`, `page_match`).
     /// Rendered as a Ruby symbol: `strategy :github_latest`.
     pub strategy: Option<String>,
-    /// `url` for the livecheck. Accepts a Ruby symbol shorthand
-    /// (`stable` / `head` / `homepage`, and `url` for a cask → `url :stable`)
-    /// or a literal URL string (`url "https://..."`). Defaults to `:stable`
-    /// in an active livecheck that sets no url.
+    /// `url` for the livecheck: a symbol naming one of the package's own URLs
+    /// (`stable`, `head` or `homepage` in a formula; `url` or `homepage` in a
+    /// cask), rendered `url :stable`, or a literal URL string rendered
+    /// `url "https://..."`. A symbol the package does not have is an error.
+    /// In an active livecheck that sets no url, a formula reads `:stable` and
+    /// a cask reads `:url`.
     pub url: Option<String>,
     /// `regex(...)` argument for `page_match`-style strategies. Emitted
     /// verbatim inside `regex(...)`, so it is raw Ruby (e.g. `%r{v(\d+\.\d+)}i`).
@@ -309,10 +311,10 @@ pub struct HomebrewCaskConfig {
     /// `livecheck` stanza configuration for the cask. When unset, the cask
     /// emits `livecheck do\n  skip "Auto-generated on release."\nend` (a
     /// binary cask's download URL/sha256 are rewritten on every release, so
-    /// `brew livecheck` has nothing stable to poll). Set `strategy:` /
-    /// `url:` / `regex:` (with `skip: false`) to opt into active version
-    /// detection — the same shape a Homebrew cask `livecheck do … end`
-    /// block accepts. Reuses the formula `livecheck` config type.
+    /// `brew livecheck` has nothing stable to poll). Setting any of
+    /// `strategy:`, `url:` or `regex:` turns on active version detection,
+    /// unless `skip: true` is also set. Reuses the formula `livecheck` config
+    /// type; an active cask livecheck with no `url:` reads `url :url`.
     pub livecheck: Option<HomebrewLivecheck>,
 
     // ----- Completions / manpages -----

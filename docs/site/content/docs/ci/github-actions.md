@@ -192,7 +192,7 @@ jobs:
           GPG_FINGERPRINT: ${{ secrets.GPG_FINGERPRINT }}
 ```
 
-## Reuse a CI-built anodizer binary across workflows
+## CI-built anodizer binary reuse across workflows
 
 When you have a separate `ci.yml` that builds and uploads an anodizer binary per commit, downstream release jobs can reuse it without reinstalling. Set `artifact-run-id: auto` to resolve the run from the current commit SHA:
 

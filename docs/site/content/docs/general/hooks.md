@@ -131,8 +131,9 @@ caller's single skip list does not have to vary by command.
   `$ANODIZER_ROLLED_BACK` (always `false`; a release run never withdraws
   anything on its own — withdrawal is `anodizer tag rollback`),
   `$ANODIZER_VERSION`, `$ANODIZER_TAG` — and as template vars
-  (`{{ .Error }}`, `{{ .RolledBack }}`). Read the error via the env var,
-  not template interpolation, to stay shell-injection-safe. An `on_error`
+  (`{{ .Error }}`, `{{ .RolledBack }}`). Read the error via the env var to
+  stay shell-injection-safe; template interpolation puts its text into the
+  command line. An `on_error`
   hook's own failure is logged and never masks the pipeline error
 - **`always` hooks** run **last on every terminal path** — after `after` on
   a successful run, after `on_error` on a failed one, and also when a
@@ -196,7 +197,7 @@ exactly why teardown belongs in `always` — a shard that staged something in
 ## Root hooks in a workspace
 
 The four root blocks are one **global** lane. Each fires **once per
-invocation** — never once per crate — including a per-crate publish
+invocation**, however many crates it covers, including a per-crate publish
 (`anodizer release --publish-only` over a `dist/<crate>/` tree), where the
 root `after` block fires once, after the last crate.
 

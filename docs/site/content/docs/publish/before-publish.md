@@ -15,7 +15,7 @@ Anodizer supports three lifecycle hook blocks at the top level of the config:
 This page documents `before_publish:`. For the broader lifecycle hooks see
 [Global Hooks](/docs/general/hooks/).
 
-## When `before_publish:` fires
+## Timing
 
 ```
 build → archive → sbom → checksum → sign → [ before_publish ] → release → blob → publish → announce
@@ -145,8 +145,8 @@ is logged but the subprocess is not spawned.
 
 ## Common gotchas
 
-- The hook receives the **staged** dist tree under `./dist/`, not the
-  published one. If your validator depends on download URLs, use `before:`
+- The hook receives the **staged** dist tree under `./dist/`, before
+  anything is published. If your validator depends on download URLs, use `before:`
   (pre-build) or `after:` (post-publish) instead.
 - `env:` values are **rendered** through the template engine before
   injection, so `{{ Tag }}` and `{{ Env.VAR }}` expand inside per-hook

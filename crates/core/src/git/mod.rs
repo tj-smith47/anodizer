@@ -34,21 +34,24 @@ pub use commits::{
     get_current_branch_in_with_env, get_head_commit, get_head_commit_in, get_last_commit_messages,
     get_last_commit_messages_in, get_last_commit_messages_path, get_last_commit_messages_path_in,
     get_short_commit, get_short_commit_in, has_changes_since, has_changes_since_in,
-    has_commits_since_tag, has_commits_since_tag_in, head_commit_hash_in, head_commit_timestamp_in,
-    is_branchlike, log_subjects_for_range, messages_with_squashed, parse_commit_output,
+    has_commits_since_tag, has_commits_since_tag_in, head_commit_hash_in, is_branchlike,
+    log_subjects_for_range, messages_with_squashed, parse_commit_output,
     parse_commit_output_with_files, paths_changed_since_tag, paths_changed_since_tag_in,
     push_branch_in, release_bump_subject, release_bump_subject_prefix, reset_hard_in,
     resolve_rollback_identity, rev_parse_in, rev_verify_commit_in, revert_commit_in,
     short_commit_str, squashed_subjects, stage_and_commit, stage_and_commit_in,
 };
 pub use conventional::{ConventionalLevel, classify_commit};
-pub use detect::{GitInfo, TagSource, detect_git_info, detect_git_info_in};
+pub use detect::{
+    CommitTime, GitInfo, TagSource, detect_git_info, detect_git_info_in, head_commit_time_in,
+    head_commit_timestamp_in,
+};
 pub use github_api::{
     GITHUB_TOKEN_ENV_LADDER, commit_author_login, commit_author_login_with_binary,
     create_tag_via_github_api, create_tag_via_github_api_in, gh_api_delete_with_binary, gh_api_get,
     gh_api_get_paginated, gh_api_get_paginated_with_binary, gh_api_get_with_binary,
-    gh_api_get_with_binary_with_env, github_token_env_hint, github_token_hint,
-    resolve_github_token, resolve_github_token_with_env,
+    gh_api_get_with_binary_with_env, github_token_env_hint, github_token_hint, non_blank_token,
+    render_secret, resolve_github_token, resolve_github_token_with_env,
 };
 pub use github_probe::{
     GithubRepoProbe, RepoAccessOutcomes, RepoProbe, github_repo_probe, github_repo_push_check,

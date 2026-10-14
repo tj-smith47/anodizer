@@ -703,3 +703,50 @@ pub(crate) fn check_tp_new_crates(
         },
     );
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use anodizer_core::test_helpers::env::{EnvGuard, env_mutex};
+    use anodizer_core::test_helpers::responder::spawn_oneshot_http_responder;
+
+    /// A `max_wait` at the one-year cap loads and its deadline is computed
+    /// without overflowing `Instant`, and one second more is refused when the
+    /// config loads, so no loadable value can panic the gate.
+    #[test]
+    fn a_max_wait_at_the_cap_runs_the_gate_without_panicking() {
+        let cfg: WaitForWorkspaceDepsConfig =
+            serde_yaml_ng::from_str("enabled: true\nmax_wait: 365d\npoll_interval: 1s").unwrap();
+        assert_eq!(cfg.resolved_max_wait(), anodizer_core::config::MAX_DURATION);
+        let refused = serde_yaml_ng::from_str::<WaitForWorkspaceDepsConfig>("max_wait: 31536001s")
+            .unwrap_err()
+            .to_string();
+        assert!(
+            refused.contains("'31536001s'") && refused.contains("31536000s"),
+            "{refused}"
+        );
+
+        let body = r#"{"name":"ab","vers":"1.0.0","cksum":"abc","yanked":false}"#;
+        let resp: &'static str = Box::leak(
+            format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{body}",
+                body.len()
+            )
+            .into_boxed_str(),
+        );
+        let (addr, _calls) = spawn_oneshot_http_responder(vec![resp]);
+        let _env = env_mutex().lock().unwrap_or_else(|e| e.into_inner());
+        let _harness = EnvGuard::set("ANODIZE_TEST_HARNESS", "1");
+        let _index = EnvGuard::set(
+            "ANODIZER_TEST_CRATES_IO_INDEX_BASE",
+            format!("http://{addr}"),
+        );
+        let log = anodizer_core::log::StageLogger::new(
+            "publish-test",
+            anodizer_core::log::Verbosity::Normal,
+        );
+        let deps = vec![("ab".to_string(), "1.0.0".to_string())];
+        wait_for_workspace_deps_to_appear("app", &deps, &cfg, &log)
+            .expect("the dep is on the index");
+    }
+}

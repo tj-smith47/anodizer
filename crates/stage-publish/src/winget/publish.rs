@@ -49,8 +49,11 @@ pub(crate) fn publish_to_winget_with_config(
         return Ok(None);
     };
     // An entry skip like the identity's own, absorbed by the publisher's run.
-    let pr_token =
-        crate::publisher_helpers::pr_token_before_push(ctx, derived.repository.as_ref())?;
+    let pr_token = crate::publisher_helpers::pr_token_before_push(
+        ctx,
+        derived.repository.as_ref(),
+        "WINGET_PKGS_TOKEN",
+    )?;
 
     if ctx.is_dry_run() {
         log.status(&format!(
@@ -101,7 +104,7 @@ pub(crate) fn submit_winget_manifests(
         ctx,
         winget_cfg.repository.as_ref(),
         Some("WINGET_PKGS_TOKEN"),
-    );
+    )?;
 
     let tmp_dir = tempfile::tempdir().context("winget: create temp dir")?;
     let repo_path = tmp_dir.path();
@@ -343,11 +346,11 @@ fn open_pr_for_target(
     let cfg = crate::util::find_crate_in_universe(ctx, crate_name)
         .and_then(|c| c.publish.as_ref())
         .and_then(|p| p.winget.as_ref());
-    let token = util::resolve_repo_token(
+    let token = util::resolve_pr_token(
         ctx,
         cfg.and_then(|w| w.repository.as_ref()),
         Some("WINGET_PKGS_TOKEN"),
-    );
+    )?;
     let expect_title = crate::winget::identifier::render_winget_commit_msg(
         cfg.and_then(|w| w.commit_msg_template.as_deref()),
         &target.package_id,
@@ -719,6 +722,7 @@ impl anodizer_core::Publisher for WingetPublisher {
             ctx,
             &policy,
             "WINGET_PKGS_TOKEN",
+            Some(("microsoft", "winget-pkgs")),
             ctx.config
                 .crate_universe()
                 .into_iter()

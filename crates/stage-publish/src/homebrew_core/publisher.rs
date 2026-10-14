@@ -21,7 +21,7 @@ use super::locate::locate_formula;
 use super::publish::publish_to_homebrew_core;
 use super::resolve::{
     TOKEN_ENV_VARS, resolve_commit_message, resolve_download_url, resolve_formula_name,
-    resolve_token, resolve_upstream,
+    resolve_pr_token, resolve_token, resolve_upstream,
 };
 
 simple_publisher!(
@@ -94,10 +94,11 @@ impl anodizer_core::Publisher for HomebrewCorePublisher {
         Self::resolved_retain_on_rollback(self)
     }
 
-    /// Per active entry: the bump token — a templated `repository.token`'s
-    /// env refs when configured, else the any-of ladder
+    /// Per active entry: the bump token — any one of a templated
+    /// `repository.token`'s env refs or the ladder it falls through to
     /// (`HOMEBREW_CORE_GITHUB_TOKEN` / `COMMITTER_TOKEN` /
-    /// `ANODIZER_GITHUB_TOKEN` / `GITHUB_TOKEN`).
+    /// `ANODIZER_GITHUB_TOKEN` / `GITHUB_TOKEN` / `GH_TOKEN`), nothing for a
+    /// literal token.
     fn config_fully_inactive(&self, ctx: &Context) -> bool {
         active_homebrew_core_configs(ctx).is_empty()
     }
@@ -105,24 +106,15 @@ impl anodizer_core::Publisher for HomebrewCorePublisher {
     fn requirements(&self, ctx: &Context) -> Vec<anodizer_core::EnvRequirement> {
         let mut out = Vec::new();
         for entry in active_homebrew_core_configs(ctx) {
-            let cfg_token = entry
-                .repository
-                .as_ref()
-                .and_then(|r| r.token.as_deref())
-                .filter(|t| !t.is_empty());
-            match cfg_token {
-                Some(_) => out.extend(crate::publisher_helpers::secret_requirement(
-                    cfg_token,
-                    TOKEN_ENV_VARS[0],
-                )),
-                None => out.push(anodizer_core::EnvRequirement::EnvAnyOf {
-                    vars: TOKEN_ENV_VARS
-                        .iter()
-                        .chain(anodizer_core::git::GITHUB_TOKEN_ENV_LADDER.iter())
-                        .map(|s| s.to_string())
-                        .collect(),
-                }),
-            }
+            let ladder: Vec<&str> = TOKEN_ENV_VARS
+                .iter()
+                .chain(anodizer_core::git::GITHUB_TOKEN_ENV_LADDER.iter())
+                .copied()
+                .collect();
+            out.extend(crate::publisher_helpers::secret_requirement(
+                entry.repository.as_ref().and_then(|r| r.token.as_deref()),
+                &ladder,
+            ));
         }
         out
     }
@@ -250,8 +242,32 @@ impl anodizer_core::Publisher for HomebrewCorePublisher {
                 continue;
             }
             let env_hint = t.token_env_var.as_deref().unwrap_or(TOKEN_ENV_VARS[0]);
-            let Some(token) = crate::util::resolve_rollback_token(env, t.token_env_var.as_deref())
-            else {
+            // The entry that bumped this formula opened the pull request, so
+            // its token closes it; an entry no longer in the config falls
+            // back to the publisher's token variables.
+            let fallback = anodizer_core::config::HomebrewCoreConfig::default();
+            let entry = ctx
+                .config
+                .homebrew_cores
+                .iter()
+                .flatten()
+                .find(|c| {
+                    resolve_formula_name(ctx, c).is_ok_and(|f| f == t.formula)
+                        && resolve_upstream(c)
+                            == (t.upstream_owner.clone(), t.upstream_repo.clone())
+                })
+                .unwrap_or(&fallback);
+            let token = match resolve_pr_token(ctx, entry) {
+                Ok(token) => token,
+                Err(e) => {
+                    log.warn(&format!(
+                        "skipped rollback for formula '{}' — {e:#}; manual cleanup required",
+                        t.formula
+                    ));
+                    continue;
+                }
+            };
+            let Some(token) = token else {
                 log.warn(&format!(
                     "skipped rollback for formula '{}' — no GitHub token resolvable \
                      (${} / {} all unset)",

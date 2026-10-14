@@ -1235,7 +1235,7 @@ fn requirements_follow_the_auth_method() {
     });
     assert_eq!(
         publisher.requirements(&ctx),
-        vec![EnvRequirement::EnvAllOf {
+        vec![EnvRequirement::EnvAnyOf {
             vars: vec!["MCP_GITHUB_TOKEN".to_string()],
         }]
     );

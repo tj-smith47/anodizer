@@ -31,7 +31,7 @@ crates:
     cross: zigbuild    # override default for this crate
 ```
 
-## How auto-detection works
+## Auto-detection {#how-auto-detection-works}
 
 When `cross: auto` (the default):
 
@@ -39,7 +39,7 @@ When `cross: auto` (the default):
    is installed (with a working `zig` — binary on PATH or the pip `ziglang`
    wheel) → use zigbuild, **even when the target matches the host triple**.
    zig links against its own bundled libc, so the binary's glibc floor stays
-   hermetic instead of tracking the build machine — a CI runner image upgrade
+   fixed by zig, independent of the build machine — a CI runner image upgrade
    can't silently raise the glibc requirement of your releases. (musl targets
    are exempt: static libc, no glibc floor.)
 2. If the target matches the host triple → use native `cargo build`
@@ -54,7 +54,7 @@ host's glibc, set `cross: cargo` (per-crate or under `defaults:`).
 
 Run `anodizer healthcheck` to see which tools are available.
 
-## Installing cross-compilation tools
+## Cross-compilation tools
 
 ```bash
 # cargo-zigbuild (recommended for most cases)

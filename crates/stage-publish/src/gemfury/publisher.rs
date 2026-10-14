@@ -114,15 +114,29 @@ fn delete_recorded_targets(ctx: &mut Context, targets: &[GemFuryTarget]) {
         // the same env-var name. This lets a rollback succeed even when the
         // operator's shell doesn't currently export the env var but the
         // config (rendered through the template engine) still resolves it.
-        let cfg_token = cfg_entries
-            .iter()
-            .find(|c| api_token_env_var(ctx, c) == t.api_token_env_var)
-            .and_then(|c| match resolve_api_token(ctx, c) {
-                Ok(s) if !s.is_empty() => Some(s),
-                _ => None,
-            });
-        let env_token = ctx.env_var(&t.api_token_env_var).unwrap_or_default();
-        let token = cfg_token.unwrap_or(env_token);
+        let resolved = || -> anyhow::Result<String> {
+            for c in &cfg_entries {
+                if api_token_env_var(ctx, c)? == t.api_token_env_var {
+                    return resolve_api_token(ctx, c);
+                }
+            }
+            Ok(ctx
+                .env_var(&t.api_token_env_var)
+                .as_deref()
+                .and_then(anodizer_core::git::non_blank_token)
+                .unwrap_or_default())
+        };
+        let token = match resolved() {
+            Ok(token) => token,
+            Err(e) => {
+                log.warn(&format!(
+                    "gemfury rollback of '{}/{}@{}' failed — {e:#}",
+                    t.account, t.package, t.version
+                ));
+                failed += 1;
+                continue;
+            }
+        };
         if token.is_empty() {
             log.warn(&format!(
                 "gemfury rollback of '{}/{}@{}' skipped — ${} not set and no \
@@ -213,13 +227,17 @@ impl anodizer_core::Publisher for GemFuryPublisher {
     }
 
     fn requirements(&self, ctx: &Context) -> Vec<anodizer_core::EnvRequirement> {
-        // The publish path reads the push token from each entry's
-        // (configurable) env var name; the API token is rollback-only and
-        // intentionally not required up front.
+        // The publish path reads the push token from `token`, else from each
+        // entry's (configurable) env var name; the API token is rollback-only
+        // and intentionally not required up front. A `secret_name` that does
+        // not render is reported by the publish path; here it falls back to
+        // the default name.
         active_gemfury_configs(ctx)
             .into_iter()
-            .map(|entry| anodizer_core::EnvRequirement::EnvAllOf {
-                vars: vec![crate::gemfury::publish::push_token_env_var(ctx, entry)],
+            .filter_map(|entry| {
+                let env = crate::gemfury::publish::push_token_env_var(ctx, entry)
+                    .unwrap_or_else(|_| super::publish::DEFAULT_PUSH_TOKEN_ENV.to_string());
+                crate::publisher_helpers::secret_requirement(entry.token.as_deref(), &[&env])
             })
             .collect()
     }
@@ -340,7 +358,16 @@ impl anodizer_core::Publisher for GemFuryPublisher {
             if account.trim().is_empty() {
                 continue;
             }
-            let token = resolve_push_token(ctx, cfg).unwrap_or_default();
+            let token = match resolve_push_token(ctx, cfg) {
+                Ok(token) => token,
+                Err(e) => {
+                    acc = merge(
+                        acc,
+                        anodizer_core::PreflightCheck::Blocker(format!("{e:#}")),
+                    );
+                    continue;
+                }
+            };
             if token.is_empty() {
                 continue;
             }

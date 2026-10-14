@@ -101,13 +101,13 @@ impl anodizer_core::Publisher for ArtifactoryPublisher {
                 .replace('-', "_");
             if let Some(req) = crate::publisher_helpers::secret_requirement(
                 entry.username.as_deref(),
-                &format!("ARTIFACTORY_{}_USERNAME", name_upper),
+                &[format!("ARTIFACTORY_{}_USERNAME", name_upper).as_str()],
             ) {
                 out.push(req);
             }
             if let Some(req) = crate::publisher_helpers::secret_requirement(
                 entry.password.as_deref(),
-                &format!("ARTIFACTORY_{}_SECRET", name_upper),
+                &[format!("ARTIFACTORY_{}_SECRET", name_upper).as_str()],
             ) {
                 out.push(req);
             }
@@ -166,9 +166,13 @@ impl anodizer_core::Publisher for ArtifactoryPublisher {
         // the legacy bearer ladder so existing rollbacks don't silently
         // break.
         let structured = decode_artifactory_targets(&evidence.extra);
-        let token_env = ctx
-            .env_var("ARTIFACTORY_TOKEN")
-            .or_else(|| ctx.env_var("ARTIFACTORY_SECRET"));
+        let token_env = ["ARTIFACTORY_TOKEN", "ARTIFACTORY_SECRET"]
+            .iter()
+            .find_map(|var| {
+                ctx.env_var(var)
+                    .as_deref()
+                    .and_then(anodizer_core::git::non_blank_token)
+            });
         let client = match anodizer_core::http::blocking_client(std::time::Duration::from_secs(30))
         {
             Ok(c) => c,

@@ -16,6 +16,7 @@ Three excerpts from [cfgd's `release.yml`](https://github.com/tj-smith47/cfgd/bl
 (snapshot 2026-05-24) cover every input in the table below.
 
 ```yaml
+# not an anodizer config
 # 1. Resolve job — picks the affected workspace per tag, uses install-only
 #    to install anodizer without running a release.
 - uses: tj-smith47/anodizer-action@v1

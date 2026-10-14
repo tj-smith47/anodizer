@@ -58,13 +58,24 @@ pub(crate) fn resolve_token(
     let (token, env_var) = crate::publisher_helpers::resolve_token_with_ladder_tracked(
         ctx,
         configured,
-        "homebrew-core: render token template",
+        "homebrew_cores.repository.token",
         &token_env_ladder(),
     )?;
     if token.is_empty() {
         Ok(None)
     } else {
         Ok(Some(ResolvedToken { token, env_var }))
+    }
+}
+
+/// Resolve the token the bump pull request opens with: `pull_request.token`,
+/// else `repository.token` ([`crate::util::configured_pr_token`]), else the
+/// bump token ([`resolve_token`]). The publish opens the pull request with
+/// it, and the rollback closes it with the same one.
+pub(crate) fn resolve_pr_token(ctx: &Context, cfg: &HomebrewCoreConfig) -> Result<Option<String>> {
+    match crate::util::configured_pr_token(cfg.repository.as_ref(), &|s| ctx.render_template(s))? {
+        Some(token) => Ok(Some(token)),
+        None => Ok(resolve_token(ctx, cfg)?.map(|t| t.token)),
     }
 }
 

@@ -119,7 +119,7 @@ Anodizer reads `api_key` first; when it is unset or renders blank (such as an un
 
 ## Common gotchas
 
-- **No Windows artifacts**: if no Windows build artifacts exist, anodizer falls back to a placeholder GitHub release download URL and logs a warning. Ensure your build matrix includes at least one `*-pc-windows-*` target.
+- **No Windows artifacts**: when no Windows artifact matches the crate (after `ids`, `amd64_variant` and `use:`), the chocolatey publisher fails with `chocolatey: no windows artifact found for '<crate>'`, because an install script with no download URL and no checksum is rejected by moderation. Include at least one `*-pc-windows-*` target in the build matrix, or remove the chocolatey config for that crate.
 - **Rejected versions**: a version rejected by Chocolatey moderation cannot be replaced; the version must be bumped before re-pushing. `republish_in_moderation` does not apply to rejected packages.
 - **Moderation queue lag**: the Chocolatey flat API (`/api/v2/Packages`) only returns approved packages. Checking for an in-moderation version requires scraping `community.chocolatey.org/packages/<name>`.
 - **Retry**: a transport failure, a `5xx` or a `429` retries the push per the top-level `retry:` block, and a `429` waits the `Retry-After` or `RateLimit-Reset` the feed sent in place of the backoff step (see [Retry](@/docs/general/retry.md)). A 403, 502, 503 or 504 answered with an HTML page (a Cloudflare or IIS edge challenge) is retried too; any other `4xx` fails at once.
@@ -182,7 +182,7 @@ When the publish stage runs for Chocolatey, Anodizer:
 4. **Runs `choco pack`** to create the `.nupkg` file from the nuspec and tools directory.
 5. **Runs `choco push`** to upload the `.nupkg` to the configured source repository (defaults to `https://push.chocolatey.org/`).
 
-If no Windows artifacts are found, Anodizer falls back to a placeholder GitHub release download URL and logs a warning.
+If no Windows artifact is found, the publisher fails at step 3 and nothing is packed or pushed. The [pre-publish validation](@/docs/publish/validation.md) runs the same artifact selection after the build, so on a build of every target a release stops with the same error before any publisher runs.
 
 ## `skip` behavior
 

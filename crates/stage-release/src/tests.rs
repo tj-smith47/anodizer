@@ -6485,7 +6485,7 @@ fn resolve_release_token_set_is_used() {
     let ctx = TestContextBuilder::new().build();
     let cfg = release_cfg_with_token(Some("ghp_override"));
     assert_eq!(
-        crate::resolve_release_token(&ctx, &cfg).as_deref(),
+        crate::resolve_release_token(&ctx, &cfg).unwrap().as_deref(),
         Some("ghp_override")
     );
 }
@@ -6500,7 +6500,7 @@ fn resolve_release_token_renders_template() {
         .set_env("RELEASE_TOKEN", "ghp_from_env");
     let cfg = release_cfg_with_token(Some("{{ .Env.RELEASE_TOKEN }}"));
     assert_eq!(
-        crate::resolve_release_token(&ctx, &cfg).as_deref(),
+        crate::resolve_release_token(&ctx, &cfg).unwrap().as_deref(),
         Some("ghp_from_env")
     );
 }
@@ -6511,7 +6511,7 @@ fn resolve_release_token_renders_template() {
 fn resolve_release_token_unset_falls_back() {
     let ctx = TestContextBuilder::new().build();
     let cfg = release_cfg_with_token(None);
-    assert_eq!(crate::resolve_release_token(&ctx, &cfg), None);
+    assert_eq!(crate::resolve_release_token(&ctx, &cfg).unwrap(), None);
 }
 
 /// An empty `token` behaves like unset (falls back to the pipeline token).
@@ -6519,7 +6519,43 @@ fn resolve_release_token_unset_falls_back() {
 fn resolve_release_token_empty_falls_back() {
     let ctx = TestContextBuilder::new().build();
     let cfg = release_cfg_with_token(Some(""));
-    assert_eq!(crate::resolve_release_token(&ctx, &cfg), None);
+    assert_eq!(crate::resolve_release_token(&ctx, &cfg).unwrap(), None);
+}
+
+/// A `token` that does not render is an error naming the field in every
+/// mode, with none of the template's text in it: the literal template is
+/// never sent as the bearer credential, and the pipeline token is not used in
+/// its place.
+#[test]
+fn resolve_release_token_that_does_not_render_is_an_error() {
+    let ctx = TestContextBuilder::new()
+        .token(Some("ghp_pipeline".into()))
+        .build();
+    let cfg = release_cfg_with_token(Some("ghp_literal{{ NoSuchVariable }}"));
+    let err = crate::resolve_release_token(&ctx, &cfg).expect_err("must not resolve");
+    let msg = format!("{err:#}");
+    assert!(
+        msg.starts_with("release.github.token does not render"),
+        "{msg}"
+    );
+    assert!(!msg.contains("ghp_literal"), "{msg}");
+}
+
+/// A padded `token` is sent trimmed, and one that renders only whitespace
+/// falls back to the pipeline token.
+#[test]
+fn resolve_release_token_is_trimmed_and_a_blank_one_falls_back() {
+    let mut ctx = TestContextBuilder::new().build();
+    ctx.template_vars_mut().set_env("BLANK", "  \t");
+    let padded = release_cfg_with_token(Some("  ghp_padded\n"));
+    assert_eq!(
+        crate::resolve_release_token(&ctx, &padded)
+            .unwrap()
+            .as_deref(),
+        Some("ghp_padded")
+    );
+    let blank = release_cfg_with_token(Some("{{ .Env.BLANK }}"));
+    assert_eq!(crate::resolve_release_token(&ctx, &blank).unwrap(), None);
 }
 
 // ---------------------------------------------------------------------------

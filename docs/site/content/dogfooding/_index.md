@@ -1,17 +1,17 @@
 +++
-title = "What works (with proof)"
-description = "Every anodizer feature, with a status and a link you can click to see the working artifact: not source code, not test names, the actual file or page."
+title = "Feature status (with proof)"
+description = "Every anodizer feature, with a status and a link you can click to see the working artifact itself: the actual file or page."
 weight = 30
 template = "section.html"
 sort_by = "weight"
 +++
 
-# What works (with proof)
+# Feature status (with proof)
 
 This page is the dogfood test for anodizer. Every feature carries a status and
 a link, and the status tells you exactly what the link proves.
 
-## How to read this page
+## Status legend
 
 | Status | Means |
 |---|---|
@@ -21,7 +21,7 @@ a link, and the status tells you exactly what the link proves.
 | 🤝 **Help wanted** | Tests pass. We can't run the production path ourselves: a paid account, a missing runtime, or a target that doesn't fit any of our three projects. Open an issue if you want to validate it on yours. |
 | ⛔ **Removed (date)** | The surface was deleted. The row stays, with the run evidence that motivated the removal, so the history isn't rewritten. |
 
-### What the link is
+### Evidence behind each link
 
 A ✅ **Verified** row links the strongest evidence that exists for that feature,
 in this order:
@@ -68,12 +68,12 @@ link each so you can see the same feature in different configurations —
 lockstep workspace (anodizer), per-crate workspace (cfgd), and single crate
 (brontes).
 
-## Where to look
+## Sections
 
 | Section | What's in it |
 |---|---|
-| [Where you install it](install/) | Distribution channels users get the binary from |
-| [What anodizer builds](build/) | Archives, packages, installers, containers, signing |
+| [Install channels](install/) | Distribution channels users get the binary from |
+| [Build outputs](build/) | Archives, packages, installers, containers, signing |
 | [Release pipeline](release/) | Releases, changelogs, announcers, blob uploads, custom publishers |
 | [anodizer.yml config](config/) | Top-level keys, templates, lifecycle hooks, monorepo |
 | [CLI](cli/) | Commands and flags |
@@ -92,8 +92,8 @@ lockstep workspace (anodizer), per-crate workspace (cfgd), and single crate
   doesn't fit any of our three projects.
 - **Historical pins:** when a feature was dogfooded on a past release but a
   project has since moved off it, the proof link stays pinned to the tag
-  that exercised it (marked "dogfooded through vX.Y.Z") — never silently
-  dropped, never re-pointed at a master file that no longer proves it.
+  that exercised it (marked "dogfooded through vX.Y.Z"). The row stays on
+  this page, and its link keeps pointing at that tag.
 
 If you can produce a public artifact for any 🤝 row, open a PR with the
 link and we'll flip it to ✅. Same for any feature you think is missing

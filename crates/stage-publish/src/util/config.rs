@@ -2,8 +2,9 @@
 //!
 //! - Publisher config lookup (`get_publish_config`).
 //! - Artifact-kind resolution (`resolve_artifact_kind`).
-//! - Token / secret resolution (`resolve_token`, `resolve_repo_token`,
-//!   `resolve_secret_name`).
+//! - Secret rendering (`render_secret`, `resolve_secret_name`,
+//!   `config_or_env_secret`) and token resolution (`resolve_token`,
+//!   `resolve_repo_token`, `resolve_pr_token`).
 //! - Repository owner/name extraction (`resolve_repo_owner_name`).
 //! - Skip-gate evaluation (`should_skip_upload`, `should_skip_publisher_with_if`).
 
@@ -14,18 +15,57 @@ use anodizer_core::log::StageLogger;
 use anyhow::{Context as _, Result};
 
 // ---------------------------------------------------------------------------
-// Secret-name resolution
+// Secret rendering
 // ---------------------------------------------------------------------------
 
-/// Resolve a secret/token env var name from config with template rendering.
+/// Render the credential template `raw` of the config field `field` (an
+/// `api_key`, a `token`, a `password`, a `private_key`, a signing key, or a
+/// `secret_name` that names the variable holding one) and return it trimmed.
+///
+/// A template that fails to render is an error in every mode, strict or not,
+/// naming `field` without the template's text
+/// ([`anodizer_core::git::render_secret`]): a literal template sent as a
+/// credential fails upstream with an error that names nothing, and on a
+/// one-way-door registry it is sent before anything can stop it.
+pub(crate) fn render_secret(ctx: &Context, field: &str, raw: &str) -> Result<String> {
+    anodizer_core::git::render_secret(field, raw, &|s| ctx.render_template(s))
+}
+
+/// Resolve the name of the variable that holds a secret: the configured
+/// `secret_name` (rendered through [`render_secret`]), else `default`.
 pub(crate) fn resolve_secret_name(
     ctx: &Context,
+    field: &str,
     secret_name: Option<&str>,
     default: &str,
-) -> String {
-    let name = secret_name.unwrap_or(default);
-    ctx.render_template(name)
-        .unwrap_or_else(|_| name.to_string())
+) -> Result<String> {
+    match secret_name {
+        Some(name) => render_secret(ctx, field, name),
+        None => Ok(default.to_string()),
+    }
+}
+
+/// A secret read from a configured value or, when that renders blank, from
+/// the variable `env_var`: the configured value rendered through
+/// [`render_secret`], then the variable, each trimmed, and an empty or
+/// whitespace-only value falls through. Empty when neither has a value.
+pub(crate) fn config_or_env_secret(
+    ctx: &Context,
+    field: &str,
+    configured: Option<&str>,
+    env_var: &str,
+) -> Result<String> {
+    if let Some(raw) = configured {
+        let rendered = render_secret(ctx, field, raw)?;
+        if !rendered.is_empty() {
+            return Ok(rendered);
+        }
+    }
+    Ok(ctx
+        .env_var(env_var)
+        .as_deref()
+        .and_then(anodizer_core::git::non_blank_token)
+        .unwrap_or_default())
 }
 
 // ---------------------------------------------------------------------------
@@ -89,11 +129,12 @@ pub(crate) fn resolve_artifact_kind(use_value: Option<&str>) -> ArtifactKind {
 // Token resolution
 // ---------------------------------------------------------------------------
 
-/// Resolve a GitHub token for a publisher's repository: the
-/// publisher-specific env var, then the run's GitHub token (`--token`, or the
-/// value the CLI resolved from `ANODIZER_GITHUB_TOKEN` / `GITHUB_TOKEN` /
+/// Resolve a GitHub token from the environment for a publisher's repository:
+/// the publisher-specific env var, then the run's GitHub token (`--token`, or
+/// the value the CLI resolved from `ANODIZER_GITHUB_TOKEN` / `GITHUB_TOKEN` /
 /// `GH_TOKEN` at startup), then `ANODIZER_GITHUB_TOKEN`, `GITHUB_TOKEN` and
-/// `GH_TOKEN`.
+/// `GH_TOKEN`. Every value is trimmed, and one that is empty or only
+/// whitespace falls through ([`anodizer_core::git::non_blank_token`]).
 ///
 /// The publisher variable comes first because it names a token issued for
 /// that one repository; the run token is filled from the generic GitHub
@@ -107,13 +148,10 @@ pub(crate) fn resolve_artifact_kind(use_value: Option<&str>) -> ArtifactKind {
 /// [`MapEnvSource`](anodizer_core::MapEnvSource) without mutating the
 /// process env.
 pub(crate) fn resolve_token(ctx: &Context, env_var: Option<&str>) -> Option<String> {
-    // Filter empty strings: GitHub Actions sets env vars from non-existent
-    // secrets to "", which would short-circuit the fallback chain and prevent
-    // GITHUB_TOKEN from being used.
-    let non_empty = |s: String| if s.is_empty() { None } else { Some(s) };
     env_var
         .and_then(|v| ctx.env_var(v))
-        .and_then(non_empty)
+        .as_deref()
+        .and_then(anodizer_core::git::non_blank_token)
         .or_else(|| run_github_token(ctx))
         .or_else(|| {
             anodizer_core::git::resolve_github_token_with_env(None, &|key| ctx.env_var(key))
@@ -125,7 +163,10 @@ pub(crate) fn run_github_token(ctx: &Context) -> Option<String> {
     if ctx.token_type != anodizer_core::scm::ScmTokenType::GitHub {
         return None;
     }
-    ctx.options.token.clone().filter(|t| !t.is_empty())
+    ctx.options
+        .token
+        .as_deref()
+        .and_then(anodizer_core::git::non_blank_token)
 }
 
 // ---------------------------------------------------------------------------
@@ -253,103 +294,86 @@ pub(crate) fn should_skip_publisher_with_if(
 // Repository token resolution
 // ---------------------------------------------------------------------------
 
-/// Resolve the repository token: `repository.token` (rendered and trimmed; a
-/// render that fails, is empty or is only whitespace falls through), then
-/// [`resolve_token`].
+/// Resolve the token that pushes to a publisher's GitHub repository:
+/// `repository.token`, then the publisher's own variable `env_var`, then the
+/// run token (GitHub only), then `ANODIZER_GITHUB_TOKEN` / `GITHUB_TOKEN` /
+/// `GH_TOKEN` ([`resolve_token`]).
+///
+/// `repository.token` is rendered through [`render_secret`]: a template that
+/// fails to render is an error, and one that renders empty or only
+/// whitespace falls through to the next source. `Ok(None)` when no source
+/// has a value.
 pub(crate) fn resolve_repo_token(
     ctx: &Context,
     repo: Option<&anodizer_core::config::RepositoryConfig>,
     env_var: Option<&str>,
-) -> Option<String> {
-    // 1. Token from repository config. May be templated
-    // (`token: "{{ .Env.GH_PAT }}"`); render before it is used as the
-    // bearer / x-access-token credential, or the literal template string
-    // is sent as the auth token.
-    if let Some(r) = repo
-        && let Some(ref tok) = r.token
-        && !tok.is_empty()
-    {
-        // A render that fails falls through like a blank one: the literal
-        // template text must never be sent as a credential.
-        if let Ok(rendered) = ctx.render_template(tok) {
-            let rendered = rendered.trim();
-            if !rendered.is_empty() {
-                return Some(rendered.to_string());
-            }
-        }
-    }
-    // 2. Fall back to context + env
-    resolve_token(ctx, env_var)
+) -> Result<Option<String>> {
+    let configured = super::pr_token::configured_push_token(repo, &|s| ctx.render_template(s))?;
+    Ok(configured.or_else(|| resolve_token(ctx, env_var)))
 }
 
-/// Resolve a GitHub token for a *rollback* target straight from an
-/// [`EnvSource`](anodizer_core::EnvSource) (rollback runs from a persisted
-/// target snapshot, not a live `Context`).
+/// Resolve the token that opens a pull request against a publisher's
+/// upstream: `pull_request.token`, then the chain of [`resolve_repo_token`]
+/// (`repository.token`, the publisher's own variable, the run token on a
+/// GitHub run, then `ANODIZER_GITHUB_TOKEN` / `GITHUB_TOKEN` / `GH_TOKEN`).
 ///
-/// Precedence: the target's custom `token_env_var` (when it names a non-empty
-/// var) → `ANODIZER_GITHUB_TOKEN` → `GITHUB_TOKEN`. Empty values are skipped at
-/// every link because it delegates to the canonical
-/// [`resolve_github_token_with_env`](anodizer_core::git::resolve_github_token_with_env)
-/// — a `GITHUB_TOKEN=""` (the shape GitHub Actions materializes for a missing
-/// secret) must not be treated as a real token.
-pub(crate) fn resolve_rollback_token<E: anodizer_core::EnvSource + ?Sized>(
-    env: &E,
-    token_env_var: Option<&str>,
-) -> Option<String> {
-    let explicit = token_env_var.and_then(|n| env.var(n));
-    anodizer_core::git::resolve_github_token_with_env(explicit.as_deref(), &|key| env.var(key))
+/// Every PR path resolves its token here, and preflight probes the same
+/// value, so a publisher variable holding a personal access token reaches
+/// the pull request as well as the push.
+pub(crate) fn resolve_pr_token(
+    ctx: &Context,
+    repo: Option<&anodizer_core::config::RepositoryConfig>,
+    env_var: Option<&str>,
+) -> Result<Option<String>> {
+    let configured = super::pr_token::configured_pr_token(repo, &|s| ctx.render_template(s))?;
+    Ok(configured.or_else(|| resolve_token(ctx, env_var)))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use anodizer_core::MapEnvSource;
     use anodizer_core::config::{
         BinstallConfig, CrateConfig, NixConfig, PublishConfig, RepositoryConfig, WorkspaceConfig,
     };
     use anodizer_core::test_helpers::TestContextBuilder;
 
-    /// `resolve_rollback_token` must empty-filter every link: a set-but-blank
-    /// `GITHUB_TOKEN=""` (GitHub Actions' shape for a missing secret) falls
-    /// through to the next source rather than masquerading as a real token.
+    /// A set-but-blank `GITHUB_TOKEN=""` (GitHub Actions' shape for a missing
+    /// secret) or one holding only whitespace falls through to the next
+    /// variable, and a padded value is sent trimmed.
     #[test]
-    fn rollback_token_skips_empty_github_token() {
-        let env = MapEnvSource::new()
-            .with("GITHUB_TOKEN", "")
-            .with("ANODIZER_GITHUB_TOKEN", "real");
-        assert_eq!(resolve_rollback_token(&env, None).as_deref(), Some("real"));
-    }
-
-    /// A custom `token_env_var` that is set-but-empty also falls through to the
-    /// standard chain instead of returning `""`.
-    #[test]
-    fn rollback_token_empty_custom_var_falls_through() {
-        let env = MapEnvSource::new()
-            .with("MY_TOKEN", "")
-            .with("GITHUB_TOKEN", "gh");
+    fn a_blank_variable_falls_through_and_a_padded_one_is_trimmed() {
+        let ctx = TestContextBuilder::new()
+            .sealed_env()
+            .env("MY_TOKEN", " \t")
+            .env("ANODIZER_GITHUB_TOKEN", "")
+            .env("GITHUB_TOKEN", "  real\n")
+            .build();
         assert_eq!(
-            resolve_rollback_token(&env, Some("MY_TOKEN")).as_deref(),
-            Some("gh")
+            resolve_token(&ctx, Some("MY_TOKEN")).as_deref(),
+            Some("real")
         );
+        let none = TestContextBuilder::new()
+            .sealed_env()
+            .env("GITHUB_TOKEN", "")
+            .build();
+        assert_eq!(resolve_token(&none, None), None);
     }
 
-    /// A populated custom `token_env_var` wins over the standard chain.
+    /// A padded run token is sent trimmed, and one holding only whitespace
+    /// falls through to the environment chain.
     #[test]
-    fn rollback_token_custom_var_wins_when_set() {
-        let env = MapEnvSource::new()
-            .with("MY_TOKEN", "custom")
-            .with("GITHUB_TOKEN", "gh");
-        assert_eq!(
-            resolve_rollback_token(&env, Some("MY_TOKEN")).as_deref(),
-            Some("custom")
-        );
-    }
-
-    /// All sources empty/absent resolves to `None` (no `""` token leaks out).
-    #[test]
-    fn rollback_token_none_when_all_empty() {
-        let env = MapEnvSource::new().with("GITHUB_TOKEN", "");
-        assert_eq!(resolve_rollback_token(&env, None), None);
+    fn the_run_token_is_trimmed() {
+        let padded = TestContextBuilder::new()
+            .sealed_env()
+            .token(Some(" run\t".into()))
+            .build();
+        assert_eq!(resolve_token(&padded, None).as_deref(), Some("run"));
+        let blank = TestContextBuilder::new()
+            .sealed_env()
+            .env("GH_TOKEN", "gh")
+            .token(Some("  ".into()))
+            .build();
+        assert_eq!(resolve_token(&blank, None).as_deref(), Some("gh"));
     }
 
     /// A templated `repository.token` (`{{ .Env.GH_PAT }}`) must be rendered
@@ -363,7 +387,7 @@ mod tests {
             token: Some("{{ .Env.GH_PAT }}".into()),
             ..Default::default()
         };
-        let tok = resolve_repo_token(&ctx, Some(&repo), None);
+        let tok = resolve_repo_token(&ctx, Some(&repo), None).unwrap();
         assert_eq!(tok.as_deref(), Some("ghp_real_value"));
         assert!(
             !tok.unwrap().contains("{{"),
@@ -384,9 +408,10 @@ mod tests {
         let templated = Some("TOKEN_{{ .Env.X }}");
         // The default differs per publisher but the render path is the same;
         // a present (templated) `secret_name` ignores the default entirely.
-        let cloudsmith = resolve_secret_name(&ctx, templated, "CLOUDSMITH_TOKEN");
-        let dockerhub = resolve_secret_name(&ctx, templated, "DOCKER_PASSWORD");
-        let gemfury = resolve_secret_name(&ctx, templated, "FURY_PUSH_TOKEN");
+        let name = |default| resolve_secret_name(&ctx, "secret_name", templated, default).unwrap();
+        let cloudsmith = name("CLOUDSMITH_TOKEN");
+        let dockerhub = name("DOCKER_PASSWORD");
+        let gemfury = name("FURY_PUSH_TOKEN");
         assert_eq!(cloudsmith, "TOKEN_FOO");
         assert_eq!(dockerhub, "TOKEN_FOO");
         assert_eq!(gemfury, "TOKEN_FOO");
@@ -405,7 +430,9 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            resolve_repo_token(&ctx, Some(&repo), None).as_deref(),
+            resolve_repo_token(&ctx, Some(&repo), None)
+                .unwrap()
+                .as_deref(),
             Some("ghp_literal")
         );
     }
@@ -545,7 +572,7 @@ mod tests {
     /// In a GitLab or Gitea run the run token is not a GitHub credential, so
     /// it is never sent to a GitHub repository.
     #[test]
-    fn a_gitlab_run_token_is_not_used_for_a_github_repository() {
+    fn a_gitlab_or_gitea_run_token_is_not_used_for_a_github_repository() {
         for token_type in [
             anodizer_core::scm::ScmTokenType::GitLab,
             anodizer_core::scm::ScmTokenType::Gitea,
@@ -569,21 +596,80 @@ mod tests {
         }
     }
 
-    /// A `repository.token` that does not render falls through to the
-    /// publisher variable; the template text is never the credential.
+    /// A `repository.token` that does not render is an error naming the
+    /// field, never the template's text, in every mode: the template is
+    /// never sent as the credential, and the publisher variable is not used
+    /// in its place.
     #[test]
-    fn a_repository_token_that_does_not_render_falls_through() {
+    fn a_repository_token_that_does_not_render_is_an_error() {
         let ctx = TestContextBuilder::new()
             .sealed_env()
             .env("KREW_INDEX_TOKEN", "krew")
             .build();
         let repo = RepositoryConfig {
-            token: Some("{{ .Env.NOT_SET_ANYWHERE }}".into()),
+            token: Some("ghp_secret{{ NoSuchVariable }}".into()),
+            ..Default::default()
+        };
+        let err = resolve_repo_token(&ctx, Some(&repo), Some("KREW_INDEX_TOKEN"))
+            .expect_err("a token that does not render must not resolve");
+        let msg = format!("{err:#}");
+        assert!(msg.contains("repository.token"), "{msg}");
+        assert!(!msg.contains("ghp_secret"), "{msg}");
+        let err = resolve_pr_token(&ctx, Some(&repo), Some("KREW_INDEX_TOKEN"))
+            .expect_err("the pull-request chain reads the same token");
+        assert!(format!("{err:#}").contains("repository.token"));
+    }
+
+    /// A publisher variable holding a personal access token opens the pull
+    /// request as well as pushing the fork, when the Actions `GITHUB_TOKEN`
+    /// is the run token.
+    #[test]
+    fn the_publisher_variable_opens_the_pull_request_over_the_run_token() {
+        let ctx = TestContextBuilder::new()
+            .sealed_env()
+            .env("GITHUB_TOKEN", "ghs_actions")
+            .env("WINGET_PKGS_TOKEN", "ghp_pat")
+            .token(Some("ghs_actions".into()))
+            .build();
+        let repo = RepositoryConfig::default();
+        assert_eq!(
+            resolve_pr_token(&ctx, Some(&repo), Some("WINGET_PKGS_TOKEN"))
+                .unwrap()
+                .as_deref(),
+            Some("ghp_pat")
+        );
+        assert_eq!(
+            resolve_repo_token(&ctx, Some(&repo), Some("WINGET_PKGS_TOKEN"))
+                .unwrap()
+                .as_deref(),
+            Some("ghp_pat")
+        );
+    }
+
+    /// `pull_request.token` wins over `repository.token` for the pull request
+    /// only; the push still uses `repository.token`.
+    #[test]
+    fn the_pull_request_token_wins_for_the_pull_request_only() {
+        let ctx = TestContextBuilder::new().sealed_env().build();
+        let repo = RepositoryConfig {
+            token: Some("push".into()),
+            pull_request: Some(anodizer_core::config::PullRequestConfig {
+                token: Some("pr".into()),
+                ..Default::default()
+            }),
             ..Default::default()
         };
         assert_eq!(
-            resolve_repo_token(&ctx, Some(&repo), Some("KREW_INDEX_TOKEN")).as_deref(),
-            Some("krew")
+            resolve_pr_token(&ctx, Some(&repo), None)
+                .unwrap()
+                .as_deref(),
+            Some("pr")
+        );
+        assert_eq!(
+            resolve_repo_token(&ctx, Some(&repo), None)
+                .unwrap()
+                .as_deref(),
+            Some("push")
         );
     }
 
@@ -602,23 +688,10 @@ mod tests {
             token: Some(tok.into()),
             ..Default::default()
         };
-        assert_eq!(
-            resolve_repo_token(
-                &ctx,
-                Some(&repo("{{ .Env.BLANK_TOKEN }}")),
-                Some("KREW_INDEX_TOKEN")
-            )
-            .as_deref(),
-            Some("krew")
-        );
-        assert_eq!(
-            resolve_repo_token(
-                &ctx,
-                Some(&repo("{{ .Env.PADDED_TOKEN }}")),
-                Some("KREW_INDEX_TOKEN")
-            )
-            .as_deref(),
-            Some("ghp_x")
-        );
+        let resolve = |tok: &str| {
+            resolve_repo_token(&ctx, Some(&repo(tok)), Some("KREW_INDEX_TOKEN")).unwrap()
+        };
+        assert_eq!(resolve("{{ .Env.BLANK_TOKEN }}").as_deref(), Some("krew"));
+        assert_eq!(resolve("{{ .Env.PADDED_TOKEN }}").as_deref(), Some("ghp_x"));
     }
 }

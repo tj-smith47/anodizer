@@ -25,7 +25,7 @@ Only error messages will be printed to stderr. Stdout remains clean for machine-
 
 Show detailed output from all stages, including:
 
-- External command stdout/stderr (not just on failure)
+- External command stdout/stderr, on success as well as on failure
 - Template variable context before rendering
 - Environment variables passed to build commands
 - File paths being created, copied, or archived

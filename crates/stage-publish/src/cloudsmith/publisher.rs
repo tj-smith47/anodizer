@@ -91,32 +91,58 @@ pub(crate) fn cloudsmith_manual_cleanup_msg(target: &CloudsmithTarget) -> String
     )
 }
 
+/// The API key the rollback DELETE of a package in `target` (organization,
+/// repository) authenticates with: `CLOUDSMITH_API_KEY` when set, else the
+/// publish token of the entry that uploaded to `target` (its `secret_name`
+/// variable, default `CLOUDSMITH_TOKEN`). Cloudsmith authenticates the upload
+/// and the delete with one API key, so the credential the publish used is
+/// reused instead of being asked for a second time under a second name.
+///
+/// With no `target`, or no entry that names it, the first active entry whose
+/// variable is set supplies the key. A `secret_name` of the matching entry
+/// that does not render is an error.
+pub(crate) fn resolve_rollback_token(
+    ctx: &Context,
+    target: Option<(&str, &str)>,
+) -> anyhow::Result<Option<String>> {
+    let set = |var: &str| {
+        ctx.env_var(var)
+            .as_deref()
+            .and_then(anodizer_core::git::non_blank_token)
+    };
+    if let Some(key) = set("CLOUDSMITH_API_KEY") {
+        return Ok(Some(key));
+    }
+    let secret_var = |entry: &anodizer_core::config::CloudSmithConfig| {
+        crate::util::resolve_secret_name(
+            ctx,
+            "cloudsmith.secret_name",
+            entry.secret_name.as_deref(),
+            "CLOUDSMITH_TOKEN",
+        )
+    };
+    let entries = active_cloudsmith_configs(ctx);
+    let rendered =
+        |raw: Option<&str>| raw.map(|r| ctx.render_template(r).unwrap_or_else(|_| r.to_string()));
+    let uploader = target.and_then(|(org, repo)| {
+        entries.iter().find(|e| {
+            rendered(e.organization.as_deref()).as_deref() == Some(org)
+                && rendered(e.repository.as_deref()).as_deref() == Some(repo)
+        })
+    });
+    match uploader {
+        Some(entry) => Ok(set(&secret_var(entry)?)),
+        None => Ok(entries
+            .iter()
+            .find_map(|entry| secret_var(entry).ok().and_then(|var| set(&var)))),
+    }
+}
+
 /// Top-level `cloudsmiths:` entries whose `skip:`/`if:` evaluates active
 /// right now. Shared by [`anodizer_core::Publisher::requirements`] and
 /// [`anodizer_core::Publisher::config_fully_inactive`] so the two cannot
 /// diverge. `preflight` keeps its own loop (it needs per-entry endpoint
 /// resolution alongside the filter, not just a boolean).
-/// The API key the rollback DELETE authenticates with: `CLOUDSMITH_API_KEY`
-/// when set, else the publish token (`secret_name`, default
-/// `CLOUDSMITH_TOKEN`) of the first active entry whose variable is set.
-/// Cloudsmith authenticates the upload and the delete with one API key, so
-/// the publish credential is reused instead of being asked for a second time
-/// under a second name.
-pub(crate) fn resolve_rollback_token(ctx: &Context) -> Option<String> {
-    let set = |var: &str| ctx.env_var(var).filter(|v| !v.is_empty());
-    set("CLOUDSMITH_API_KEY").or_else(|| {
-        active_cloudsmith_configs(ctx)
-            .into_iter()
-            .find_map(|entry| {
-                set(&crate::util::resolve_secret_name(
-                    ctx,
-                    entry.secret_name.as_deref(),
-                    "CLOUDSMITH_TOKEN",
-                ))
-            })
-    })
-}
-
 pub(crate) fn active_cloudsmith_configs(
     ctx: &Context,
 ) -> Vec<&anodizer_core::config::CloudSmithConfig> {
@@ -180,11 +206,15 @@ impl anodizer_core::Publisher for CloudsmithPublisher {
         active_cloudsmith_configs(ctx)
             .into_iter()
             .map(|entry| {
+                // A `secret_name` that does not render is reported by the
+                // publish path; here it falls back to the default name.
                 let var = crate::util::resolve_secret_name(
                     ctx,
+                    "cloudsmith.secret_name",
                     entry.secret_name.as_deref(),
                     "CLOUDSMITH_TOKEN",
-                );
+                )
+                .unwrap_or_else(|_| "CLOUDSMITH_TOKEN".to_string());
                 anodizer_core::EnvRequirement::EnvAllOf { vars: vec![var] }
             })
             .collect()
@@ -223,11 +253,9 @@ impl anodizer_core::Publisher for CloudsmithPublisher {
             return Ok(());
         }
 
-        // Resolve the API key once; without it nothing can be DELETEd, so
-        // fall back to the warn-only manual-cleanup checklist for every
-        // target.
-        let token = resolve_rollback_token(ctx);
-        if token.is_none() {
+        // Without any API key nothing can be DELETEd, so every target falls
+        // back to the warn-only manual-cleanup checklist.
+        if resolve_rollback_token(ctx, None).ok().flatten().is_none() {
             log.warn(
                 "no Cloudsmith API key in the environment (CLOUDSMITH_API_KEY or the entry's \
                  publish token); emitting manual-cleanup checklist instead of DELETE",
@@ -254,6 +282,14 @@ impl anodizer_core::Publisher for CloudsmithPublisher {
                 log.warn(&cloudsmith_manual_cleanup_msg(target));
                 warn_only += 1;
                 continue;
+            };
+            let token = match resolve_rollback_token(ctx, Some((&target.org, &target.repo))) {
+                Ok(token) => token,
+                Err(e) => {
+                    log.warn(&format!("{e:#}; {}", cloudsmith_manual_cleanup_msg(target)));
+                    failed += 1;
+                    continue;
+                }
             };
             let Some(tok) = token.as_deref() else {
                 log.warn(&cloudsmith_manual_cleanup_msg(target));
@@ -366,12 +402,23 @@ impl anodizer_core::Publisher for CloudsmithPublisher {
             if org.trim().is_empty() || repo.trim().is_empty() {
                 continue;
             }
-            let token_env = crate::util::resolve_secret_name(
+            let token_env = match crate::util::resolve_secret_name(
                 ctx,
+                "cloudsmith.secret_name",
                 entry.secret_name.as_deref(),
                 "CLOUDSMITH_TOKEN",
-            );
-            let Some(token) = ctx.env_var(&token_env).filter(|t| !t.is_empty()) else {
+            ) {
+                Ok(name) => name,
+                Err(e) => {
+                    acc = merge(acc, PreflightCheck::Blocker(format!("cloudsmith: {e:#}")));
+                    continue;
+                }
+            };
+            let Some(token) = ctx
+                .env_var(&token_env)
+                .as_deref()
+                .and_then(anodizer_core::git::non_blank_token)
+            else {
                 continue;
             };
             let client = match default_probe_client() {
@@ -419,7 +466,7 @@ impl anodizer_core::Publisher for CloudsmithPublisher {
     }
 
     fn missing_rollback_scope(&self, ctx: &Context) -> Option<&'static str> {
-        if self.retain_on_rollback() || resolve_rollback_token(ctx).is_some() {
+        if self.retain_on_rollback() || resolve_rollback_token(ctx, None).ok().flatten().is_some() {
             return None;
         }
         Self::ROLLBACK_SCOPE

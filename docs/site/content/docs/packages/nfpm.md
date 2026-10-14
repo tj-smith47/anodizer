@@ -16,7 +16,7 @@ Packager — generates deb/rpm/apk/archlinux/termux.deb/ipk packages from Linux 
 ```yaml
 crates:
   - name: myapp
-    nfpm:
+    nfpms:
       - package_name: myapp
         formats: [deb, rpm]
         vendor: "My Company"
@@ -31,7 +31,7 @@ crates:
 ```yaml
 crates:
   - name: myapp
-    nfpm:
+    nfpms:
       - package_name: myapp            # optional; defaults to crate name
         formats: [deb, rpm]            # REQUIRED (>= 1 entry): deb | rpm | apk | archlinux | termux.deb | ipk | msix
                                        #   with no formats entry, this config emits nothing
@@ -126,7 +126,7 @@ authors = ["TJ Smith <tj@jarvispro.io>"]
 ```yaml
 crates:
   - name: myapp
-    nfpm:
+    nfpms:
       - package_name: myapp
         formats: [deb, rpm]
         # vendor omitted -> derived as "TJ Smith"
@@ -141,7 +141,7 @@ Include additional files in the package:
 ```yaml
 crates:
   - name: myapp
-    nfpm:
+    nfpms:
       - package_name: myapp
         formats: [deb, rpm]
         contents:
@@ -157,7 +157,7 @@ crates:
 ```yaml
 crates:
   - name: myapp
-    nfpm:
+    nfpms:
       - package_name: myapp
         formats: [deb]
         scripts:
@@ -176,7 +176,7 @@ matching nfpm section only for the formats you list.
 ```yaml
 crates:
   - name: myapp
-    nfpm:
+    nfpms:
       - package_name: myapp
         formats: [rpm, deb, apk, archlinux, ipk]
         rpm:
@@ -267,7 +267,7 @@ is how a `termux.deb` gets a different list from the `deb`:
 ```yaml
 crates:
   - name: myapp
-    nfpm:
+    nfpms:
       - formats: [deb, termux.deb]
         deb:
           lintian_overrides: ["binary-without-manpage"]
@@ -305,7 +305,7 @@ ends with it. Each package artifact records that extension, so
 ```yaml
 crates:
   - name: myapp
-    nfpm:
+    nfpms:
       - formats: [archlinux]
         file_name_template: "{{ ConventionalFileName }}"
 ```
@@ -328,7 +328,7 @@ filesystem prefix (`/data/data/com.termux/files`):
 ```yaml
 crates:
   - name: myapp
-    nfpm:
+    nfpms:
       - package_name: myapp
         formats: [termux.deb]
         maintainer: "team@example.com"
@@ -369,7 +369,7 @@ environment.
 ```yaml
 crates:
   - name: myapp
-    nfpm:
+    nfpms:
       - package_name: myapp
         formats: [deb, rpm, apk]
         vendor: "My Company"

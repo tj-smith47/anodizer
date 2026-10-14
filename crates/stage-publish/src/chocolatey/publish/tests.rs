@@ -934,10 +934,7 @@ fn resolve_api_key_renders_template_from_config() {
         api_key: Some("{{ MyKey }}".to_string()),
         ..Default::default()
     };
-    assert_eq!(
-        resolve_api_key(&ctx, &cfg, &ctx.logger("publish")).unwrap(),
-        "from-template"
-    );
+    assert_eq!(resolve_api_key(&ctx, &cfg).unwrap(), "from-template");
 }
 
 #[test]
@@ -945,10 +942,7 @@ fn resolve_api_key_falls_back_to_env() {
     let mut ctx = ctx_with_choco(ChocolateyConfig::default());
     ctx.set_env_source(anodizer_core::MapEnvSource::new().with("CHOCOLATEY_API_KEY", "from-env"));
     let cfg = ChocolateyConfig::default();
-    assert_eq!(
-        resolve_api_key(&ctx, &cfg, &ctx.logger("publish")).unwrap(),
-        "from-env"
-    );
+    assert_eq!(resolve_api_key(&ctx, &cfg).unwrap(), "from-env");
 }
 
 /// An `api_key` that renders blank falls through to `CHOCOLATEY_API_KEY`, as the preflight does.
@@ -961,10 +955,25 @@ fn resolve_api_key_falls_through_a_blank_render_to_env() {
         api_key: Some("{{ MyKey }}".to_string()),
         ..Default::default()
     };
-    assert_eq!(
-        resolve_api_key(&ctx, &cfg, &ctx.logger("publish")).unwrap(),
-        "from-env"
+    assert_eq!(resolve_api_key(&ctx, &cfg).unwrap(), "from-env");
+}
+
+/// An `api_key` template that does not render is an error naming the field,
+/// with or without `--strict`, so the template text is never sent as the key.
+#[test]
+fn resolve_api_key_that_does_not_render_is_an_error_without_the_template() {
+    let mut ctx = ctx_with_choco(ChocolateyConfig::default());
+    ctx.set_env_source(anodizer_core::MapEnvSource::new().with("CHOCOLATEY_API_KEY", "from-env"));
+    let cfg = ChocolateyConfig {
+        api_key: Some("key-{{ Undefined }}".to_string()),
+        ..Default::default()
+    };
+    let err = format!("{:#}", resolve_api_key(&ctx, &cfg).unwrap_err());
+    assert!(
+        err.starts_with("chocolatey.api_key does not render"),
+        "{err}"
     );
+    assert!(!err.contains("key-"), "the template text leaked: {err}");
 }
 
 #[test]
@@ -974,11 +983,7 @@ fn resolve_api_key_empty_when_neither_configured_nor_env() {
     // `CHOCOLATEY_API_KEY` from the host shell.
     ctx.set_env_source(anodizer_core::MapEnvSource::new());
     let cfg = ChocolateyConfig::default();
-    assert!(
-        resolve_api_key(&ctx, &cfg, &ctx.logger("publish"))
-            .unwrap()
-            .is_empty()
-    );
+    assert!(resolve_api_key(&ctx, &cfg).unwrap().is_empty());
 }
 
 // -----------------------------------------------------------------

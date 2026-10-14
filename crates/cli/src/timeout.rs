@@ -1,88 +1,19 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
+use anodizer_core::config::{HumanDuration, parse_humantime_duration};
 use anyhow::{Result, bail};
 
-/// Parse a human-readable duration string into a `std::time::Duration`.
-///
-/// Supported units: `h` (hours), `m` (minutes), `s` (seconds).
-/// Compound durations like `2h30m`, `1h30m10s`, or simple ones like `30m` are supported.
-pub fn parse_duration(s: &str) -> Result<Duration> {
-    let s = s.trim();
-    if s.is_empty() {
-        bail!("empty duration string");
-    }
-
-    let mut total_secs: u64 = 0;
-    let mut current_num = String::new();
-    let mut found_any = false;
-
-    for ch in s.chars() {
-        if ch.is_ascii_digit() {
-            current_num.push(ch);
-        } else {
-            if current_num.is_empty() {
-                bail!("invalid duration: expected a number before '{}'", ch);
-            }
-            let n: u64 = current_num
-                .parse()
-                .map_err(|_| anyhow::anyhow!("invalid number in duration: {}", current_num))?;
-            current_num.clear();
-
-            let secs_for_unit = match ch {
-                'h' => n.checked_mul(3600),
-                'm' => n.checked_mul(60),
-                's' => Some(n),
-                _ => bail!("invalid duration unit '{}' (expected h, m, or s)", ch),
-            };
-            let secs = secs_for_unit.ok_or_else(|| {
-                anyhow::anyhow!("duration overflow: {}{} exceeds u64 seconds", n, ch)
-            })?;
-            total_secs = total_secs
-                .checked_add(secs)
-                .ok_or_else(|| anyhow::anyhow!("duration overflow: sum exceeds u64 seconds"))?;
-            found_any = true;
-        }
-    }
-
-    // If there are trailing digits with no unit, that's an error
-    if !current_num.is_empty() {
-        bail!(
-            "invalid duration '{}': number {} has no unit (expected h, m, or s)",
-            s,
-            current_num
-        );
-    }
-
-    if !found_any {
-        bail!("invalid duration '{}'", s);
-    }
-
-    if total_secs == 0 {
+/// Parse a `--timeout` value with the duration grammar every config duration
+/// field uses (`90m`, `3h`, `2d`, `1h30m`, `500ms`, at most one year). A zero
+/// timeout is refused, since it would abort the run before it starts.
+pub fn parse_timeout(s: &str) -> Result<Duration> {
+    let d = parse_humantime_duration(s).map_err(anyhow::Error::msg)?;
+    if d.is_zero() {
         bail!("timeout duration must be greater than zero");
     }
-
-    Ok(Duration::from_secs(total_secs))
-}
-
-/// Format a `Duration` into a human-readable string like `1h30m10s`.
-fn format_duration(d: Duration) -> String {
-    let total = d.as_secs();
-    let h = total / 3600;
-    let m = (total % 3600) / 60;
-    let s = total % 60;
-    let mut out = String::new();
-    if h > 0 {
-        out.push_str(&format!("{}h", h));
-    }
-    if m > 0 {
-        out.push_str(&format!("{}m", m));
-    }
-    if s > 0 || out.is_empty() {
-        out.push_str(&format!("{}s", s));
-    }
-    out
+    Ok(d)
 }
 
 /// Run a closure with a timeout. If the closure does not complete within the
@@ -97,13 +28,11 @@ pub fn run_with_timeout<F>(timeout: Duration, f: F) -> Result<()>
 where
     F: FnOnce() -> Result<()>,
 {
-    let deadline = Instant::now() + timeout;
     let completed = Arc::new(AtomicBool::new(false));
     let completed_clone = completed.clone();
 
     let _watchdog = std::thread::spawn(move || {
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        std::thread::sleep(remaining);
+        std::thread::sleep(timeout);
         if !completed_clone.load(Ordering::SeqCst) {
             // Leading newline separates the abort line from any in-progress
             // stage output. Themed through the shared `Error:` render so the
@@ -113,7 +42,7 @@ where
                 "\n{}",
                 anodizer_core::log::render_error(&format!(
                     "pipeline timed out after {}; aborting. Use --timeout to increase the limit.",
-                    format_duration(timeout)
+                    HumanDuration(timeout).as_humantime_string()
                 ))
             );
             std::process::exit(124);
@@ -125,70 +54,44 @@ where
     result
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn test_parse_duration_seconds() {
-        assert_eq!(parse_duration("5s").unwrap(), Duration::from_secs(5));
-    }
-
-    #[test]
-    fn test_parse_duration_90_seconds() {
-        assert_eq!(parse_duration("90s").unwrap(), Duration::from_secs(90));
-    }
-
-    #[test]
-    fn test_parse_duration_minutes() {
-        assert_eq!(parse_duration("30m").unwrap(), Duration::from_secs(1800));
-    }
-
-    #[test]
-    fn test_parse_duration_hours() {
-        assert_eq!(parse_duration("1h").unwrap(), Duration::from_secs(3600));
-    }
-
-    #[test]
-    fn test_parse_duration_compound_hm() {
-        assert_eq!(parse_duration("2h30m").unwrap(), Duration::from_secs(9000));
-    }
-
-    #[test]
-    fn test_parse_duration_compound_hms() {
+    fn a_timeout_takes_the_config_duration_grammar() {
+        for (v, secs) in [
+            ("5s", 5),
+            ("30m", 1800),
+            ("2h30m", 9000),
+            ("1h30m10s", 5410),
+            ("2d", 172_800),
+            ("1 h 30 m", 5400),
+            ("365d", 31_536_000),
+        ] {
+            assert_eq!(parse_timeout(v).unwrap(), Duration::from_secs(secs), "{v}");
+        }
         assert_eq!(
-            parse_duration("1h30m10s").unwrap(),
-            Duration::from_secs(5410)
+            parse_timeout("1500ms").unwrap(),
+            Duration::from_millis(1500)
         );
     }
 
     #[test]
-    fn test_parse_duration_invalid_no_unit() {
-        assert!(parse_duration("30").is_err());
+    fn a_timeout_past_one_year_is_refused_with_its_value_and_the_cap() {
+        let err = parse_timeout("366d").unwrap_err().to_string();
+        assert_eq!(
+            err,
+            "'366d' is longer than the longest duration anodizer accepts, one year (31536000s)"
+        );
     }
 
     #[test]
-    fn test_parse_duration_invalid_word() {
-        assert!(parse_duration("invalid").is_err());
-    }
-
-    #[test]
-    fn test_parse_duration_empty() {
-        assert!(parse_duration("").is_err());
-    }
-
-    #[test]
-    fn test_parse_duration_invalid_unit() {
-        assert!(parse_duration("5x").is_err());
-    }
-
-    #[test]
-    fn test_parse_duration_zero_rejected() {
-        let err = parse_duration("0s").unwrap_err();
+    fn a_malformed_or_zero_timeout_is_refused() {
+        for v in ["", "30", "invalid", "5x", "1.5h"] {
+            assert!(parse_timeout(v).is_err(), "{v:?}");
+        }
+        let err = parse_timeout("0s").unwrap_err();
         assert!(err.to_string().contains("greater than zero"));
     }
 

@@ -67,8 +67,12 @@ pub(crate) fn publish_to_cloudsmith_into(
             .with_context(|| format!("cloudsmith: failed to render repository '{}'", repo_raw))?;
 
         // Resolve the secret env-var name (default: CLOUDSMITH_TOKEN).
-        let secret_name_rendered =
-            crate::util::resolve_secret_name(ctx, entry.secret_name.as_deref(), "CLOUDSMITH_TOKEN");
+        let secret_name_rendered = crate::util::resolve_secret_name(
+            ctx,
+            "cloudsmith.secret_name",
+            entry.secret_name.as_deref(),
+            "CLOUDSMITH_TOKEN",
+        )?;
 
         // Determine formats filter.
         let formats: Vec<String> = match entry.formats {
@@ -189,7 +193,10 @@ pub(crate) fn publish_to_cloudsmith_into(
                 "(dry-run) would read credentials from {}",
                 secret_name_rendered
             ));
-            log.status(&format!("(dry-run) {} artifacts matched", artifacts.len()));
+            log.status(&format!(
+                "(dry-run) {} matched",
+                anodizer_core::text::count_noun(artifacts.len(), "artifact", "artifacts")
+            ));
             for a in &artifacts {
                 log.status(&format!("(dry-run) {} ({})", a.name(), a.kind));
             }
@@ -198,14 +205,18 @@ pub(crate) fn publish_to_cloudsmith_into(
 
         // --- Live mode ---
         // Resolve token from environment.
-        let token = ctx.env_var(&secret_name_rendered).ok_or_else(|| {
-            anyhow!(
-                "cloudsmith: environment variable '{}' not set (needed for org '{}' repo '{}')",
-                secret_name_rendered,
-                organization,
-                repository
-            )
-        })?;
+        let token = ctx
+            .env_var(&secret_name_rendered)
+            .as_deref()
+            .and_then(anodizer_core::git::non_blank_token)
+            .ok_or_else(|| {
+                anyhow!(
+                    "cloudsmith: environment variable '{}' not set (needed for org '{}' repo '{}')",
+                    secret_name_rendered,
+                    organization,
+                    repository
+                )
+            })?;
 
         if artifacts.is_empty() {
             log.status(&format!(
@@ -219,8 +230,8 @@ pub(crate) fn publish_to_cloudsmith_into(
             .context("cloudsmith: failed to build HTTP client")?;
 
         log.status(&format!(
-            "uploading {} packages to cloudsmith org '{}' repo '{}'",
-            artifacts.len(),
+            "uploading {} to cloudsmith org '{}' repo '{}'",
+            anodizer_core::text::count_noun(artifacts.len(), "package", "packages"),
             organization,
             repository
         ));

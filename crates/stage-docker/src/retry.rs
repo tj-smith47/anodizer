@@ -1,7 +1,7 @@
 use std::sync::OnceLock;
 use std::time::Duration;
 
-use anyhow::{Context as _, Result};
+use anyhow::Result;
 
 use anodizer_core::config::{DockerRetryConfig, RetryConfig};
 
@@ -16,46 +16,17 @@ fn warn_docker_retry_deprecated_once() {
     }
 }
 
-// ---------------------------------------------------------------------------
-// parse_duration_string
-// ---------------------------------------------------------------------------
-
-/// Parse a human-readable duration string into a [`Duration`].
-///
-/// Supported suffixes: `ms` (milliseconds), `s` (seconds), `m` (minutes).
-/// Examples: `"500ms"`, `"1s"`, `"30s"`, `"2m"`.
-///
-/// Returns an error if the string is empty, has an unknown suffix, or contains
-/// a non-numeric prefix.
+/// Parse a `docker.retry` delay with the duration format every config field
+/// uses (`500ms`, `10s`, `2m`, `1h30m`, at most one year), plus the bare
+/// number this deprecated field has always read as seconds (`10` is `10s`).
 pub fn parse_duration_string(s: &str) -> Result<Duration> {
-    let s = s.trim();
-    if s.is_empty() {
-        anyhow::bail!("empty duration string");
-    }
-
-    if let Some(n) = s.strip_suffix("ms") {
-        let millis: u64 = n
-            .parse()
-            .with_context(|| format!("invalid milliseconds in duration '{s}'"))?;
-        Ok(Duration::from_millis(millis))
-    } else if let Some(n) = s.strip_suffix('m') {
-        let mins: u64 = n
-            .parse()
-            .with_context(|| format!("invalid minutes in duration '{s}'"))?;
-        Ok(Duration::from_secs(mins * 60))
-    } else if let Some(n) = s.strip_suffix('s') {
-        let secs: u64 = n
-            .parse()
-            .with_context(|| format!("invalid seconds in duration '{s}'"))?;
-        Ok(Duration::from_secs(secs))
-    } else if let Ok(secs) = s.parse::<u64>() {
-        // Bare number without suffix — treat as seconds
-        Ok(Duration::from_secs(secs))
+    let trimmed = s.trim_matches([' ', '\t']);
+    let parsed = if !trimmed.is_empty() && trimmed.bytes().all(|b| b.is_ascii_digit()) {
+        anodizer_core::config::parse_humantime_duration(&format!("{trimmed}s"))
     } else {
-        anyhow::bail!(
-            "unknown duration suffix in '{s}'; expected ms, s, or m (e.g. '500ms', '1s', '2m')"
-        );
-    }
+        anodizer_core::config::parse_humantime_duration(trimmed)
+    };
+    parsed.map_err(anyhow::Error::msg)
 }
 
 /// Resolve retry parameters with documented precedence.

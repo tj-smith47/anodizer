@@ -45,7 +45,7 @@ crates:
         no_unique_dist_dir: true
 ```
 
-## Using with `--split` / `--merge`
+## `--split` and `--merge`
 
 When using split/merge CI (building on multiple machines), each split job writes to its own dist directory. The merge job reads `context.json` files from all dist subdirectories. If you override `dist`, pass the same value via `--dist` to the merge command:
 

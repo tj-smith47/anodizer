@@ -11,7 +11,7 @@
 //! ```
 //!
 //! Defaults are 10 attempts, a 10s first delay, a 5m cap on each delay and
-//! a 15-minute retry budget per publisher run (`max_elapsed`).
+//! a 15-minute retry budget per publisher run or release run (`max_elapsed`).
 //!
 //! [`RetryConfig::to_policy`] bridges the user-facing type to
 //! [`crate::retry::RetryPolicy`] which is what `retry_sync` / `retry_async`
@@ -52,8 +52,9 @@ pub struct RetryConfig {
     /// deadline: the moment the publisher starts plus this budget. Every
     /// retried request inside that run (an auth exchange, the publish
     /// request, a cleanup) shares that one deadline, and a second publisher
-    /// starts a fresh one. A retry outside any publisher run starts its own
-    /// deadline when it begins.
+    /// starts a fresh one. A GitHub, GitLab or Gitea release run takes its
+    /// deadline once when it starts, shared by its API calls and asset
+    /// uploads. A retry outside both starts its own deadline when it begins.
     ///
     /// Retrying stops before a backoff sleep would pass the deadline, so a
     /// long transient storm fails with the last error, and an idempotent
@@ -187,9 +188,8 @@ max_delay: 1h30m
 
     #[test]
     fn to_policy_max_delay_below_delay_does_not_panic() {
-        // Invalid config (max_delay < delay) is parity-correct passthrough:
-        // every backoff is immediately capped at max_delay. The conversion
-        // emits a tracing::warn! but must not panic.
+        // A max_delay below delay is kept as written, since a config that
+        // loads must not panic at conversion; the warning names the mistake.
         let c = RetryConfig {
             attempts: 3,
             delay: HumanDuration(std::time::Duration::from_secs(10)),
@@ -230,7 +230,6 @@ max_delay: 1h30m
             c.max_elapsed_duration(),
             Some(std::time::Duration::from_secs(15 * 60))
         );
-        // Unspecified fields fall back to defaults.
         assert_eq!(c.attempts, 10);
         assert_eq!(c.delay.duration(), std::time::Duration::from_secs(10));
         assert_eq!(c.max_delay.duration(), std::time::Duration::from_secs(300));

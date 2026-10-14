@@ -9,7 +9,7 @@ Snapshot mode runs the full build and archive pipeline but skips all publishing 
 
 ## Classification
 
-Not applicable — this is a workflow page, not a publisher. Snapshot mode disables every publisher in the pipeline (including Submitters); the only outputs are local artifacts under `dist/`.
+Not applicable — this page describes a workflow and no publisher. Snapshot mode disables every publisher in the pipeline (including Submitters); the only outputs are local artifacts under `dist/`.
 
 ## Minimal config
 
@@ -56,8 +56,8 @@ nix system mapped to a missing asset — passed every local check and only blew
 up later at `cargo binstall` / `nix build` time on a consumer's machine.
 
 The emission-validate stage closes that blindspot. anodizer renders the
-would-be emission in-memory (never mutating source, never cloning, never
-pushing) and cross-checks it against the asset set the run actually produced
+would-be emission in memory (it mutates no source, clones nothing and pushes
+nothing) and cross-checks it against the asset set the run actually produced
 — in snapshot, dry-run, nightly, AND real releases, where a mismatch aborts
 before any publisher ships. A mismatch fails the run loud, naming the crate,
 the emission, and what's wrong:

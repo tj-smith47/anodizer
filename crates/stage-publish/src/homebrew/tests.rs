@@ -3020,22 +3020,23 @@ fn generate_cask_unset_livecheck_emits_default_skip() {
     );
 }
 
-/// A configured cask `livecheck` (github_latest strategy) renders a real
-/// active `livecheck do … end` block, mirroring the formula renderer. The
-/// `url :url` symbol shorthand routes through the shared `render_livecheck`.
+/// A configured cask `livecheck` (github_latest strategy, no `url:`) renders
+/// an active `livecheck do … end` block whose `url` is the cask's own
+/// download URL, `url :url`; Homebrew refuses `url :stable` in a cask.
 #[test]
 fn generate_cask_configured_livecheck_emits_active_block() {
     use anodizer_core::config::HomebrewLivecheck;
-    let body = super::formula::render_livecheck(
+    let body = super::livecheck::render_cask_livecheck(
         Some(&HomebrewLivecheck {
             skip: Some(false),
             skip_reason: None,
             strategy: Some("github_latest".to_string()),
-            url: Some("url".to_string()),
+            url: None,
             regex: None,
         }),
         &test_log(),
-    );
+    )
+    .unwrap();
     assert_eq!(
         body.as_deref(),
         Some("url :url\nstrategy :github_latest"),
@@ -3061,13 +3062,14 @@ fn generate_cask_configured_livecheck_emits_active_block() {
 #[test]
 fn generate_cask_livecheck_skip_false_without_strategy_falls_back_to_skip() {
     use anodizer_core::config::HomebrewLivecheck;
-    let body = super::formula::render_livecheck(
+    let body = super::livecheck::render_cask_livecheck(
         Some(&HomebrewLivecheck {
             skip: Some(false),
             ..Default::default()
         }),
         &test_log(),
-    );
+    )
+    .unwrap();
     let mut params = empty_cask_params("mytool", "1.0.0");
     params.livecheck = body;
     let cask = super::cask::generate_cask(&params).unwrap();
@@ -3122,7 +3124,7 @@ fn generate_cask_from_context_renders_configured_livecheck() {
     assert!(
         result
             .content
-            .contains("livecheck do\n    url :stable\n    strategy :github_latest\n  end"),
+            .contains("livecheck do\n    url :url\n    strategy :github_latest\n  end"),
         "configured livecheck must reach the rendered cask file:\n{}",
         result.content
     );

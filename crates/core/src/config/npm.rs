@@ -57,15 +57,14 @@ pub enum NpmAuthMode {
     /// and emits a loud warning that Trusted Publishing was not exercised.
     #[default]
     Auto,
-    /// Always authenticate with the token (`NPM_TOKEN` / `cfg.token`); never
-    /// attempt OIDC. Errors if no token is available. This is anodizer's
+    /// Authenticate only with the token (`NPM_TOKEN` / `cfg.token`), with no
+    /// OIDC attempt. Errors if no token is available. This is anodizer's
     /// historical behaviour.
     Token,
-    /// Always authenticate with OIDC (Trusted Publishing); never fall back to
-    /// the token. Errors if the OIDC request env is absent. Use when every
-    /// package in this entry has a configured Trusted Publisher and you want a
-    /// failed exchange to fail the release loudly and never fall
-    /// back to a token.
+    /// Authenticate only with OIDC (Trusted Publishing), with no token
+    /// fallback. Errors if the OIDC request env is absent. Use when every
+    /// package in this entry has a configured Trusted Publisher and a failed
+    /// exchange should fail the release loudly.
     Oidc,
 }
 

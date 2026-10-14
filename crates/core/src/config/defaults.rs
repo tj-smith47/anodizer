@@ -50,9 +50,11 @@ use crate::packagers::{InstallScriptConfig, MakeselfConfig, SrpmConfig};
 /// nested blocks field by field; a list field the entry sets keeps its own
 /// list whole. An empty block (`{}`) in a crate inherits every field. A
 /// block or list entry with `skip: true` (or a `skip` string reading `true`
-/// or `1`) takes nothing from defaults; a build's `skip` does not stop the
-/// `builds` merge. A list default with no identity key
-/// matches no entry and is appended, unless the crate's list is empty.
+/// or `1`) takes nothing from defaults, and a list default that shares a
+/// skipped entry's identity key is not appended; a build's `skip` does not
+/// stop the `builds` merge. A list default that matches no entry, including
+/// one with no identity key, is appended to the crate's list; an empty or
+/// absent list gets it as its one entry.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct Defaults {

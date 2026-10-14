@@ -201,10 +201,6 @@ pub(crate) fn write_archive_in_format(
     Ok(())
 }
 
-pub(crate) fn resolve_archive_mtime(ctx: &anodizer_core::context::Context) -> Option<u64> {
-    ctx.resolve_reproducible_mtime()
-}
-
 pub(crate) fn clear_archive_template_vars(ctx: &mut anodizer_core::context::Context) {
     let tvars = ctx.template_vars_mut();
     tvars.set("Os", "");

@@ -30,8 +30,9 @@ pub struct NotarizeConfig {
 #[derive(Debug, Clone, Serialize, Default, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct MacOSSignNotarizeConfig {
-    /// Build IDs whose darwin binaries this entry signs. Default: the
-    /// project name; with no project name, every darwin binary.
+    /// Build IDs whose darwin binaries and universal binaries this entry
+    /// signs. Default: the project name; with no project name, every darwin
+    /// binary.
     pub ids: Option<Vec<String>>,
     /// Skip this entry. Accepts a bool or a template string; a template
     /// skips when it renders `true` or `1`. When absent, the entry runs.
@@ -214,8 +215,9 @@ pub enum MacOSNativeArtifactKind {
 #[derive(Debug, Clone, Serialize, Default, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct MacOSNativeSignNotarizeConfig {
-    /// Build IDs whose artifacts this entry signs and notarizes. Default:
-    /// the project name; with no project name, every matching artifact.
+    /// Build IDs whose darwin artifacts this entry signs and notarizes: app
+    /// bundles and DMGs with `use: dmg`, PKGs with `use: pkg`. Default: the
+    /// project name; with no project name, every matching artifact.
     pub ids: Option<Vec<String>>,
     /// Skip this entry. Accepts a bool or a template string; a template
     /// skips when it renders `true` or `1`. When absent, the entry runs.
@@ -305,10 +307,9 @@ struct ResolvedSkip {
     inverts_enabled: bool,
 }
 
-/// Invert the `enabled:` (opt-in, default false) into anodizer's
-/// canonical `skip:` (opt-out, default false). Both keys may be present;
-/// if they conflict (e.g. `skip: true` AND `enabled: true`), return a
-/// clear error.
+/// Fold the `enabled:` alias into anodizer's canonical `skip:`. With
+/// neither key set the entry runs. Both keys may be present; if they
+/// conflict (e.g. `skip: true` AND `enabled: true`), return a clear error.
 ///
 /// Bool and literal `"true"`/`"false"` `enabled:` values are inverted right
 /// here. A *templated* `enabled:` (e.g. `{{ IsSnapshot }}`) cannot be

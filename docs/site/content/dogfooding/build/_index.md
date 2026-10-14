@@ -1,11 +1,11 @@
 +++
-title = "What anodizer builds"
+title = "Build outputs"
 description = "Artifacts the `anodizer release` pipeline produces: binaries, archives, packages, installers, containers, and signing material."
 weight = 20
 template = "section.html"
 +++
 
-# What anodizer builds
+# Build outputs
 
 Output formats and the `builds[]` / `archives[]` / `dockers_v2[]` / `signs[]`
 keys that drive them. Native binaries for 6 targets ship on every release
@@ -29,26 +29,6 @@ defaults:
     - x86_64-pc-windows-msvc
   cross: auto
 
-# Per-crate (one workspace shown):
-builds:
-  - binary: cfgd
-    mod_timestamp: "{{ CommitTimestamp }}"
-
-archives:
-  - name_template: "{{ ProjectName }}-{{ Version }}-{{ Os }}-{{ Arch }}"
-    formats: [tar.gz]
-    format_overrides:
-      - { os: windows, formats: [zip] }
-    files: [LICENSE, README.md]
-
-universal_binaries:
-  - { name_template: "{{ ProjectName }}", replace: false }
-
-checksum:
-  name_template: "{{ ArtifactName }}.sha256"
-  algorithm: sha256
-  split: true
-
 # Top-level:
 upx:
   - id: default
@@ -56,22 +36,6 @@ upx:
     args: ["--best", "--lzma"]
     targets: [x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu,
               x86_64-apple-darwin, x86_64-pc-windows-msvc]
-
-nfpms:
-  - id: cfgd
-    formats: [deb, rpm, apk]
-    maintainer: "TJ Smith <tj@jarvispro.io>"
-    contents:
-      - { src: LICENSE,   dst: /usr/share/doc/cfgd/LICENSE }
-      - { src: README.md, dst: /usr/share/doc/cfgd/README.md }
-
-# dockers_v2: pushes a multi-arch image index in one step (no separate manifest).
-dockers_v2:
-  - id: cfgd
-    dockerfile: Dockerfile.agent.release
-    images: ["ghcr.io/tj-smith47/cfgd"]
-    tags: ["{{ Version }}", "v{{ Version }}", "latest"]
-    sbom: true
 
 signs:
   - { id: cosign-checksum, artifacts: checksum, cmd: cosign }
@@ -83,6 +47,47 @@ binary_signs:
 
 sboms:
   - { id: default, cmd: syft, artifacts: archive, documents: ["{{ .ProjectName }}-{{ .Version }}.cdx.json"] }
+
+# Per-crate (one workspace shown):
+workspaces:
+  - name: cfgd
+    crates:
+      - name: cfgd
+        path: crates/cfgd
+        builds:
+          - binary: cfgd
+            mod_timestamp: "{{ CommitTimestamp }}"
+
+        archives:
+          - name_template: "{{ ProjectName }}-{{ Version }}-{{ Os }}-{{ Arch }}"
+            formats: [tar.gz]
+            format_overrides:
+              - { os: windows, formats: [zip] }
+            files: [LICENSE, README.md]
+
+        universal_binaries:
+          - { name_template: "{{ ProjectName }}", replace: false }
+
+        checksum:
+          name_template: "{{ ArtifactName }}.sha256"
+          algorithm: sha256
+          split: true
+
+        nfpms:
+          - id: cfgd
+            formats: [deb, rpm, apk]
+            maintainer: "TJ Smith <tj@jarvispro.io>"
+            contents:
+              - { src: LICENSE,   dst: /usr/share/doc/cfgd/LICENSE }
+              - { src: README.md, dst: /usr/share/doc/cfgd/README.md }
+
+        # dockers_v2: pushes a multi-arch image index in one step (no separate manifest).
+        dockers_v2:
+          - id: cfgd
+            dockerfile: Dockerfile.agent.release
+            images: ["ghcr.io/tj-smith47/cfgd"]
+            tags: ["{{ Version }}", "v{{ Version }}", "latest"]
+            sbom: true
 ```
 
 ## Build
@@ -111,7 +116,7 @@ sboms:
 | Key | Status | Notes |
 |---|---|---|
 | `checksum.algorithm` | ✅ Verified | Lockstep. sha256 default → the combined [`anodizer_0.23.0_checksums.txt`](https://github.com/tj-smith47/anodizer/releases/download/v0.23.0/anodizer_0.23.0_checksums.txt). Full list: sha1/224/256/384/512, sha3-*, blake2s/2b, blake3, crc32, md5 |
-| `checksum.split` | ✅ Verified | Per-crate. [cfgd `.anodizer.yaml`](https://github.com/tj-smith47/cfgd/blob/master/.anodizer.yaml) (`checksum.split: true` on the `cfgd` workspace) — [cfgd v0.6.1](https://github.com/tj-smith47/cfgd/releases/tag/v0.6.1) ships a `.sha256` sidecar next to every asset instead of one combined file. anodizer runs the combined mode |
+| `checksum.split` | ✅ Verified | Per-crate. [cfgd `.anodizer.yaml`](https://github.com/tj-smith47/cfgd/blob/master/.anodizer.yaml) (`checksum.split: true` on the `cfgd` workspace) — [cfgd v0.6.1](https://github.com/tj-smith47/cfgd/releases/tag/v0.6.1) ships a `.sha256` sidecar next to every asset. anodizer runs the combined mode |
 
 ## Linux packages
 
@@ -121,7 +126,7 @@ sboms:
 | `.rpm` | ✅ Verified | [`anodizer_0.23.0_linux_amd64.rpm`](https://github.com/tj-smith47/anodizer/releases/download/v0.23.0/anodizer_0.23.0_linux_amd64.rpm) (amd64 + arm64) |
 | `.apk` | ✅ Verified | [`anodizer_0.23.0_linux_amd64.apk`](https://github.com/tj-smith47/anodizer/releases/download/v0.23.0/anodizer_0.23.0_linux_amd64.apk) |
 | `.src.rpm` | ✅ Verified | [`anodizer-0.23.0-1.src.rpm`](https://github.com/tj-smith47/anodizer/releases/download/v0.23.0/anodizer-0.23.0-1.src.rpm) |
-| `.snap` | ⏳ Pending | Dogfooded through 0.9.1: [snapcraft.io/anodizer](https://snapcraft.io/anodizer) serves that revision from 2026-06-13, the newest either project ever published. Current releases don't upload — anodizer execs host cargo/docker/gpg, which needs `classic` confinement, and the Snap Store denied the request, so `snapcrafts[].publish` is `false`. See [Where you install it](../install/) |
+| `.snap` | ⏳ Pending | Dogfooded through 0.9.1: [snapcraft.io/anodizer](https://snapcraft.io/anodizer) serves that revision from 2026-06-13, the newest either project ever published. Current releases don't upload — anodizer execs host cargo/docker/gpg, which needs `classic` confinement, and the Snap Store denied the request, so `snapcrafts[].publish` is `false`. See [Install channels](../install/) |
 | `archlinux`, `ipk`, `termux.deb` | 🤝 Help wanted | nFPM dispatch covered; not shipped live |
 
 | Key | Status | Notes |
@@ -176,10 +181,10 @@ as live release assets (amd64 + arm64).
 | Key | Status | Notes |
 |---|---|---|
 | `signs[]` (cosign, keyless) | ✅ Verified | Single-crate and per-crate. brontes signs its source tarball keyless — Fulcio OIDC, no key secret: [`brontes-0.3.0-source.tar.gz.sig`](https://github.com/tj-smith47/brontes/releases/download/v0.3.0/brontes-0.3.0-source.tar.gz.sig) via [brontes `.anodizer.yaml`](https://github.com/tj-smith47/brontes/blob/master/.anodizer.yaml) (`signs[].if: "{{ not IsSnapshot }}"`); cfgd the same, per checksum sidecar: [cfgd v0.3.5 cosign bundle](https://github.com/tj-smith47/cfgd/releases/download/v0.3.5/cfgd-0.3.5-checksums.txt.cosign.bundle) |
-| `binary_signs[]` / `docker_signs[]` (cosign, keyful) | ✅ Verified | Lockstep. anodizer signs with a stored key, not keyless: `--key=env://COSIGN_KEY` in [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml), with `COSIGN_KEY` / `COSIGN_PASSWORD` supplied by [`release.yml`](https://github.com/tj-smith47/anodizer/blob/v0.23.0/.github/workflows/release.yml) and [`nightly.yml`](https://github.com/tj-smith47/anodizer/blob/master/.github/workflows/nightly.yml). The image half is publicly checkable: [ghcr.io/tj-smith47/anodizer](https://github.com/tj-smith47/anodizer/pkgs/container/anodizer) carries 37 cosign `.sig` tags alongside its image tags |
+| `binary_signs[]` / `docker_signs[]` (cosign, keyful) | ✅ Verified | Lockstep. anodizer signs with a stored key: `--key=env://COSIGN_KEY` in [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml), with `COSIGN_KEY` / `COSIGN_PASSWORD` supplied by [`release.yml`](https://github.com/tj-smith47/anodizer/blob/v0.23.0/.github/workflows/release.yml) and [`nightly.yml`](https://github.com/tj-smith47/anodizer/blob/master/.github/workflows/nightly.yml). The image half is publicly checkable: [ghcr.io/tj-smith47/anodizer](https://github.com/tj-smith47/anodizer/pkgs/container/anodizer) carries 37 cosign `.sig` tags alongside its image tags |
 | `signs[]` (gpg) | ✅ Verified | [`anodizer_0.23.0_checksums.txt.sig`](https://github.com/tj-smith47/anodizer/releases/download/v0.23.0/anodizer_0.23.0_checksums.txt.sig) |
 | `signs[].artifacts` | ✅ Verified | [cfgd `.anodizer.yaml`](https://github.com/tj-smith47/cfgd/blob/master/.anodizer.yaml) (`signs:` declares `artifacts: checksum` and `artifacts: source` slots). The `artifacts: source` selector is proven live by brontes: [`brontes-0.3.0-source.tar.gz.sig`](https://github.com/tj-smith47/brontes/releases/download/v0.3.0/brontes-0.3.0-source.tar.gz.sig) |
 | `docker_signs[].artifacts: manifests` | ✅ Verified | Both shapes wire it: [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (lockstep, one image) and [cfgd `.anodizer.yaml`](https://github.com/tj-smith47/cfgd/blob/master/.anodizer.yaml) (per-crate, three). The signatures are the `.sig` tags sitting beside each image tag on [ghcr.io/tj-smith47/anodizer](https://github.com/tj-smith47/anodizer/pkgs/container/anodizer) |
 | Cosign TUF warm-up lock + warm-cache fast path | ✅ Verified (tests) | [`crates/stage-sign/src/tuf_cache.rs`](https://github.com/tj-smith47/anodizer/blob/master/crates/stage-sign/src/tuf_cache.rs) — keyless cosign's first run initializes its sigstore TUF trust root under a host-level advisory flock so parallel cold starts don't race; a warm cache (go-tuf or sigstore-go layout) skips the serialized first sign entirely. Validated locally by racing 8 parallel keyless `sign-blob` invocations on a warm cache; awaits a live multi-shard release for public proof |
-| `sboms[]` | ✅ Verified | CycloneDX via syft. [`anodizer-0.23.0.cdx.json`](https://github.com/tj-smith47/anodizer/releases/download/v0.23.0/anodizer-0.23.0.cdx.json). `sboms[].artifacts: source` (SBOM over the source tarball instead of build outputs) is proven live by brontes: [`brontes-0.3.0.cdx.json`](https://github.com/tj-smith47/brontes/releases/download/v0.3.0/brontes-0.3.0.cdx.json) |
+| `sboms[]` | ✅ Verified | CycloneDX via syft. [`anodizer-0.23.0.cdx.json`](https://github.com/tj-smith47/anodizer/releases/download/v0.23.0/anodizer-0.23.0.cdx.json). `sboms[].artifacts: source` (SBOM over the source tarball) is proven live by brontes: [`brontes-0.3.0.cdx.json`](https://github.com/tj-smith47/brontes/releases/download/v0.3.0/brontes-0.3.0.cdx.json) |
 | `${artifact}` / `${document}` substitution | ✅ Verified | [`crates/stage-sbom/src/stage.rs`](https://github.com/tj-smith47/anodizer/blob/master/crates/stage-sbom/src/stage.rs) (`$artifact`, `$artifactID`, `$document`, `$document<N>` substitution into the SBOM tool's argv) |

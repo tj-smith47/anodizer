@@ -1,5 +1,6 @@
-//! Every ```yaml block on every docs page and README is a config a reader
-//! can copy: it loads through `anodizer check config` as written.
+//! Every ```yaml block on every page of the docs site and every README is a
+//! config a reader can copy: it loads through `anodizer check config` as
+//! written.
 //!
 //! Two kinds of block are not a whole config, and each says so on the page
 //! (`CONTRIBUTING.md` holds the convention):
@@ -13,7 +14,7 @@
 //! hides a block that could be checked.
 
 use anodizer_core::test_helpers::docs_pages::{
-    FencedBlock, docs_dir, docs_pages, fenced_blocks, readme_pages, repo_root,
+    FencedBlock, docs_dir, docs_pages, fenced_blocks, other_site_pages, readme_pages, repo_root,
 };
 use anodizer_core::test_helpers::scripted_responder::{ScriptedRoute, spawn_scripted_responder};
 use serde_yaml_ng::Value;
@@ -63,6 +64,7 @@ fn yaml_blocks() -> (Vec<Job>, Vec<String>) {
     });
     let readmes = readme_pages()
         .into_iter()
+        .chain(other_site_pages())
         .map(|page| (repo_root().join(&page), page.display().to_string()));
     for (path, name) in site.chain(readmes) {
         let text = std::fs::read_to_string(&path).unwrap();

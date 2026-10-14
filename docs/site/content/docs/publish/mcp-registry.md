@@ -199,7 +199,7 @@ jobs:
 
 Anodizer reads the OIDC request URL and token from the standard GHA env vars, requests an id-token scoped to the registry's audience, exchanges it for a short-lived registry bearer, and publishes.
 
-This works on **both GitHub-hosted and self-hosted runners**. The registry verifies repository ownership — issuer, audience, and the token's `repository_owner` claim — not the runner environment. Unlike [npm provenance](./npm.md), which rejects a `self-hosted` runner-environment claim, MCP publishing needs no separate github-hosted job.
+This works on **both GitHub-hosted and self-hosted runners**. The registry verifies repository ownership — issuer, audience, and the token's `repository_owner` claim — and does not check the runner environment. Unlike [npm provenance](./npm.md), which rejects a `self-hosted` runner-environment claim, MCP publishing needs no separate github-hosted job.
 
 ## Common gotchas
 
@@ -239,7 +239,7 @@ mcp:
 All fields support Tera templates. The whole `repository` block is optional:
 when omitted, anodizer derives `url` and `source` from the `origin` git remote.
 Derivation is GitHub-only — a non-GitHub remote (self-hosted, GitLab) is left
-for you to supply rather than forced to a wrong `source`. A user-set
+for you to supply, so no wrong `source` is filled in. A user-set
 `repository` always wins.
 
 ### Packages
@@ -343,6 +343,6 @@ Tera templates are evaluated on these fields before publish: `name`, `title`, `d
 
 `anodizer release --dry-run` renders the full manifest and logs the intended POST without contacting the registry, useful for verifying the package list and transport fields before a real publish.
 
-## Migrating from GoReleaser
+## Migration from GoReleaser
 
 The top-level YAML key is identical (`mcp:` in both). GoReleaser's deprecated nested `mcp.github:` block (from older configs) collapses to top-level `mcp.*` fields in anodizer — write top-level fields directly. See the [GoReleaser migration guide](@/migration/goreleaser.md) for the full mapping.

@@ -29,7 +29,7 @@ notarize:
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `ids` | list | project name | Build IDs to filter |
+| `ids` | list | project name | Build IDs whose darwin binaries and universal binaries this entry signs. With no project name, every darwin binary. |
 | `skip` | string/bool | `false` | Skip this config. An entry with no `skip` runs. A template skips when it renders `true` or `1`, trimmed and in any letter case. `enabled:` is accepted as an inverted alias (`enabled: true` is `skip: false`); see [The `enabled` alias](#the-enabled-alias) for how its value is read. |
 
 #### Sign config (`sign`)
@@ -73,7 +73,7 @@ notarize:
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `ids` | list | project name | Build IDs to filter |
+| `ids` | list | project name | Build IDs whose darwin artifacts this entry signs and notarizes: app bundles and DMGs with `use: dmg`, PKGs with `use: pkg`. With no project name, every matching artifact. |
 | `skip` | string/bool | `false` | Skip this config. An entry with no `skip` runs. A template skips when it renders `true` or `1`, trimmed and in any letter case. `enabled:` is accepted as an inverted alias; see [The `enabled` alias](#the-enabled-alias). |
 | `use` | string | `dmg` | Artifact type to sign: `"dmg"` or `"pkg"` |
 
@@ -95,14 +95,15 @@ Native mode always notarizes: an entry with no `notarize` block, or with no
 |-------|------|---------|-------------|
 | `profile_name` | string | none | `notarytool` stored credentials profile name (template). Required. |
 | `wait` | bool | `false` | Whether to wait for notarization to complete. Stapling runs only when this is `true`. |
-| `timeout` | string | `10m` | Timeout for `xcrun notarytool submit --timeout` (template) |
+| `timeout` | string | `10m` | Duration passed to `xcrun notarytool submit --timeout` (for example `30m`). Read as written; it is not a template. |
 
 ## Behavior
 
 - Every `macos` or `macos_native` entry runs unless its `skip` is truthy (or its `enabled` is falsy). A top-level `notarize.skip` turns off the whole stage.
 - `macos` and `macos_native` cannot both hold entries: they sign the same binaries with different tools, so the stage fails before signing anything when both are set.
 - Each entry needs a `sign` block. Cross-platform mode requires `sign.certificate`; native mode requires `sign.identity` and a `notarize` block with `profile_name`.
-- When `ids` matches no darwin binary, the stage prints a warning and moves on; under `--strict` it fails.
+- When `ids` matches nothing, the stage prints a warning and moves on; under `--strict` it fails. Cross-platform mode matches darwin binaries and universal binaries. Native mode matches app bundles and DMGs with `use: dmg`, and PKGs with `use: pkg`.
+- With `use: dmg`, app bundles that were signed while no DMG matched print a warning, and fail under `--strict`, because nothing is sent for notarization.
 - After signing, SHA-256 checksums are refreshed for every signed darwin binary, universal binary, DMG and PKG
 - Notarization status is differentiated: accepted, invalid, rejected, and timeout
 - Timeouts are treated as non-fatal (the submission may still be processing)

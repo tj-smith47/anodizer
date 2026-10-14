@@ -28,7 +28,7 @@ Pick exactly one installation path. Defaults to downloading the latest released 
 | Input | Default | Description |
 |-------|---------|-------------|
 | `version` | `latest` | Anodizer version to install from GitHub releases (e.g. `v0.1.1`, `latest`). Ignored when `from-artifact`, `from-source`, or `from-branch` is set. |
-| `from-artifact` | | Artifact name to download instead of a release binary (e.g. `anodizer-linux`). Pair with `artifact-run-id` for cross-workflow downloads. |
+| `from-artifact` | | Workflow artifact to install anodizer from (e.g. `anodizer-linux`); no release binary is downloaded. Pair with `artifact-run-id` for cross-workflow downloads. |
 | `artifact-run-id` | | Workflow run ID for the artifact. Use `auto` to automatically resolve the latest successful run of `artifact-workflow` for the current commit. Use a numeric ID for explicit control. Omit to download from the current workflow run. |
 | `artifact-workflow` | `ci.yml` | Workflow filename to search when `artifact-run-id` is `auto`. Ignored otherwise. |
 | `from-source` | `false` | Build anodizer from source in the current workdir (bootstrap mode). Requires a Rust toolchain — combine with `install-rust: true` if needed. Useful when `from-artifact` covers one platform and the current runner needs a platform-native binary. |
@@ -51,7 +51,7 @@ Signing keys are passed via inputs (never env vars that echo into logs).
 | Input | Default | Description |
 |-------|---------|-------------|
 | `gpg-private-key` | | GPG private key contents. Imported via `gpg --batch --import`. Pair with `GPG_FINGERPRINT` in the env to tell anodizer which key to sign with. |
-| `apk-private-key` | `""` | PEM-format RSA private key for signing apk packages produced by nfpm. Required when `.anodizer.yaml` configures `nfpm[].apk.signature` (apk uses RSA-PSS, not OpenPGP — the `gpg-private-key` does NOT work here). The action writes the key to a temp file with mode `0600`, exports the path as `APK_PRIVATE_KEY_PATH`, derives the public key, and copies it into `./dist/` as `<repo>-apk-signing-key.rsa.pub` so consumers can attach it via `release.extra_files`. apk verifiers install that pubkey under `/etc/apk/keys/` before `apk add`-ing a signed package. |
+| `apk-private-key` | `""` | PEM-format RSA private key for signing apk packages produced by nfpm. Required when `.anodizer.yaml` configures `nfpms[].apk.signature` (apk signing uses RSA-PSS, so the `gpg-private-key` does NOT work here). The action writes the key to a temp file with mode `0600`, exports the path as `APK_PRIVATE_KEY_PATH`, derives the public key, and copies it into `./dist/` as `<repo>-apk-signing-key.rsa.pub` so consumers can attach it via `release.extra_files`. apk verifiers install that pubkey under `/etc/apk/keys/` before `apk add`-ing a signed package. |
 | `cosign-key` | | Cosign private key contents. Written to `cosign.key` in the workdir with mode `0600`. Pair with `COSIGN_PASSWORD` in the env. |
 
 ### Docker setup
@@ -80,7 +80,7 @@ When a tag-triggered workflow runs, the action can resolve the triggering tag to
 | Input | Default | Description |
 |-------|---------|-------------|
 | `resolve-workspace` | `false` | Run `anodizer resolve-tag $GITHUB_REF_NAME` and expose the result as the `workspace`, `crate-path`, and `has-builds` outputs. Fails the workflow if no crate matches the tag. |
-| `determinism-crate` | | When set alongside `determinism: true`, runs the harness scoped to a single crate (e.g. `core`). Use this as the matrix dimension in Strategy C1/C-hybrid to shard determinism checks per crate rather than running all crates in each shard. |
+| `determinism-crate` | | When set alongside `determinism: true`, runs the harness scoped to a single crate (e.g. `core`). Use this as the matrix dimension in Strategy C1/C-hybrid to give each shard the determinism check of one crate. |
 
 ### Determinism Harness
 
@@ -258,7 +258,7 @@ Note: `resolve-workspace: true` runs `anodizer resolve-tag` and exposes the crat
 
 The action's built-in `upload-dist` / `download-dist` replaces the manual `actions/upload-artifact` + `actions/download-artifact` pair for split builds.
 
-> If your release path already runs `anodizer check determinism`, the [`preserve-dist` + `release --publish-only`](@/docs/advanced/determinism.md) pattern is strictly better — it reuses the harness's byte-stable dist instead of compiling everything a second time in a separate matrix.
+> If your release path already runs `anodizer check determinism`, the [`preserve-dist` + `release --publish-only`](@/docs/advanced/determinism.md) pattern is strictly better — it reuses the harness's byte-stable dist, so nothing compiles a second time in a separate matrix.
 
 ```yaml
 # not an anodizer config
@@ -300,9 +300,9 @@ jobs:
           COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
 ```
 
-### Reuse a CI-built binary across workflows
+### CI-built binary reuse across workflows
 
-When your `ci.yml` builds and uploads the anodizer binary once per commit, downstream release workflows can reuse it instead of reinstalling.
+When your `ci.yml` builds and uploads the anodizer binary once per commit, downstream release workflows can reuse it with no reinstall.
 
 ```yaml
 # not an anodizer config
@@ -367,7 +367,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 ```
 
-### Install only, run anodizer yourself
+### Install-only mode
 
 ```yaml
 # not an anodizer config
@@ -379,7 +379,7 @@ jobs:
 - run: anodizer resolve-tag v1.2.3 --json
 ```
 
-### Test an un-released branch of anodizer
+### Unreleased anodizer branch
 
 For integration testing a downstream project against an in-flight anodizer PR — or dogfooding a feature branch before it arrives — use `from-branch`. The action shallow-clones `tj-smith47/anodizer` at the branch you name, builds it from source, and puts it on `PATH`:
 
@@ -420,10 +420,10 @@ runs them exactly once:
 - `release --publish-only` — every publisher reconciles against its own
   upstream before dispatching and skips itself when this exact version is
   already published there (PR-based publishers included: homebrew, scoop, nix,
-  krew, MCP each look for an already-open PR and skip rather than open a
-  duplicate), so a manual re-run of the identical command is always safe.
-  The action still avoids an automatic in-step retry so a real failure
-  appears on its own attempt rather than being masked by a silent retry.
+  krew, MCP each look for an already-open PR and skip when they find
+  one), so a manual re-run of the identical command is always safe.
+  The action still avoids an automatic in-step retry so each real
+  failure shows up on its own attempt.
 - `tag rollback` — already a recovery primitive; retrying would re-attempt
   remote tag deletes (which 404 the second time) and re-push the revert
   (which would fail with "Everything up-to-date" or a non-fast-forward

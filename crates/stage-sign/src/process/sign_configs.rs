@@ -723,8 +723,8 @@ pub(crate) fn process_sign_configs(
 
         if !sign_jobs.is_empty() {
             log.status(&format!(
-                "signing {} artifacts with parallelism={}",
-                sign_jobs.len(),
+                "signing {} with parallelism={}",
+                anodizer_core::text::count_noun(sign_jobs.len(), "artifact", "artifacts"),
                 effective_parallelism
             ));
         }
@@ -820,7 +820,12 @@ pub(crate) fn inject_gpg_faked_system_time(cmd: &str, args: &mut Vec<String>, en
     if !anodizer_core::signing::is_gpg_command(cmd) {
         return;
     }
-    let Some(sde) = env.var("SOURCE_DATE_EPOCH") else {
+    // A malformed source date cannot reach here: setting up the context
+    // already refused it.
+    let Some(sde) = anodizer_core::sde::ambient_epoch_with_env(env)
+        .ok()
+        .flatten()
+    else {
         return;
     };
     if args

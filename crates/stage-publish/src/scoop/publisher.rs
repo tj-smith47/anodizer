@@ -112,11 +112,11 @@ pub(crate) fn build_scoop_reconcile_target(
     );
     let manifest_name_raw = scoop_cfg.name.as_deref().unwrap_or(crate_name);
     let package = util::render_or_warn(ctx, log, "scoop.name", manifest_name_raw)?;
-    let token = crate::util::resolve_repo_token(
+    let token = crate::util::resolve_pr_token(
         ctx,
         scoop_cfg.repository.as_ref(),
         Some("SCOOP_BUCKET_TOKEN"),
-    );
+    )?;
     let version = ctx.version();
     Ok(Some(crate::util::PrReconcileTarget {
         publisher: ScoopPublisher::PUBLISHER_NAME.into(),
@@ -313,9 +313,16 @@ impl anodizer_core::Publisher for ScoopPublisher {
     ) -> anyhow::Result<()> {
         let targets = decode_scoop_targets(&evidence.extra);
         let unique = dedup_scoop_targets(&targets);
+        let repos: Vec<_> = ctx
+            .config
+            .crate_universe()
+            .into_iter()
+            .filter_map(|c| c.publish.as_ref()?.scoop.as_ref()?.repository.as_ref())
+            .collect();
         util::run_token_revert_rollback(
             ctx,
             &unique,
+            &repos,
             "scoop",
             "SCOOP_BUCKET_TOKEN",
             "bucket clone targets",
@@ -333,6 +340,7 @@ impl anodizer_core::Publisher for ScoopPublisher {
             ctx,
             &policy,
             "SCOOP_BUCKET_TOKEN",
+            None,
             active_scoop_configs(ctx).into_iter(),
             |_s| true,
             |s| s.repository.as_ref(),

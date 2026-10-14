@@ -87,7 +87,7 @@ of their own, so before this selection surface the only way to gate them was per
 config — now they honor `--skip`/`--publishers` uniformly at dispatch time.
 
 The last five names — `blob`, `snapcraft-publish`, `docker`, `docker-sign`, `announce` —
-are publish **stages** rather than dispatch publishers, but each performs an external,
+are publish **stages** outside the publisher dispatch, but each performs an external,
 irreversible push (an object store, the Snap Store, an image registry, registry
 signatures, or — for `announce` — broadcasts to webhooks/Slack/Twitter/Mastodon/Bluesky).
 They are therefore governed by the same selectors: `--publishers cargo` deselects them, and
@@ -98,9 +98,10 @@ GitHub/GitLab/Gitea release: it is the substrate every other publisher depends o
 (manifests reference its assets; announce needs the release URL), so it is governed by
 `--skip=release` only and is never dropped by a `--publishers` allowlist.
 
-### Canonical names: `homebrew`, not `brew`; `chocolatey`, not `choco`
+### Canonical names
 
-The selection vocabulary uses each publisher's full name. The short forms are rejected
+The selection vocabulary uses each publisher's full name (`homebrew`, `chocolatey`). The
+short forms (`brew`, `choco`) are rejected
 with a loud error so a typo can never silently widen or narrow a release:
 
 ```bash
@@ -130,16 +131,27 @@ An `aarch64-apple-ios` build in your target list is fine — it still builds and
 uploads as a release asset. It is simply **not** folded into a Homebrew cask or
 an npm package, because those installers would target the wrong OS.
 
-### No eligible archive is a hard error, never a silent skip
+### No eligible archive
 
-If a configured install aggregator finds **no** archive it can install, anodizer
-**fails the release** rather than emitting an empty or wrong-OS artifact:
+If a configured install aggregator finds **no** archive it can install, it
+fails with an error naming the crate and its filters, and emits no empty or
+wrong-OS artifact. The [pre-publish validation](./validation.md) renders the
+aur, homebrew, nix, krew, scoop, winget and chocolatey outputs after the build,
+so for those the error stops the release before any publisher runs. npm fails
+at its own publish step, which fails the release while npm is `required` (the
+default):
 
 ```bash
 $ anodizer release
 ...
        Error aur: no linux archives matched filters for 'myapp' — PKGBUILD would have placeholder URL and empty sha256. Check your archive configuration and aur filters (ids=<none>, amd64_variant=<default v1>, arm_variant=7 [hardcoded]). At least one linux Archive artifact must match.
 ```
+
+A top-level `homebrew_casks` entry is the one exception: when the run built no
+macOS artifact at all, the cask is skipped with
+`skipped cask '<name>' — no macOS artifact in scope (not applicable)`. When
+other macOS artifacts exist but the entry's `ids:` match none of them, it
+fails like the others.
 
 This closes a failure-hiding gap where a misconfigured build (say, an `aur`
 block with only macOS targets configured) would otherwise ship an installable
@@ -150,7 +162,7 @@ is per-shard — see [Artifact validation](./validation.md) and
 
 ## Worked examples
 
-### Publish a single channel from a finished build
+### Single channel from a finished build
 
 `anodizer publish` reuses artifacts already in `dist/` and runs only the publish
 pipeline. Pair it with `--publishers` to release one channel without re-running the rest:
@@ -187,8 +199,8 @@ $ anodizer release --publishers cargo,homebrew
 A deselected publisher is never silent. anodizer emits the deselect line at
 two points in the run — **in-flight** (as the publish pipeline reaches the
 publisher) and again in the **publish summary** — with the **same**
-distinguished wording at both. The two outputs differ only in *phase*, not in
-text: both come from the one `deselected_reason` source, so they always name
+distinguished wording at both. The two outputs differ only in *phase* and carry the
+same text: both come from the one `deselected_reason` source, so they always name
 the same cause.
 
 | Wording (both phases) | When it applies |
@@ -203,7 +215,7 @@ publisher, `--skip` wins and the line reports the denylist cause.
 The five publish **stages** (`blob`, `snapcraft-publish`, `docker`,
 `docker-sign`, `announce`) run outside the dispatch loop, so a deselected one
 emits a single line at its stage — `skipped blob — not in --publishers
-allowlist` / `skipped docker — excluded via --skip` — rather than the
+allowlist` / `skipped docker — excluded via --skip` — and no
 in-flight-plus-summary pair. The wording is identical, so you still see exactly
 which selector turned it off.
 
@@ -226,7 +238,7 @@ $ anodizer release --publishers cargo
 
 `check config --publishers <names>` validates the selection against the **configured**
 publishers without running anything. Naming a publisher you forgot to configure is an
-error, so you catch a selection mistake before tag time rather than at release time:
+error, so you catch a selection mistake before tag time:
 
 ```bash
 $ anodizer check config --publishers cargo
@@ -244,7 +256,7 @@ $ anodizer check config --publishers crates
        Error 1 invalid --publishers value: crates. Valid publishers: cargo, …
 ```
 
-## Typos fail loud — one-way-door safety
+## Typo safety
 
 Several publishers push to one-way-door registries (crates.io, Cloudsmith, Chocolatey,
 winget, AUR). A misread selection must never quietly publish nothing or everything, so

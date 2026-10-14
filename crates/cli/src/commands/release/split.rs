@@ -318,9 +318,9 @@ pub(super) fn run_split(
         std::fs::write(&matrix_path, &matrix_json)
             .with_context(|| format!("write matrix to {}", matrix_path.display()))?;
         log.status(&format!(
-            "wrote matrix to {} ({} entries, split by {})",
+            "wrote matrix to {} ({}, split by {})",
             matrix_path.display(),
-            matrix.include.len(),
+            anodizer_core::text::count_noun(matrix.include.len(), "entry", "entries"),
             split_by
         ));
     }

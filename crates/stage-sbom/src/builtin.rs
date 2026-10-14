@@ -48,8 +48,8 @@ pub fn parse_cargo_lock(content: &str) -> Result<Vec<CargoPackage>> {
 ///
 /// `timestamp` is embedded in `metadata.timestamp` and must be supplied by the
 /// caller so that repeated pipeline runs (e.g. anodizer-action retries) emit
-/// byte-identical output. Callers should derive it from `ctx.template_vars()`
-/// (`CommitDate`) so the value is tied to the release tag, not wall-clock.
+/// byte-identical output. Callers derive it from
+/// `Context::reproducible_epoch`, the run's one reproducible date.
 pub fn generate_cyclonedx(
     project_name: &str,
     version: &str,

@@ -231,7 +231,7 @@ pub(super) fn resolve_docker_configs(
         ..Default::default()
     };
     let mut ctx = anodizer_core::context::Context::new(cfg.clone(), opts);
-    ctx.populate_time_vars();
+    ctx.populate_time_vars()?;
     ctx.populate_runtime_vars();
     ctx.populate_metadata_var()?;
     crate::commands::helpers::setup_env(&mut ctx, cfg, log)?;

@@ -156,7 +156,7 @@ pub(crate) fn aur_clone_repo(
         // literal template text is written to the key file and ssh fails
         // with "error in libcrypto".
         let rendered_key = match aur_cfg.private_key.as_deref() {
-            Some(pk) => Some(util::render_or_warn(ctx, log, "aur.private_key", pk)?),
+            Some(pk) => Some(util::render_secret(ctx, "aur.private_key", pk)?),
             None => None,
         };
         let rendered_ssh = match aur_cfg.git_ssh_command.as_deref() {

@@ -233,32 +233,31 @@ pub(crate) fn run_post_publish_pollers(ctx: &mut Context, selected: &[String], l
         match poll_cfg {
             None => skipped.push((ord, "winget", pkg_id, version.clone())),
             Some(poll_cfg) => {
-                // Render a configured `repository.token` before use — a
-                // templated `{{ .Env.GH_PAT }}` must become the resolved
-                // credential, not the literal template string, for the poll's
-                // GitHub API auth.
-                let explicit = cfg
-                    .repository
-                    .as_ref()
-                    .and_then(|r| r.token.as_deref())
-                    .and_then(|t| match ctx.render_template(t) {
-                        Ok(rendered) => Some(rendered),
-                        // On render failure, drop to the env fallback rather than
-                        // feeding the raw `{{...}}` template as a literal bearer
-                        // token (which would yield an opaque poll auth-failure).
-                        Err(e) => {
-                            ctx.logger("publish").warn(&format!(
-                                "winget post-publish poll: could not render repository.token template ({e}); using environment token"
-                            ));
-                            None
-                        }
-                    });
-                // Canonical resolver: empty-filters the rendered token AND the
-                // env fallbacks (a missing-secret `""` must not be the token).
-                let token = anodizer_core::git::resolve_github_token_with_env(
-                    explicit.as_deref(),
-                    &|key| ctx.env_var(key),
-                );
+                // The pull request was opened with this token, so the poll
+                // finds it with the same one. A token that does not render is
+                // an `Error` row: the literal template is never a bearer.
+                let token = match crate::util::resolve_pr_token(
+                    ctx,
+                    cfg.repository.as_ref(),
+                    Some("WINGET_PKGS_TOKEN"),
+                ) {
+                    Ok(token) => token,
+                    Err(e) => {
+                        errors.push((
+                            ord,
+                            post_publish::PostPublishResult {
+                                publisher: "winget".to_string(),
+                                package: pkg_id,
+                                version: version.clone(),
+                                status: post_publish::PostPublishStatus::Error {
+                                    reason: format!("{e:#}"),
+                                },
+                            },
+                        ));
+                        ord += 1;
+                        continue;
+                    }
+                };
                 // Poll the same upstream the publisher submitted its PR to,
                 // and drop the in:title precision when a custom template
                 // makes the PR title unpredictable — mirroring the burn

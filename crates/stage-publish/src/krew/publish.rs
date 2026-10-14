@@ -89,7 +89,11 @@ pub fn publish_to_krew(
         log,
         "krew",
         crate_name,
-        crate::publisher_helpers::pr_token_before_push(ctx, krew_cfg.repository.as_ref()),
+        crate::publisher_helpers::pr_token_before_push(
+            ctx,
+            krew_cfg.repository.as_ref(),
+            "KREW_INDEX_TOKEN",
+        ),
     )?
     else {
         return Ok(KrewPublishOutcome::skipped());
@@ -133,7 +137,7 @@ pub fn publish_to_krew(
 
     // Clone the krew-index fork, write the plugin manifest, commit, push.
     let token =
-        util::resolve_repo_token(ctx, krew_cfg.repository.as_ref(), Some("KREW_INDEX_TOKEN"));
+        util::resolve_repo_token(ctx, krew_cfg.repository.as_ref(), Some("KREW_INDEX_TOKEN"))?;
 
     // A plugin already in krew-index takes the self-contained webhook
     // flow: anodizer POSTs the rendered manifest + tag to the hosted bot,

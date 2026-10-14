@@ -35,12 +35,15 @@ rebuilds of the same commit at the same anodizer version. Exceptions live on
 a documented allow-list. Allow-listed artifacts carry an opt-out reason that
 consumers can audit.
 
-The mechanism is `SOURCE_DATE_EPOCH` (SDE). The pipeline computes the value
-once at start-up, defaulting to the release commit's timestamp, and exports
-it into every subprocess. Stages that emit timestamps consume SDE directly
-(native CycloneDX SBOM, `tar`/`zip` writers, cosign 2.0+ signatures) or
-through a tool flag (`gpg --faked-system-time`, BuildKit reproducible
-flags).
+The mechanism is `SOURCE_DATE_EPOCH` (SDE). A run resolves one source date:
+the `SOURCE_DATE_EPOCH` (or `ANODIZE_SOURCE_DATE_EPOCH`) the environment
+sets, otherwise the HEAD commit's committer time. The full rules, including
+how an empty or malformed value is read, are on
+[Reproducible Builds](./reproducible-builds.md#the-source-date). The
+determinism harness exports its value into every rebuild's environment.
+Stages that emit timestamps consume SDE directly (native CycloneDX SBOM,
+`tar`/`zip` writers, cosign 2.0+ signatures) or through a tool flag
+(`gpg --faked-system-time`, BuildKit reproducible flags).
 
 Every per-publisher receipt (`PublishEvidence`) carries a
 `nondeterministic: Option<String>` field. `None` means byte-stable;
@@ -58,7 +61,7 @@ disable drift detection — the opposite of the harness's job.)
 
 The allow-list is seeded in
 [`crates/core/src/determinism.rs::seed_from_commit`](https://github.com/tj-smith47/anodizer/blob/master/crates/core/src/determinism.rs).
-The installer formats below are **gated, not allow-listed** — each is
+The installer formats below are **gated**, and none is on the allow-list. Each is
 byte-identical across two builds at a fixed SDE (the value the harness
 exports), proven by the cited test:
 
@@ -77,7 +80,7 @@ non-determinism, excluded from `drift_count`):
 |---|---|
 | `*.msi` | WiX candle/light embeds a non-pinnable build timestamp in the MSI summary-information stream; pending proof by `msi_is_byte_reproducible_across_time` on the windows determinism shard |
 | `*.dmg` | `hdiutil` writes a wall-clock volume creation date the macOS host will not pin to SDE; pending proof by `dmg_is_byte_reproducible_across_time` on the macos determinism shard |
-| `*.pkg` (macOS-host only) | the macOS-native `pkgbuild` path is not yet proven reproducible; pending proof by `native_pkgbuild_pkg_is_byte_reproducible_across_time` on the macos shard. **Host-keyed**: on a Linux host the `.pkg` is the proven xar path above and is gated, never allow-listed |
+| `*.pkg` (macOS-host only) | the macOS-native `pkgbuild` path is not yet proven reproducible; pending proof by `native_pkgbuild_pkg_is_byte_reproducible_across_time` on the macos shard. **Host-keyed**: on a Linux host the `.pkg` is the proven xar path above and is gated, with no allow-list entry |
 | `*.flatpak` | `flatpak build-bundle` wraps an OSTree commit whose metadata (commit object timestamp + per-object headers) is not byte-stable even at a fixed SDE; empirically confirmed non-reproducible via two-build `cmp` |
 | `*.cdx.json` / `*.spdx.json` / `*.sbom.json` | SBOMs carry a spec-mandated per-document unique id (CycloneDX `serialNumber` UUID / SPDX `documentNamespace` UUID) plus a generation timestamp syft does not pin to SDE |
 | `artifacts.json` | the dist manifest aggregates every artifact's size+digest (including allow-listed non-deterministic SBOMs); a derivative signal — each indexed artifact is drift-checked independently |
@@ -93,8 +96,7 @@ signatures. These artifacts mutate inside side-effect stages
 by virtue of being skipped during determinism rebuilds; the harness
 never diffs them. NSIS `.exe` files only appear on Windows/Wine runs,
 where operators can use the runtime `--allow-nondeterministic
-<name>=<reason>` flag rather than baking in a dead compile-time
-sentinel. The Docker stage's only `dist/` output is a `.digest` text
+<name>=<reason>` flag, so no compile-time entry is kept for them. The Docker stage's only `dist/` output is a `.digest` text
 file (content-addressable sha256), which is byte-stable without
 allow-listing.
 
@@ -144,7 +146,7 @@ Each run executes inside a freshly-constructed environment:
 | `RUSTFLAGS` | `--remap-path-prefix=<worktree>=/anodizer` is appended (plus `<cargo_home>=/cargo` and `<cargo_target>=/target`) so absolute paths don't leak into the binary. Host-supplied RUSTFLAGS are preserved. |
 | `CARGO_TARGET_<MSVC_TRIPLE>_RUSTFLAGS` | Injects MSVC determinism flags (`/Brepro`, `/OPT:NOICF`, `/INCREMENTAL:NO`, `/DEBUG:NONE`, `-C strip=symbols`, `-C codegen-units=1`) for the two `*-pc-windows-msvc` targets. On Windows, also appended to global `RUSTFLAGS` so the host build (e.g. a `before:` hook's `cargo run`) is reproducible too. |
 | Linux / macOS env | Everything else stripped except an identity-only allow-list: `CI`, `RUSTUP_HOME`, plus the named identity vars `GITHUB_REPOSITORY`, `GITHUB_SHA`, `GITHUB_REF`, `GITHUB_REF_NAME`, `GITHUB_RUN_ID`, `GITHUB_RUN_NUMBER`, `GITHUB_WORKFLOW`, `GITHUB_ACTOR`, `RUNNER_OS`, `RUNNER_ARCH`, `RUNNER_NAME`. |
-| Windows env | Inverse: inherits the full host env (MSVC's `VC*` / `VS*` / `INCLUDE` / `LIB` / `LIBPATH` / `WindowsSdk*` / `UCRT*` plus `PROGRAMFILES*` / `WINDIR` / `SystemRoot` / `USERPROFILE` / `APPDATA` / `LOCALAPPDATA` / `TEMP` / `TMP` / `PATHEXT`) then drops a credential deny-list (`GITHUB_TOKEN`, `CARGO_REGISTRY_TOKEN`, `AWS_*`, `COSIGN_*`, `GPG_*`, ...), a suffix sweep (`_TOKEN` / `_KEY` / `_SECRET` / `_PASSWORD` / `_PASSPHRASE` / `_CREDENTIALS`), `ACTIONS_*`, and any `GITHUB_*` / `RUNNER_*` not on the identity allow-list (e.g. `RUNNER_TEMP`, `GITHUB_WORKSPACE` — host workflow state, not identity). |
+| Windows env | Inverse: inherits the full host env (MSVC's `VC*` / `VS*` / `INCLUDE` / `LIB` / `LIBPATH` / `WindowsSdk*` / `UCRT*` plus `PROGRAMFILES*` / `WINDIR` / `SystemRoot` / `USERPROFILE` / `APPDATA` / `LOCALAPPDATA` / `TEMP` / `TMP` / `PATHEXT`) then drops a credential deny-list (`GITHUB_TOKEN`, `CARGO_REGISTRY_TOKEN`, `AWS_*`, `COSIGN_*`, `GPG_*`, ...), a suffix sweep (`_TOKEN` / `_KEY` / `_SECRET` / `_PASSWORD` / `_PASSPHRASE` / `_CREDENTIALS`), `ACTIONS_*`, and any `GITHUB_*` / `RUNNER_*` not on the identity allow-list (e.g. `RUNNER_TEMP`, `GITHUB_WORKSPACE`, which hold host workflow state). |
 
 The workspace under test is obtained via `git worktree add` rooted at the
 release commit, so gitignored files (notably `target/`, `dist/`,
@@ -170,7 +172,7 @@ default args.
 
 `--allow-nondeterministic <name>=<reason>` is a per-release escape for
 emergency cases where a third-party tool's reproducibility breaks
-unexpectedly. The flag is **repeatable**, not comma-separated:
+unexpectedly. Repeat the flag once per artifact; it takes no comma-separated list:
 
 ```bash
 anodizer release \
@@ -325,21 +327,27 @@ unknown fields per JSON convention.
 ## Snapshot-mode SDE resolution
 
 `anodizer release --snapshot` must produce byte-identical artifacts across
-runs of the same commit at the same anodizer version. SDE source for snapshot
-mode (first match wins):
+runs of the same commit at the same anodizer version. A snapshot resolves
+its source date the way every run does (first match wins):
 
-1. `SOURCE_DATE_EPOCH` env var, if set.
-2. `ANODIZE_SOURCE_DATE_EPOCH` env var, if set (an older spelling of the
-   same override).
-3. `HEAD` commit timestamp. A dirty working tree keeps the same value, so
-   successive runs against an unchanged dirty tree are byte-identical.
+1. `SOURCE_DATE_EPOCH` env var, if set and not empty.
+2. `ANODIZE_SOURCE_DATE_EPOCH` env var, if set and not empty (an older
+   spelling of the same override).
+3. `HEAD` commit's committer time. A dirty working tree keeps the same
+   value, so successive runs against an unchanged dirty tree are
+   byte-identical.
 
-A set variable that is not a whole number of seconds fails the lookup, and
-the build prints a `snapshot SDE resolution failed; falling back to commit
-timestamp` line and uses the commit timestamp.
+A set variable that is not a whole number of seconds stops the run with a
+message naming the variable and its value.
 
-The resolved value is a real date: it becomes archive entry mtimes, the
+The resolved value is a real date, and the only one the run stamps: it
+becomes the cargo environment and binary mtime of a `reproducible: true`
+build, archive entry mtimes, PyPI wheel and sdist timestamps, the
 `org.opencontainers.image.created` docker label and SBOM timestamps.
+
+`anodizer check determinism --snapshot` seeds its rebuilds by the same
+order. Without `--snapshot` the harness seeds them from the HEAD committer
+time alone.
 
 This is what makes the harness useful pre-release: an operator can run
 `anodizer check determinism --snapshot` against a dirty tree and catch drift
@@ -442,8 +450,8 @@ Layout (as written by `preserve_raw_binaries` in
 ### Makeself artifact ordering
 
 The makeself stage groups artifacts by platform before registering them with
-the artifact store. The grouping uses `BTreeMap` (sorted, deterministic) rather
-than `HashMap` (randomized per process). This ensures the per-platform iteration
+the artifact store. The grouping uses `BTreeMap`, which is sorted and so deterministic
+(`HashMap` order is randomized per process). This ensures the per-platform iteration
 order is identical across determinism runs and does not introduce drift into
 `dist/artifacts.json`. The same fix applies to the snapcraft stage.
 
@@ -558,8 +566,7 @@ The pre-publish emission-validate pass (which renders and schema-checks every
 publisher's artifact — see [Artifact validation](../publish/validation.md))
 follows the same one-directional tolerance. On a target-restricted shard it
 validates the emissions the shard **can** satisfy and **self-skips** any
-publisher whose input archives this shard did not produce, instead of failing
-the whole gate:
+publisher whose input archives this shard did not produce, and the gate passes:
 
 - A cross-platform install aggregator (`homebrew`, `nix`, `krew`) self-skips on
   a shard that lacks its inputs — e.g. the Windows shard has no macOS/Linux
@@ -582,10 +589,10 @@ so a misconfiguration is never hidden by the same mechanism that makes sharding
 possible.
 
 This gate doesn't cover every publisher, though. The build-time packagers
-**nfpm** and **snapcraft** emit local `.deb`/`.rpm`/`.snap` packages rather than
-an index entry — with no eligible binary they simply produce nothing, not an
-error. **mcp** publishes an existing image reference by name (a config-driven
-skip), not a generated manifest, so it isn't part of this check either.
+**nfpm** and **snapcraft** emit local `.deb`/`.rpm`/`.snap` packages and no
+index entry; with no eligible binary they produce nothing and report no error.
+**mcp** publishes an existing image reference by name (a config-driven skip)
+and generates no manifest, so it isn't part of this check either.
 
 PR builds run the same harness with a fast advisory subset
 (`--stages=archive,sbom,sign,checksum`) on a single Linux shard via the

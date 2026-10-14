@@ -1,11 +1,13 @@
 +++
 title = "Retry"
-description = "Automatic retry with exponential backoff for uploads and Docker operations"
+description = "Retry with exponential backoff for release calls, publishers, probes and Docker operations"
 weight = 9
 template = "docs.html"
 +++
 
-Anodizer automatically retries failed operations with exponential backoff. Retry behavior is built into upload and Docker stages.
+Anodizer retries a failed operation with exponential backoff: release API
+calls and asset uploads, publishers, preflight probes, announcers and Docker
+builds and pushes.
 
 ## Rate limits
 
@@ -36,14 +38,14 @@ retry ran. Each HTTP failure's message is printed once in the error chain.
 ## Release uploads
 
 Release asset uploads and the release API calls on GitHub, GitLab and Gitea
-read the top-level `retry:` block. Its defaults:
+read the top-level `retry:` block, and so does every publisher. Its defaults:
 
 | Field | Default |
 |-------|---------|
 | `attempts` | 10 (the first attempt included) |
 | `delay` | 10s before the second attempt, doubling after each failure |
 | `max_delay` | 5m cap on any one wait |
-| `max_elapsed` | 15m cap on the total time spent retrying one operation |
+| `max_elapsed` | 15m deadline shared by every retry in one publisher run, or in one crate's release |
 
 ```yaml
 retry:
@@ -53,9 +55,60 @@ retry:
   max_elapsed: 10m
 ```
 
+## Retry budget
+
+`max_elapsed` is a deadline for a whole run of something, shared by every
+retry inside it:
+
+| Run | Deadline |
+|---|---|
+| A publisher's `run`, `reconcile`, `rollback` or `preflight` | the moment it starts, plus `max_elapsed` |
+| One crate's GitHub, GitLab or Gitea release (the release stage) | the moment that crate's release starts, plus `max_elapsed` |
+| The release stage run by the `github-release` publisher (`--publish-only`) | the publisher's deadline, shared by every crate |
+| Any other retry | the moment that retry starts, plus `max_elapsed` |
+
+Every retried request inside the run shares the deadline: the auth exchange,
+the publish request and the cleanup of one publisher, or the API calls and
+asset uploads of one release. The next publisher, and the next crate's
+release, start a fresh deadline. Retrying stops before a wait would pass the
+deadline, and the run fails with the last error, so an idempotent re-run can
+resume. A release whose CI job has a hard timeout should keep `max_elapsed`
+below it.
+
+## Duration format
+
+Every duration field in the config (`retry.delay`, `retry.max_delay`,
+`retry.max_elapsed`, `announce.deadline`, `release.upload_pace`, the notarize
+`timeout`, `publish.cargo.wait_for_workspace_deps.max_wait` and
+`poll_interval`, and the chocolatey and winget `post_publish_poll.interval`
+and `timeout`) and the `--timeout` flag of
+`anodizer release` and `anodizer build` read one format: one or more whole
+numbers, each followed by a unit.
+
+| Unit | Meaning | Example |
+|------|---------|---------|
+| `ms` | milliseconds | `500ms` |
+| `s` | seconds | `90s` |
+| `m` | minutes | `10m` |
+| `h` | hours | `3h` |
+| `d` | days | `2d` |
+
+Terms add up, so `1h30m` is 90 minutes. Spaces and tabs may separate the
+parts (`1h 30m`); no other whitespace is accepted. A number needs a unit, so
+`90` is refused, and a fraction such as `1.5h` is refused. The longest
+duration accepted is one year, `365d` (31536000s); a longer value is refused
+when the config loads, or when `--timeout` is read, with a message naming the
+value and the limit.
+
+```bash
+anodizer release --timeout 2d
+```
+
 ## Docker retry
 
-Docker build and push operations support configurable retry via the `retry` field:
+Docker build and push operations also read a per-image `retry` field. It is
+deprecated in favour of the top-level `retry:` block and prints a warning once
+per run. When it is set it replaces the top-level block for that image:
 
 ```yaml
 crates:
@@ -82,14 +135,8 @@ The same retry config is available on:
 - `dockers_v2[]` — Docker Buildx builds (canonical)
 - `docker_manifests[]` — Docker manifest creation and push (legacy stitching only)
 
-### Duration format
+### Docker duration format
 
-Delay values accept duration strings with these suffixes:
-
-| Suffix | Unit | Example |
-|--------|------|---------|
-| `ms` | milliseconds | `500ms` |
-| `s` | seconds | `10s` |
-| `m` | minutes | `2m` |
-
-A bare number without a suffix is treated as seconds (e.g., `10` = `10s`).
+The two Docker `retry` delays read the [duration format](#duration-format)
+above, with the same one-year limit. A bare number without a unit is also
+accepted there and read as seconds (`10` is `10s`).

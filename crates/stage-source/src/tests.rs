@@ -2178,3 +2178,42 @@ fn the_source_archive_is_owned_by_the_crate_whose_release_ships_it() {
         }
     }
 }
+
+/// An extra file appended to the source archive carries the run's one date:
+/// the environment's source date ahead of the commit time, and the commit
+/// time when the environment sets none.
+#[test]
+fn a_source_archive_extra_file_carries_the_run_date() {
+    for (env_sde, expected) in [
+        (Some("1600000000"), 1_600_000_000u64),
+        (None, 1_700_000_000),
+    ] {
+        let tmp = TempDir::new().unwrap();
+        let mut ctx = source_ctx_in_repo(&tmp, "myapp", None, false);
+        std::fs::write(tmp.path().join("extra.txt"), "extra").unwrap();
+        ctx.config.source.as_mut().unwrap().files = vec![extra_txt_entry(tmp.path())];
+        ctx.template_vars_mut().set("CommitTimestamp", "1700000000");
+        let mut env = anodizer_core::env_source::MapEnvSource::new();
+        if let Some(value) = env_sde {
+            env = env.with("SOURCE_DATE_EPOCH", value);
+        }
+        ctx.set_env_source(env);
+        SourceStage.run(&mut ctx).expect("live source stage");
+
+        let path = ctx.artifacts.by_kind(ArtifactKind::SourceArchive)[0]
+            .path
+            .clone();
+        let gz = flate2::read::GzDecoder::new(std::fs::File::open(&path).unwrap());
+        let mut archive = tar::Archive::new(gz);
+        let mtime = archive
+            .entries()
+            .unwrap()
+            .map(Result::unwrap)
+            .find(|e| e.path().unwrap().ends_with("extra.txt"))
+            .expect("extra.txt entry")
+            .header()
+            .mtime()
+            .unwrap();
+        assert_eq!(mtime, expected, "SOURCE_DATE_EPOCH {env_sde:?}");
+    }
+}

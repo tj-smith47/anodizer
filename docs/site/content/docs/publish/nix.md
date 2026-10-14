@@ -302,7 +302,7 @@ stdenvNoCC.mkDerivation {
 
 ## Root `flake.nix`
 
-Alongside each `pkgs/<name>/default.nix` derivation, the publisher writes (and keeps up to date) a root `flake.nix` so the repository is directly **flake-installable** — not just usable as an overlay. After a publish, consumers can install or run a package by name without cloning:
+Alongside each `pkgs/<name>/default.nix` derivation, the publisher writes (and keeps up to date) a root `flake.nix` so the repository is directly **flake-installable** as well as usable as an overlay. After a publish, consumers can install or run a package by name without cloning:
 
 ```bash
 nix profile install github:<owner>/<repo>#<name>

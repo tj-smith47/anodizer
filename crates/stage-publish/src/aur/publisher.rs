@@ -206,7 +206,7 @@ pub(crate) fn collect_aur_our_target(
     // rollback target carries the resolved secret, never a literal
     // `{{ .Env.AUR_SSH_KEY }}` that would fail ssh at revert time.
     let private_key = match ac.private_key.as_deref() {
-        Some(pk) => Some(util::render_or_warn(ctx, log, "aur.private_key", pk)?),
+        Some(pk) => Some(util::render_secret(ctx, "aur.private_key", pk)?),
         None => None,
     };
     let git_ssh_command = match ac.git_ssh_command.as_deref() {
@@ -527,12 +527,17 @@ pub(crate) fn aur_ssh_auth_preflight(
     let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     let mut acc = anodizer_core::PreflightCheck::Pass;
     for (pk, ssh_cmd) in entries {
-        // A render failure is config-validation territory (surfaced by the
-        // publish path's own strict render); skip rather than warn here.
+        // The publish path renders the key through the same function, so a
+        // template that does not render is reported here before any push.
         let Some(raw_key) = pk else { continue };
-        let Ok(key) = ctx.render_template(raw_key) else {
-            continue;
-        };
+        let key =
+            match crate::util::render_secret(ctx, &format!("{publisher}.private_key"), raw_key) {
+                Ok(key) => key,
+                Err(e) => {
+                    acc = acc.merge(anodizer_core::PreflightCheck::Blocker(format!("{e:#}")));
+                    continue;
+                }
+            };
         if key.is_empty() || !seen.insert(key.clone()) {
             continue;
         }

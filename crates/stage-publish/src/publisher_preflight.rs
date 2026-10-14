@@ -495,6 +495,7 @@ pub(crate) fn github_repo_config_check(
     ctx: &Context,
     repo: Option<&anodizer_core::config::RepositoryConfig>,
     preferred_env: &str,
+    default_pr_upstream: Option<(&str, &str)>,
     policy: &RetryPolicy,
 ) -> PreflightCheck {
     // A `git.url` override routes the push over SSH / to a self-hosted GHE
@@ -516,8 +517,11 @@ pub(crate) fn github_repo_config_check(
     if owner.trim().is_empty() || name.trim().is_empty() {
         return PreflightCheck::Pass;
     }
-    let token = crate::util::resolve_repo_token(ctx, repo, Some(preferred_env));
-    github_repo_check(
+    let token = match crate::util::resolve_repo_token(ctx, repo, Some(preferred_env)) {
+        Ok(token) => token,
+        Err(e) => return PreflightCheck::Blocker(format!("{owner}/{name}: {e:#}")),
+    };
+    let push = github_repo_check(
         &GithubRepoProbe {
             owner: &owner,
             repo: &name,
@@ -528,6 +532,95 @@ pub(crate) fn github_repo_config_check(
         },
         ctx.env_source(),
         &ctx.logger("preflight"),
+    );
+    push.merge(pull_request_token_check(
+        ctx,
+        repo,
+        (&owner, &name),
+        token.as_deref(),
+        preferred_env,
+        default_pr_upstream,
+        policy,
+    ))
+}
+
+/// Probe the repository a publisher opens its pull request against, with the
+/// token the pull request is opened with ([`crate::util::resolve_pr_token`]).
+///
+/// The pull request opens when `pull_request.enabled` is true, against
+/// `pull_request.base` (else the fork), or always, against `pull_request.base`
+/// else `default_pr_upstream`, for a publisher that has one (krew, winget).
+/// Opening a pull request needs read access to that repository, so a
+/// repository the token cannot read is a blocker and push access is not
+/// asked. Nothing is probed when no token resolves (`gh` then opens the pull
+/// request with its own login) or when the push probe already read the same
+/// repository with the same token.
+fn pull_request_token_check(
+    ctx: &Context,
+    repo: Option<&anodizer_core::config::RepositoryConfig>,
+    (fork_owner, fork_name): (&str, &str),
+    push_token: Option<&str>,
+    preferred_env: &str,
+    default_pr_upstream: Option<(&str, &str)>,
+    policy: &RetryPolicy,
+) -> PreflightCheck {
+    let pr_enabled = repo
+        .and_then(|r| r.pull_request.as_ref())
+        .is_some_and(|pr| pr.enabled == Some(true));
+    let (fallback_owner, fallback_name) = match (pr_enabled, default_pr_upstream) {
+        (true, _) => (fork_owner, fork_name),
+        (false, Some(upstream)) => upstream,
+        (false, None) => return PreflightCheck::Pass,
+    };
+    let pr_token = match crate::util::resolve_pr_token(ctx, repo, Some(preferred_env)) {
+        Ok(Some(token)) => token,
+        Ok(None) => return PreflightCheck::Pass,
+        Err(e) => return PreflightCheck::Blocker(format!("{fork_owner}/{fork_name}: {e:#}")),
+    };
+    let (owner, name) =
+        crate::util::resolve_upstream_coords(repo, fallback_owner, fallback_name, &|s| {
+            ctx.render_template(s).unwrap_or_else(|_| s.to_string())
+        });
+    if owner == fork_owner && name == fork_name && push_token == Some(pr_token.as_str()) {
+        return PreflightCheck::Pass;
+    }
+    let probe = GithubRepoProbe {
+        owner: &owner,
+        repo: &name,
+        token: Some(&pr_token),
+        policy,
+        deadline: ctx.retry_deadline(),
+        strict: ctx.preflight_is_strict(),
+    };
+    let base = anodizer_core::http::github_api_base(ctx.env_source());
+    github_pull_request_repo_check_at(
+        &format!("{base}/repos/{owner}/{name}"),
+        &probe,
+        &ctx.logger("preflight"),
+    )
+}
+
+/// `url`-taking core of the pull-request probe in
+/// [`pull_request_token_check`]: the outcome mapping of
+/// [`github_repo_check_at`], except that push access is not needed and a
+/// repository the token cannot read is a blocker naming the pull request.
+pub(crate) fn github_pull_request_repo_check_at(
+    url: &str,
+    probe: &GithubRepoProbe<'_>,
+    log: &anodizer_core::log::StageLogger,
+) -> PreflightCheck {
+    let (owner, repo) = (probe.owner, probe.repo);
+    anodizer_core::git::github_repo_push_check(
+        url,
+        probe,
+        anodizer_core::git::RepoAccessOutcomes {
+            push_denied: PreflightCheck::Pass,
+            missing_or_denied: PreflightCheck::Blocker(format!(
+                "pull request repo {owner}/{repo} not found or the pull request token lacks \
+                 read access; the pull request would fail"
+            )),
+        },
+        log,
     )
 }
 
@@ -546,6 +639,7 @@ pub(crate) fn for_each_active_github_repo<'e, E, G, R>(
     ctx: &Context,
     policy: &RetryPolicy,
     token_env: &str,
+    default_pr_upstream: Option<(&str, &str)>,
     entries: impl Iterator<Item = E>,
     is_active: G,
     repo: R,
@@ -556,7 +650,7 @@ where
     R: Fn(E) -> Option<&'e anodizer_core::config::RepositoryConfig>,
 {
     fold_active_checks(entries, is_active, |entry| {
-        github_repo_config_check(ctx, repo(entry), token_env, policy)
+        github_repo_config_check(ctx, repo(entry), token_env, default_pr_upstream, policy)
     })
 }
 
@@ -1057,7 +1151,7 @@ mod tests {
         };
         let ctx = anodizer_core::context::Context::test_fixture();
         assert!(matches!(
-            github_repo_config_check(&ctx, Some(&repo), "GITHUB_TOKEN", &fast_retry()),
+            github_repo_config_check(&ctx, Some(&repo), "GITHUB_TOKEN", None, &fast_retry()),
             PreflightCheck::Pass
         ));
     }

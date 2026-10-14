@@ -1,5 +1,5 @@
 +++
-title = "Why Anodizer"
+title = "Rust-Native Features"
 description = "The Rust-native release features anodizer is built around."
 weight = 5
 template = "docs.html"
@@ -10,8 +10,8 @@ What follows is what anodizer does *because* it's Rust-first: it understands Car
 lockfiles, and crates.io, and it proves its own output is reproducible.
 
 Every capability on this page is dogfooded — anodizer releases itself with it, and the proof
-is a clickable artifact, not a test name. See
-[What works (with proof)](@/dogfooding/_index.md) for the live matrix.
+is a clickable artifact. See
+[Feature status (with proof)](@/dogfooding/_index.md) for the live matrix.
 
 ## Workspace-native releases
 
@@ -77,7 +77,7 @@ npms:
     auth: auto               # OIDC where possible, token where required
 ```
 
-## Dual-license aware, per publisher
+## Per-publisher dual-license handling
 
 Rust crates are conventionally dual-licensed `MIT OR Apache-2.0`. anodizer parses the SPDX
 expression once from `Cargo.toml` and renders it in each publisher's native shape — no per-channel
@@ -159,14 +159,14 @@ schemastore:
 ```
 
 `retain_on_rollback` is intentional for publishers that are not reversible: once a crate is on
-crates.io you cannot un-publish it, so rollback must skip that step rather than fail.
+crates.io you cannot un-publish it, so rollback skips that step.
 Per-crate hooks fire before defaults, so per-publisher overrides compose cleanly with a
 workspace-wide catch-all.
 
-## Reproducible — and verified
+## Reproducible, verified builds
 
 Artifacts are deterministic by default. The determinism harness rebuilds in a hermetic worktree
-and byte-compares the output, so reproducibility is proven, not assumed.
+and byte-compares the output, so every check proves the build reproducible.
 
 ```bash
 anodizer check determinism
@@ -285,7 +285,7 @@ cloudsmiths:
 ## Rust-ecosystem niceties
 
 - **`cargo-binstall` metadata** derived from your build config automatically — `pkg-url` and
-  per-target overrides come from your archive `name_template`, never hand-written.
+  per-target overrides come from your archive `name_template`.
 - **Generated crate READMEs** kept in sync with a template.
 - **AppImage packaging** for Linux — produces self-contained `.AppImage` bundles with optional
   zsync update metadata.

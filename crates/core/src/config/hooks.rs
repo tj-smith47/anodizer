@@ -3,10 +3,6 @@ use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::artifact::ArtifactKind;
 
-// ---------------------------------------------------------------------------
-// HooksConfig
-// ---------------------------------------------------------------------------
-
 /// A lifecycle hook block: `before:`, `after:`, `on_error:`, `always:`,
 /// or `before_publish:`. Each block carries a list of hook commands that
 /// run around the entire pipeline (not individual stages); which block a
@@ -60,8 +56,6 @@ impl HooksConfig {
                 );
                 self.hooks = self.post.take();
             }
-            // (true, false): canonical shape, nothing to do.
-            // (false, false): empty block, nothing to do.
             _ => {}
         }
     }
@@ -127,7 +121,6 @@ pub struct StructuredHook {
     /// Template-conditional: when set, the hook only runs if the rendered
     /// result is truthy (not `"false"` / `"0"` / `"no"` / empty). Render
     /// failure hard-errors and is never skipped silently.
-    /// `before.hooks[].if:` / per-build / per-archive hook `if:` fields.
     /// An absent, empty or blank `if:` imposes no gate and always runs; the
     /// falsy test applies to what a non-blank gate renders. The gate is
     /// evaluated before the hook's own `env:` is rendered, so it cannot read
@@ -314,19 +307,34 @@ mod tests {
         );
     }
 
-    /// An empty `hooks: []` beside a non-empty `post:` list runs the `post:`
-    /// commands, as the `HooksConfig` doc says.
+    /// A config that loads with an empty `hooks: []` beside a non-empty
+    /// `post:` list carries the `post:` commands as the hook list of every
+    /// hook block, as the `HooksConfig` doc says.
     #[test]
     #[serial_test::serial(tracing)]
-    fn an_empty_hooks_list_beside_post_runs_the_post_commands() {
+    fn an_empty_hooks_list_beside_post_loads_the_post_commands_as_the_hook_list() {
+        let block = "{ hooks: [], post: [legacy.sh] }";
+        let yaml = format!(
+            "project_name: p\nbefore: {block}\nafter: {block}\non_error: {block}\n\
+             always: {block}\nbefore_publish: {block}\n"
+        );
         let _ = capture_tracing_warnings(|| {
-            let cfg: HooksConfig =
-                serde_yaml_ng::from_str("hooks: []\npost: [legacy.sh]\n").expect("parses");
-            assert_eq!(
-                cfg.hooks,
-                Some(vec![HookEntry::Simple("legacy.sh".to_string())])
-            );
-            assert!(cfg.post.is_none());
+            let cfg: crate::config::Config = serde_yaml_ng::from_str(&yaml).expect("loads");
+            for (name, hooks) in [
+                ("before", &cfg.before),
+                ("after", &cfg.after),
+                ("on_error", &cfg.on_error),
+                ("always", &cfg.always),
+                ("before_publish", &cfg.before_publish),
+            ] {
+                let hooks = hooks.as_ref().expect(name);
+                assert_eq!(
+                    hooks.hooks,
+                    Some(vec![HookEntry::Simple("legacy.sh".to_string())]),
+                    "{name}"
+                );
+                assert!(hooks.post.is_none(), "{name}");
+            }
         });
     }
 
@@ -527,7 +535,6 @@ mod tests {
 
     #[test]
     fn deserialize_then_serialize_drops_post_field() {
-        // post-only input folds into hooks: and serialization shows no post:
         let cfg: HooksConfig = serde_yaml_ng::from_str("post:\n  - legacy.sh").unwrap();
         assert!(cfg.post.is_none());
         let out = serde_yaml_ng::to_string(&cfg).unwrap();
@@ -541,7 +548,6 @@ mod tests {
     #[test]
     #[serial_test::serial(tracing)]
     fn empty_block_neither_spelling_stays_empty_and_silent() {
-        // (false, false) arm: empty block, nothing folds and nothing warns.
         let captured = capture_tracing_warnings(|| {
             let mut cfg = HooksConfig {
                 hooks: None,
@@ -560,15 +566,12 @@ mod tests {
     #[test]
     #[serial_test::serial(tracing)]
     fn empty_post_vec_does_not_trigger_fold_or_warn() {
-        // is_some_and(|v| !v.is_empty()) means an empty post vec is treated as
-        // absent — it must not fold into hooks nor warn.
         let captured = capture_tracing_warnings(|| {
             let mut cfg = HooksConfig {
                 hooks: None,
                 post: Some(vec![]),
             };
             cfg.merge_hook_aliases();
-            // empty post was NOT folded; it stays as the (now still-empty) post
             assert!(cfg.hooks.is_none(), "empty post must not become hooks");
         });
         assert!(

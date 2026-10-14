@@ -4,9 +4,9 @@ use std::process::Command;
 
 use anyhow::{Context as _, Result};
 
+use anodizer_core::EnvSource;
 use anodizer_core::artifact::ArtifactKind;
 use anodizer_core::context::Context;
-use anodizer_core::{EnvSource, ProcessEnvSource};
 
 use crate::validation::strip_glibc_suffix;
 
@@ -142,29 +142,6 @@ pub(crate) fn cargo_target_dir_with_env<E: EnvSource + ?Sized>(
         return PathBuf::from(dir);
     }
     PathBuf::from("target")
-}
-
-// ---------------------------------------------------------------------------
-// resolve_reproducible_epoch — parse SOURCE_DATE_EPOCH with commit_timestamp fallback
-// ---------------------------------------------------------------------------
-
-pub fn resolve_reproducible_epoch(commit_timestamp: &str) -> Option<i64> {
-    resolve_reproducible_epoch_with_env(commit_timestamp, &ProcessEnvSource)
-}
-
-/// Env-injectable form of [`resolve_reproducible_epoch`]. Production
-/// wires up [`ProcessEnvSource`]; tests inject a
-/// [`anodizer_core::MapEnvSource`] so the `SOURCE_DATE_EPOCH` override
-/// can be driven without mutating the process env.
-pub fn resolve_reproducible_epoch_with_env<E: EnvSource + ?Sized>(
-    commit_timestamp: &str,
-    env: &E,
-) -> Option<i64> {
-    let epoch = env
-        .var("SOURCE_DATE_EPOCH")
-        .and_then(|v| v.parse().ok())
-        .unwrap_or_else(|| commit_timestamp.parse::<i64>().unwrap_or(0));
-    if epoch > 0 { Some(epoch) } else { None }
 }
 
 // ---------------------------------------------------------------------------

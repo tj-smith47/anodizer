@@ -30,8 +30,8 @@ announce:
 | `MASTODON_CLIENT_SECRET` | Yes | OAuth application client secret |
 
 All three credentials are required and validated fail-fast: a missing
-`MASTODON_CLIENT_ID` or `MASTODON_CLIENT_SECRET` aborts the release up front
-rather than mid-announce. `MASTODON_ACCESS_TOKEN` is sent as a Bearer
+`MASTODON_CLIENT_ID` or `MASTODON_CLIENT_SECRET` aborts the release up front,
+before any announcement is sent. `MASTODON_ACCESS_TOKEN` is sent as a Bearer
 credential on `POST /api/v1/statuses`; the client ID and secret back the
 OAuth refresh flow.
 

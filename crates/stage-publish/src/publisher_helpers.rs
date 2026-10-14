@@ -207,8 +207,11 @@ pub(crate) fn absorb_entry_skip<T>(
     }
 }
 
-/// The pull-request token the config names for `repo`, rendered before the
-/// entry's clone and push ([`crate::util::configured_pr_token`]).
+/// The pull-request token for `repo`, resolved before the entry's clone and
+/// push through the shared chain ([`crate::util::resolve_pr_token`]):
+/// `pull_request.token`, `repository.token`, the publisher's own variable
+/// `env_var`, the run token on a GitHub run, then `ANODIZER_GITHUB_TOKEN` /
+/// `GITHUB_TOKEN` / `GH_TOKEN`.
 ///
 /// A link that does not render is an entry skip: the failure is this entry's
 /// alone, and resolving it here is what keeps a misconfigured template from
@@ -218,8 +221,9 @@ pub(crate) fn absorb_entry_skip<T>(
 pub(crate) fn pr_token_before_push(
     ctx: &anodizer_core::context::Context,
     repo: Option<&anodizer_core::config::RepositoryConfig>,
+    env_var: &str,
 ) -> anyhow::Result<Option<String>> {
-    crate::util::configured_pr_token(repo, &|s| ctx.render_template(s))
+    crate::util::resolve_pr_token(ctx, repo, Some(env_var))
         .map_err(|e| anodizer_core::pipe_skip::entry_skip(format!("{e:#}")))
 }
 
@@ -650,13 +654,16 @@ macro_rules! simple_publisher {
 // ---------------------------------------------------------------------------
 
 /// Derive the env requirement for a git/GitHub-repo-backed publisher's
-/// token, mirroring `util::resolve_repo_token`'s ladder: `repo.token`
+/// token, mirroring `util::resolve_repo_token`'s chain: `repo.token`
 /// (templated) → preferred env var → the run's GitHub token →
 /// `ANODIZER_GITHUB_TOKEN` → `GITHUB_TOKEN` → `GH_TOKEN`.
 ///
 /// Returns `None` when no env var is needed (a run GitHub token, or a
 /// literal non-templated `repo.token` in config). A GitLab or Gitea run
-/// token does not count: it is never sent to a GitHub repository.
+/// token does not count: it is never sent to a GitHub repository. A
+/// templated `repo.token` adds the variables it reads to the ones the chain
+/// falls through to, since a template that renders blank falls through on
+/// every forge, so any one of them satisfies the requirement.
 pub(crate) fn repo_token_requirement(
     ctx: &anodizer_core::context::Context,
     repo: Option<&anodizer_core::config::RepositoryConfig>,
@@ -666,18 +673,18 @@ pub(crate) fn repo_token_requirement(
     if crate::util::run_github_token(ctx).is_some() {
         return None;
     }
-    if let Some(r) = repo
-        && let Some(tok) = r.token.as_deref()
-        && !tok.is_empty()
+    let mut vars: Vec<String> = Vec::new();
+    if let Some(tok) = repo
+        .and_then(|r| r.token.as_deref())
+        .filter(|t| !t.trim().is_empty())
     {
         let refs = template_env_refs(tok);
         if refs.is_empty() {
             // Literal token value in config — present by definition.
             return None;
         }
-        return Some(anodizer_core::EnvRequirement::EnvAllOf { vars: refs });
+        vars.extend(refs);
     }
-    let mut vars: Vec<String> = Vec::new();
     if let Some(p) = preferred_env {
         vars.push(p.to_string());
     }
@@ -791,38 +798,47 @@ pub(crate) fn pull_request_enabled(repo: Option<&anodizer_core::config::Reposito
         .unwrap_or(false)
 }
 
-/// Requirement for a secret resolved as "templated config value, else env
-/// var `fallback_env`": env refs of the config value when templated, the
-/// fallback var when the config value is absent, nothing when the config
-/// holds a literal.
+/// Requirement for a secret resolved as "templated config value, else the
+/// env vars `fallback_env` in order" ([`crate::util::config_or_env_secret`]
+/// and [`resolve_token_with_ladder`]): nothing when the config holds a
+/// literal, any one of the fallback vars when the config value is absent or
+/// blank, and any one of the config value's `{{ .Env.X }}` references or the
+/// fallback vars when it is templated, since a template that renders blank
+/// falls through to them.
 pub(crate) fn secret_requirement(
     config_value: Option<&str>,
-    fallback_env: &str,
+    fallback_env: &[&str],
 ) -> Option<anodizer_core::EnvRequirement> {
-    anodizer_core::env_preflight::secret_requirement(config_value, fallback_env)
+    let mut vars = match config_value.filter(|v| !v.trim().is_empty()) {
+        Some(v) => {
+            let refs = anodizer_core::env_preflight::template_env_refs(v);
+            if refs.is_empty() {
+                return None;
+            }
+            refs
+        }
+        None => Vec::new(),
+    };
+    vars.extend(fallback_env.iter().map(|v| v.to_string()));
+    Some(anodizer_core::EnvRequirement::EnvAnyOf { vars })
 }
 
 /// Resolve a publisher upload token from a configured (templated) value plus
 /// an ordered env-var fallback ladder.
 ///
-/// Precedence: the rendered `configured` value when it renders non-empty,
-/// else the first NON-EMPTY env var in `env_ladder`, else an empty string
-/// (the caller surfaces a clear "missing token" error). Empty values are
-/// filtered at every rung — an exported-but-blank env var falls through to
-/// the next rung rather than resolving to `""`.
-///
-/// One idiom for the several publishers whose token resolution is
-/// "config-token-or-env-ladder" (currently pypi; npm/homebrew adopt this in a
-/// later pass — npm's private copy still has the empty-env-token gap this
-/// helper closes). `render_label` names the field in the render error's
-/// `.context`.
+/// Precedence: the `configured` value rendered through
+/// [`crate::util::render_secret`] when it renders non-blank, else the first
+/// env var in `env_ladder` with a non-blank value, else an empty string (the
+/// caller surfaces a clear "missing token" error). Every value is trimmed,
+/// and an empty or whitespace-only value falls through to the next rung. A
+/// `configured` template that does not render is an error naming `field`.
 pub(crate) fn resolve_token_with_ladder(
     ctx: &anodizer_core::context::Context,
     configured: Option<&str>,
-    render_label: &str,
+    field: &str,
     env_ladder: &[&str],
 ) -> anyhow::Result<String> {
-    Ok(resolve_token_with_ladder_tracked(ctx, configured, render_label, env_ladder)?.0)
+    Ok(resolve_token_with_ladder_tracked(ctx, configured, field, env_ladder)?.0)
 }
 
 /// As [`resolve_token_with_ladder`], but also reports WHICH env var supplied
@@ -834,21 +850,22 @@ pub(crate) fn resolve_token_with_ladder(
 pub(crate) fn resolve_token_with_ladder_tracked(
     ctx: &anodizer_core::context::Context,
     configured: Option<&str>,
-    render_label: &str,
+    field: &str,
     env_ladder: &[&str],
 ) -> anyhow::Result<(String, Option<String>)> {
-    use anyhow::Context as _;
-    if let Some(raw) = configured.filter(|r| !r.is_empty()) {
-        let rendered = ctx
-            .render_template(raw)
-            .with_context(|| render_label.to_string())?;
+    if let Some(raw) = configured {
+        let rendered = crate::util::render_secret(ctx, field, raw)?;
         if !rendered.is_empty() {
             return Ok((rendered, None));
         }
     }
     let env = ctx.env_source();
     for var in env_ladder {
-        if let Some(v) = env.var(var).filter(|v| !v.is_empty()) {
+        if let Some(v) = env
+            .var(var)
+            .as_deref()
+            .and_then(anodizer_core::git::non_blank_token)
+        {
             return Ok((v, Some((*var).to_string())));
         }
     }
@@ -1601,6 +1618,70 @@ mod tests {
             !ssh_demanded(&reqs),
             "git_ssh_command without a key must not demand ssh: {reqs:?}"
         );
+    }
+
+    /// The preflight requirement for a repository token follows the publish
+    /// chain on every forge. A GitHub run token satisfies it. A GitLab or
+    /// Gitea run token does not, since it is never sent to GitHub, so the run
+    /// needs the publisher variable or a GitHub variable. A templated
+    /// `repository.token` that renders blank falls through on every forge, so
+    /// the variables it reads join that list, and the publish resolves the
+    /// publisher variable when only that one is set.
+    #[test]
+    fn the_repository_token_requirement_follows_the_publish_chain_on_every_forge() {
+        use anodizer_core::config::RepositoryConfig;
+        use anodizer_core::scm::ScmTokenType;
+        use anodizer_core::test_helpers::TestContextBuilder;
+        let ladder = ["ANODIZER_GITHUB_TOKEN", "GITHUB_TOKEN", "GH_TOKEN"];
+        let any_of = |vars: &[&str]| anodizer_core::EnvRequirement::EnvAnyOf {
+            vars: vars.iter().map(|v| v.to_string()).collect(),
+        };
+        let run = |token_type: ScmTokenType| {
+            let mut ctx = TestContextBuilder::new()
+                .sealed_env()
+                .env("KREW_INDEX_TOKEN", "krew")
+                .token(Some("run-token".into()))
+                .build();
+            ctx.token_type = token_type;
+            ctx
+        };
+        let templated = RepositoryConfig {
+            token: Some("{{ .Env.TAP_TOKEN }}".into()),
+            ..Default::default()
+        };
+
+        let github = run(ScmTokenType::GitHub);
+        assert_eq!(
+            repo_token_requirement(&github, None, Some("KREW_INDEX_TOKEN")),
+            None
+        );
+
+        for token_type in [ScmTokenType::GitLab, ScmTokenType::Gitea] {
+            let ctx = run(token_type);
+            let mut plain = vec!["KREW_INDEX_TOKEN"];
+            plain.extend(ladder);
+            assert_eq!(
+                repo_token_requirement(&ctx, None, Some("KREW_INDEX_TOKEN")),
+                Some(any_of(&plain)),
+                "{token_type:?}"
+            );
+            let mut with_refs = vec!["TAP_TOKEN"];
+            with_refs.extend(plain.iter().copied());
+            assert_eq!(
+                repo_token_requirement(&ctx, Some(&templated), Some("KREW_INDEX_TOKEN")),
+                Some(any_of(&with_refs)),
+                "{token_type:?}"
+            );
+            let mut ctx = ctx;
+            ctx.template_vars_mut().set_env("TAP_TOKEN", "");
+            assert_eq!(
+                crate::util::resolve_repo_token(&ctx, Some(&templated), Some("KREW_INDEX_TOKEN"))
+                    .unwrap()
+                    .as_deref(),
+                Some("krew"),
+                "{token_type:?}"
+            );
+        }
     }
 
     /// A `repository.git.url` clone rides SSH: git spawns `ssh` (either the

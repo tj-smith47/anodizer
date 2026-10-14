@@ -202,7 +202,11 @@ pub fn publish_cask(ctx: &mut Context, crate_name: &str, log: &StageLogger) -> R
         log,
         "homebrew-cask",
         crate_name,
-        crate::publisher_helpers::pr_token_before_push(ctx, repository.as_ref()),
+        crate::publisher_helpers::pr_token_before_push(
+            ctx,
+            repository.as_ref(),
+            "HOMEBREW_TAP_TOKEN",
+        ),
     )?
     else {
         return Ok(false);
@@ -232,7 +236,7 @@ pub fn publish_cask(ctx: &mut Context, crate_name: &str, log: &StageLogger) -> R
     let repo_path = tmp_dir.path();
 
     let token =
-        crate::util::resolve_repo_token(ctx, repository.as_ref(), Some("HOMEBREW_TAP_TOKEN"));
+        crate::util::resolve_repo_token(ctx, repository.as_ref(), Some("HOMEBREW_TAP_TOKEN"))?;
     crate::util::clone_repo(
         ctx,
         repository.as_ref(),

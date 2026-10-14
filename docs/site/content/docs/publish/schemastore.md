@@ -247,7 +247,7 @@ The schema's `$id` field must be an absolute `http(s)://` URL. Relative or urn-f
 ### `$schema` dialect
 
 - **Draft-04, draft-06, draft-07**: accepted unconditionally.
-- **Draft 2019-09 or 2020-12**: allowed, but anodizer automatically adds the vendored filename (`<slug>.json`, or `<slug>-<VER>.json` when `versioned`) to the `highSchemaVersion` allowlist in `src/schema-validation.jsonc` in the same PR. SchemaStore CI matches that allowlist on the file's basename, so the entry is the filename — not the catalog display name. This keeps your schema as-authored; the allowlist entry satisfies SchemaStore CI.
+- **Draft 2019-09 or 2020-12**: allowed, but anodizer automatically adds the vendored filename (`<slug>.json`, or `<slug>-<VER>.json` when `versioned`) to the `highSchemaVersion` allowlist in `src/schema-validation.jsonc` in the same PR. SchemaStore CI matches that allowlist on the file's basename, so the entry is the filename; the catalog display name is not used. This keeps your schema as-authored; the allowlist entry satisfies SchemaStore CI.
 
 ### `format` values
 

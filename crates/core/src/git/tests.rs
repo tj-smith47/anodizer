@@ -3376,7 +3376,7 @@ mod git_command_one_home {
         use crate::test_helpers::test_sources::{
             function_bodies, production_half, workspace_production_sources,
         };
-        const CALL_SITES: usize = 48;
+        const CALL_SITES: usize = 46;
         const RUNNER_CALL_SITES: usize = 17;
         const RUNNERS: [&str; 4] = [
             "run_git_in(",
@@ -3489,6 +3489,116 @@ mod git_command_one_home {
             "the number of production calls of the run_git_in runners changed; \
              update RUNNER_CALL_SITES and the population table in \
              .claude/rules/git-command-one-home.md"
+        );
+    }
+}
+
+mod secret_renders {
+    use crate::test_helpers::test_sources::{
+        function_bodies, production_half, workspace_production_sources,
+    };
+
+    /// The render calls a secret field could be handed to. `render_secret`
+    /// renders through a closure that receives the template as a plain
+    /// parameter, so a call inside it names no secret field.
+    const RENDER_CALLS: &[&str] = &[
+        "render_or_warn(",
+        "render_template(",
+        "render_template_strict(",
+        "render_strict(",
+        ".render(",
+    ];
+
+    /// The text between the `(` that `rest` follows and its matching `)`,
+    /// with string literals read whole so a parenthesis inside one is text.
+    fn call_arguments(rest: &str) -> &str {
+        let mut depth = 1usize;
+        let mut in_str = false;
+        let mut prev = '\0';
+        for (i, c) in rest.char_indices() {
+            match c {
+                '"' if prev != '\\' => in_str = !in_str,
+                '(' if !in_str => depth += 1,
+                ')' if !in_str => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return &rest[..i];
+                    }
+                }
+                _ => {}
+            }
+            prev = c;
+        }
+        rest
+    }
+
+    /// The secret fields a render call named in `body` is handed: an
+    /// `api_key`, a `password`, a `private_key`, a `secret_name`, or any
+    /// `token` / `*_token`, read as a field or named in a field label.
+    fn secret_render_calls(body: &str) -> Vec<String> {
+        let secret =
+            regex::Regex::new(r"\b(api_key|password|private_key|secret_name|[a-z_]*token)\b[^(]")
+                .expect("valid regex");
+        let mut out = Vec::new();
+        for call in RENDER_CALLS {
+            for (idx, _) in body.match_indices(call) {
+                let args = call_arguments(&body[idx + call.len()..]);
+                let padded = format!("{args} ");
+                if secret.is_match(&padded) {
+                    out.push(format!(
+                        "{call}{})",
+                        args.split_whitespace().collect::<Vec<_>>().join(" ")
+                    ));
+                }
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn a_secret_field_handed_to_a_plain_render_is_reported() {
+        let body = "fn f() {\n    let k = render_or_warn(ctx, log, \"api_key\", raw)?;\n    \
+                    let t = ctx.render_template(&cfg.repository.token)?;\n    \
+                    let p = ctx.render_template(&entry.password)?;\n    \
+                    let name = ctx.render_template(&cfg.name)?;\n    \
+                    let kind = ctx.render_template(k.token())?;\n}";
+        assert_eq!(
+            secret_render_calls(body),
+            vec![
+                "render_or_warn(ctx, log, \"api_key\", raw)".to_string(),
+                "render_template(&cfg.repository.token)".to_string(),
+                "render_template(&entry.password)".to_string(),
+            ]
+        );
+    }
+
+    /// Every production render of a credential field goes through
+    /// `render_secret`, which refuses a template that fails to render in
+    /// every mode. `render_or_warn` returns the raw template text when a
+    /// render fails outside `--strict`, so a credential rendered through it
+    /// could be sent upstream as its own template.
+    #[test]
+    fn every_secret_field_render_goes_through_render_secret() {
+        let mut offenders = Vec::new();
+        let mut secret_renders = 0usize;
+        for source in workspace_production_sources() {
+            let text = std::fs::read_to_string(&source).expect("readable source");
+            let production = production_half(&text);
+            secret_renders += production.matches("render_secret(").count();
+            for body in function_bodies(production) {
+                for call in secret_render_calls(&body) {
+                    offenders.push(format!("{}: {call}", source.display()));
+                }
+            }
+        }
+        assert!(
+            secret_renders > 10,
+            "the scan found {secret_renders} render_secret calls; the source list is wrong"
+        );
+        assert!(
+            offenders.is_empty(),
+            "these render a credential field without `render_secret`:\n{}",
+            offenders.join("\n")
         );
     }
 }

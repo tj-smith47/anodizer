@@ -48,7 +48,6 @@ mod validation;
 // ---------------------------------------------------------------------------
 
 mod workspace;
-pub use workspace::{resolve_reproducible_epoch, resolve_reproducible_epoch_with_env};
 
 // ---------------------------------------------------------------------------
 // BuildStage

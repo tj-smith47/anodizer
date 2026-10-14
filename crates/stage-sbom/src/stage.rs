@@ -471,8 +471,8 @@ pub(crate) fn run_sbom_builtin(
 
     let packages = parse_cargo_lock(&cargo_lock_content)?;
     log.status(&format!(
-        "parsed {} packages from Cargo.lock (sbom[{}])",
-        packages.len(),
+        "parsed {} from Cargo.lock (sbom[{}])",
+        anodizer_core::text::count_noun(packages.len(), "package", "packages"),
         id
     ));
 
@@ -480,39 +480,20 @@ pub(crate) fn run_sbom_builtin(
     // SBOM output across pipeline retries, otherwise GitHub ReleaseAsset
     // rejects the re-upload with `already_exists` (size mismatch).
     //
-    // Resolution order:
-    //   1. `ctx.determinism.sde` — the canonical SOURCE_DATE_EPOCH seeded by
-    //      `BuildStage` (or whatever stage runs first under
-    //      `resolve_reproducible_epoch`). This is the primary path
-    //      under the release-resilience determinism contract.
-    //   2. `CommitDate` template var — fallback for runs where the
-    //      determinism state was not seeded (e.g. SBOM-only commands).
-    //   3. `anodizer_core::sde::resolve_now()` — last-resort fallback.
-    //      `resolve_now` itself honors `SOURCE_DATE_EPOCH` so an external
-    //      reproducibility harness (debian builders, nix, etc.) still
-    //      gets a stable timestamp without the in-process determinism
-    //      state being seeded.
-    let timestamp = if let Some(state) = ctx.determinism.as_ref() {
-        chrono::DateTime::<chrono::Utc>::from_timestamp(state.sde, 0)
-            .map(|dt| dt.to_rfc3339())
-            .unwrap_or_else(|| {
-                log.warn(&format!(
-                    "SOURCE_DATE_EPOCH {} out of range for sbom[{}]; falling back to CommitDate",
-                    state.sde, id
-                ));
-                ctx.template_vars()
-                    .get("CommitDate")
-                    .cloned()
-                    .unwrap_or_else(|| anodizer_core::sde::resolve_now().to_rfc3339())
-            })
-    } else if let Some(cd) = ctx.template_vars().get("CommitDate").cloned() {
-        cd
-    } else {
-        log.warn(&format!(
-            "no SOURCE_DATE_EPOCH or CommitDate for sbom[{}]; SBOM timestamp will not be reproducible",
-            id
-        ));
-        anodizer_core::sde::resolve_now().to_rfc3339()
+    // The run's one reproducible date (`Context::reproducible_epoch`), the
+    // same value the archives, binaries and docker `created` label carry.
+    let timestamp = match ctx
+        .reproducible_epoch()?
+        .and_then(anodizer_core::sde::rfc3339_utc_from_epoch)
+    {
+        Some(ts) => ts,
+        None => {
+            log.warn(&format!(
+                "no SOURCE_DATE_EPOCH or commit time for sbom[{}]; SBOM timestamp will not be reproducible",
+                id
+            ));
+            anodizer_core::sde::resolve_now().to_rfc3339()
+        }
     };
     let namespace_uuid = deterministic_uuid_from(&format!("{}-{}", project_name, version));
 

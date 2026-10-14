@@ -114,7 +114,7 @@ Behavior:
 
 - **Opt-in and destructive.** Leaving `keep_versions` unset (the default) prunes nothing. `keep_versions: 0` is rejected — anodizer never prunes every version.
 - **Per package.** After upload, anodizer lists every version of *this* package, ranks the distinct releases by SemVer (newest first), keeps the top `N` — always including the version just published — and deletes every artifact (all formats and architectures) of versions ranked beyond `N`. Other packages sharing the repository are untouched.
-- **Format-aware.** The deb/rpm epoch (`1:0.9.1-1`) and apk revision (`0.9.1-r1`) suffixes are normalized to the base SemVer (`0.9.1`), so keeping `2` versions keeps every `.deb`/`.rpm`/`.apk` of the two newest releases — not two formats of one release.
+- **Format-aware.** The deb/rpm epoch (`1:0.9.1-1`) and apk revision (`0.9.1-r1`) suffixes are normalized to the base SemVer (`0.9.1`), so keeping `2` versions keeps every `.deb`/`.rpm`/`.apk` of the two newest releases.
 - **Best-effort, non-fatal.** Pruning runs only after the upload (the real work) has already succeeded, is skipped in dry-run and snapshot mode, and a list/delete failure emits a prominent warning and continues — it never fails the release or rolls anything back.
 
 The per-package summary appears at default verbosity (`pruned M old artifacts … (kept N most-recent: 0.9.1, 0.9.0, …)`); per-artifact `DELETE` detail is shown under `-v`.

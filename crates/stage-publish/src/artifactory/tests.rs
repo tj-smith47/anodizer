@@ -2274,6 +2274,73 @@ fn credentials_fold_hyphen_in_entry_name() {
     assert_eq!(p, "hp");
 }
 
+/// The configured `password` wins over the `<PREFIX>_<NAME>_SECRET`
+/// variable and is sent trimmed; one that renders only whitespace falls
+/// through to the variable, and so does a blank `username`.
+#[test]
+fn a_configured_password_wins_and_a_blank_one_falls_through() {
+    let mut ctx = upload_ctx();
+    ctx.set_env_source(
+        anodizer_core::MapEnvSource::new()
+            .with("ARTIFACTORY_PROD_USERNAME", "envuser")
+            .with("ARTIFACTORY_PROD_SECRET", " envsecret\n"),
+    );
+    ctx.template_vars_mut().set_env("BLANK", " \t ");
+    let resolve = |user: Option<&str>, password: Option<&str>| {
+        crate::http_upload::resolve_http_credentials(
+            &ctx,
+            &crate::http_upload::CredentialResolveSpec {
+                publisher: "artifactory",
+                entry_name: "prod",
+                config_username: user,
+                config_password: password,
+                env_prefix: "ARTIFACTORY",
+                anonymous_ok: false,
+            },
+        )
+        .expect("credentials resolve")
+    };
+    assert_eq!(
+        resolve(Some("cfguser"), Some("  cfgsecret\t")),
+        ("cfguser".to_string(), "cfgsecret".to_string())
+    );
+    assert_eq!(
+        resolve(Some("{{ .Env.BLANK }}"), Some("{{ .Env.BLANK }}")),
+        ("envuser".to_string(), "envsecret".to_string())
+    );
+}
+
+/// A `password` that does not render is an error naming the field, with
+/// none of the template's text in it, and the variable is not used in its
+/// place.
+#[test]
+fn a_password_that_does_not_render_is_an_error() {
+    let mut ctx = upload_ctx();
+    ctx.set_env_source(
+        anodizer_core::MapEnvSource::new()
+            .with("ARTIFACTORY_PROD_USERNAME", "envuser")
+            .with("ARTIFACTORY_PROD_SECRET", "envsecret"),
+    );
+    let err = crate::http_upload::resolve_http_credentials(
+        &ctx,
+        &crate::http_upload::CredentialResolveSpec {
+            publisher: "artifactory",
+            entry_name: "prod",
+            config_username: None,
+            config_password: Some("hunter2{{ NoSuchVariable }}"),
+            env_prefix: "ARTIFACTORY",
+            anonymous_ok: false,
+        },
+    )
+    .expect_err("a password that does not render must not resolve");
+    let msg = format!("{err:#}");
+    assert!(
+        msg.starts_with("artifactory.password does not render"),
+        "{msg}"
+    );
+    assert!(!msg.contains("hunter2"), "{msg}");
+}
+
 /// Anonymous resolution (no config, no env) is refused when
 /// `anonymous_ok = false` — the live artifactory path's guard.
 #[test]

@@ -68,7 +68,7 @@ crates:
         extra_files_only: false                    # optional; skip artifacts, upload only extra_files
 ```
 
-## Excluding sidecars with `exclude`
+## Sidecar exclusion with `exclude`
 
 A heavy release attaches a checksum, a signature, and an SBOM next to every
 archive — three sidecars per asset. When you mirror to a bucket you often want
@@ -92,10 +92,9 @@ crates:
 
 `exclude` composes with `ids:` — an artifact uploads only when it passes both
 filters. An empty or unset `exclude` keeps everything. Globs are validated at
-config-load, so a malformed pattern is rejected with a clear error rather than
-silently keeping (or dropping) the wrong assets; if a non-empty candidate set
-is reduced to zero, anodizer warns that the filter — not an empty release — is
-why nothing uploaded.
+config-load, and a malformed pattern is rejected with an error naming it. When
+the filter removes every candidate from a non-empty set, anodizer warns that
+the filter is why nothing uploaded.
 
 ## Authentication
 
@@ -139,10 +138,10 @@ Application Default Credentials (ADC) via `gcloud auth application-default login
 - **`s3_force_path_style`** defaults to `true` when `endpoint` is set. Virtual-hosted style (`https://<bucket>.s3.amazonaws.com`) is only valid for AWS proper — S3-compatible backends (MinIO, R2, Spaces) require path style.
 - **`skip` template**: the `skip` field accepts a template string, enabling conditional skip: `"{{ if IsSnapshot }}true{{ end }}"` skips blob upload for snapshot builds. A render of `true` or `1`, in any letter case, skips (see [bool-or-template values](@/docs/general/templates.md#bool-or-template-values)).
 - **`content_disposition: "-"`**: set to the literal string `"-"` to disable the `Content-Disposition` header entirely (useful for direct-browser-download use cases).
-- **Large files are streamed** in 10 MiB multipart parts, which changes the permissions an S3 identity needs and the object's ETag. See [How a file is uploaded](#how-a-file-is-uploaded).
+- **Large files are streamed** in 10 MiB multipart parts, which changes the permissions an S3 identity needs and the object's ETag. See [Upload process](#upload-process).
 - **A killed run can leave multipart parts behind.** They are invisible in a bucket listing and billed until removed. See [Incomplete multipart uploads](#incomplete-multipart-uploads).
 
-## How a file is uploaded
+## Upload process
 
 A file is read from disk in fixed-size pieces while it uploads, so memory use does not grow with artifact size. One upload holds at most four parts in flight plus the part being filled, so it is bounded at (4 + 1) × 10 MiB plus a 1 MiB read buffer, 51 MiB, whatever the file's size. Files of one config upload in parallel (the config's `parallelism`, else the run's `--parallelism`), and each file in flight holds its own 51 MiB, so a config uploading four files at once can hold up to 204 MiB.
 
@@ -165,7 +164,7 @@ A multipart ETag is no MD5 of the file, so a tool that compares the two reports 
 | `s3:GetObject` | the HEAD and ranged GETs of the comparison that skips a file already in the bucket with identical bytes |
 | `s3:PutObjectAcl` | only when `acl` is set |
 | `s3:DeleteObject` | rollback |
-| `s3:ListBucketMultipartUploads` (on the bucket, not its objects) | optional; finding leftover uploads by hand (below) |
+| `s3:ListBucketMultipartUploads` (on the bucket itself) | optional; finding leftover uploads by hand (below) |
 | `kms:GenerateDataKey` and `kms:Decrypt` on the key | only when the bucket or a plain `kms_key` encrypts with SSE-KMS: S3 decrypts the parts of a multipart upload to assemble them, and the comparison reads the existing object |
 | `kms:Encrypt` on the key | only for an `awskms://` `kms_key` ([client-side encryption](#client-side-encryption)) |
 
@@ -194,7 +193,7 @@ Without `s3:GetObject` the comparison cannot read the bucket, and every run uplo
 
 Before uploading, anodizer compares the file with the object at its key, 10 MiB at a time, and skips the upload when every byte matches. An object that differs, that changes while it is being compared, or that cannot be read is uploaded over.
 
-### A run that fails part way
+### Partial failure
 
 Files are uploaded independently, so a run can write some objects and fail on another. The run report records the ones it wrote on the failed `blob` row:
 
@@ -213,7 +212,7 @@ Two ways forward, both safe:
 
 A rollback after a successful re-run deletes all three: the re-run's report takes over the objects the failed run recorded, as long as `dist/run-<tag>/` is still there for the second run (`--clean` keeps it; a fresh checkout does not have it). See [What a failed publisher leaves on record](../advanced/release-resilience.md#record-of-a-failed-publisher).
 
-### What a rollback deletes
+### Rollback scope
 
 The rollback deletes the objects this release created. An object that already existed at its key before the release and was uploaded over is left in place: deleting it would not bring the previous version back. Each such object is named in a warning, and the summary line counts it:
 

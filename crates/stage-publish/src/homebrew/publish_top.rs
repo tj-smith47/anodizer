@@ -436,7 +436,7 @@ fn render_top_level_cask_inner(
         uninstall_block: &uninstall_block,
         custom_block: custom_block.as_deref(),
         service: service.as_deref(),
-        livecheck: super::formula::render_livecheck(cask_cfg.livecheck.as_ref(), log),
+        livecheck: super::livecheck::render_cask_livecheck(cask_cfg.livecheck.as_ref(), log)?,
         manpages,
         completions_bash,
         completions_zsh,
@@ -568,7 +568,7 @@ pub fn publish_top_level_homebrew_casks(
             log,
             "homebrew-cask",
             &cask_name,
-            crate::publisher_helpers::pr_token_before_push(ctx, repo_cfg),
+            crate::publisher_helpers::pr_token_before_push(ctx, repo_cfg, "HOMEBREW_TAP_TOKEN"),
         )?
         else {
             continue;
@@ -614,7 +614,7 @@ pub fn publish_top_level_homebrew_casks(
         let tmp_dir = tempfile::tempdir().context("homebrew_casks: create temp dir")?;
         let repo_path = tmp_dir.path();
 
-        let token = crate::util::resolve_repo_token(ctx, repo_cfg, Some("HOMEBREW_TAP_TOKEN"));
+        let token = crate::util::resolve_repo_token(ctx, repo_cfg, Some("HOMEBREW_TAP_TOKEN"))?;
         crate::util::clone_repo(
             ctx,
             repo_cfg,

@@ -477,7 +477,7 @@ pub(super) fn generate_cask_from_context(
         uninstall_block: &uninstall_block,
         custom_block: custom_block.as_deref(),
         service: service.as_deref(),
-        livecheck: super::formula::render_livecheck(cask_cfg.livecheck.as_ref(), log),
+        livecheck: super::livecheck::render_cask_livecheck(cask_cfg.livecheck.as_ref(), log)?,
         manpages: cask_cfg.manpages.as_deref().unwrap_or(&empty_vec),
         completions_bash: cask_cfg
             .completions

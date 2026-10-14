@@ -20,8 +20,7 @@ stage).
 
 ## Placement
 
-`dockers_v2:` is a **per-crate** field — it lives under `crates[].dockers_v2`,
-not at the top level:
+`dockers_v2:` is a **per-crate** field — it lives under `crates[].dockers_v2`:
 
 ```yaml
 crates:
@@ -143,10 +142,13 @@ before the release step. In `anodizer-action`, set `docker-registry` /
   `linux/arm64`); a Rust target triple is not a Docker platform.
 - **Build-args leak**: buildx records `build_args` in image history by
   default. Prefer `{{ Env.VAR }}` over raw user-config strings for secrets.
-- **`use: podman` is Linux-only**: configs setting `use: podman` on macOS or
-  Windows fail at config-validation time. The podman backend disables
-  buildx-only flags (`--rewrite-timestamp`, `--provenance`, `--attest`,
-  `--cache-from/to`, `--output`, `--sbom`).
+- **`use: podman` is Linux-only**: a config setting `use: podman` loads on
+  any host; on macOS or Windows the docker stage fails that entry before it
+  spawns anything. The stage also fails a `use: podman` entry that carries a
+  buildx-only flag (`--rewrite-timestamp`, `--provenance`, `--attest`,
+  `--cache-from/to`, `--output`, `--sbom`), or whose `sbom` reads true
+  outside a snapshot (`sbom` defaults to true, so set `sbom: false`); see
+  [Podman backend](@/docs/packages/podman.md).
 
 ## Republish / update behavior
 

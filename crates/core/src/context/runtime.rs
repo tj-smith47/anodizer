@@ -10,28 +10,46 @@ impl Context {
             .unwrap_or_default()
     }
 
-    /// Reproducible-mtime seed shared by every stage that stamps a build
-    /// timestamp into a produced artifact (release archives, source archives,
-    /// PyPI wheels + sdists).
+    /// The reproducible timestamp of this run, in seconds since
+    /// 1970-01-01 UTC.
     ///
-    /// Resolution ladder, single-sourced here so archives and wheels never
-    /// pick different timestamps in one run: `SOURCE_DATE_EPOCH` (the
-    /// standard reproducibility contract, set by the determinism harness on
-    /// every child), falling back to the commit timestamp. A
-    /// `reproducible: true` build stamps its binaries from the same ladder
-    /// (`resolve_reproducible_epoch`), so the binary and the archive holding
-    /// it carry one date.
+    /// The source date the environment sets (`SOURCE_DATE_EPOCH`, then
+    /// `ANODIZE_SOURCE_DATE_EPOCH`, read by
+    /// [`crate::sde::ambient_epoch_with_env`]) wins; otherwise the HEAD
+    /// committer time (`CommitTimestamp`). Every writer of a build date
+    /// reads this one value: the `SOURCE_DATE_EPOCH` a `reproducible: true`
+    /// build passes to cargo, the binary mtime it sets, release and source
+    /// archive entries, PyPI wheels and sdists, the docker `created` label
+    /// and build env, and SBOM timestamps. A binary and the archive holding
+    /// it therefore carry one date.
     ///
-    /// Returns `None` when neither a commit timestamp nor `SOURCE_DATE_EPOCH`
-    /// is available (writers then leave the default wall-clock stamp).
-    pub fn resolve_reproducible_mtime(&self) -> Option<u64> {
-        self.env_var("SOURCE_DATE_EPOCH")
-            .and_then(|s| s.parse::<u64>().ok())
-            .or_else(|| {
-                self.template_vars()
-                    .get("CommitTimestamp")
-                    .and_then(|ts| ts.parse::<u64>().ok())
-            })
+    /// Returns `Ok(None)` when the environment sets no source date and no
+    /// commit is known (writers then leave the default wall-clock stamp),
+    /// and the reader's error when a source date variable is malformed.
+    pub fn resolve_reproducible_mtime(&self) -> anyhow::Result<Option<u64>> {
+        crate::sde::reproducible_epoch_with_env(
+            self.env_source(),
+            self.template_vars()
+                .get("CommitTimestamp")
+                .map(String::as_str),
+        )
+    }
+
+    /// The timestamp the determinism state was seeded with when a stage has
+    /// seeded it (the build stage seeds it from
+    /// [`Self::resolve_reproducible_mtime`]), otherwise
+    /// [`Self::resolve_reproducible_mtime`] itself.
+    ///
+    /// The docker `created` label, the docker build env and SBOM timestamps
+    /// read this, so a run that skips the build stage still stamps them with
+    /// the run's one date.
+    pub fn reproducible_epoch(&self) -> anyhow::Result<Option<i64>> {
+        if let Some(state) = self.determinism.as_ref() {
+            return Ok(Some(state.sde));
+        }
+        Ok(self
+            .resolve_reproducible_mtime()?
+            .and_then(|secs| i64::try_from(secs).ok()))
     }
 
     /// Derive the verbosity level from context options.

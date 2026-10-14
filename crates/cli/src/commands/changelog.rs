@@ -605,7 +605,7 @@ fn run_release_notes(
     };
     let mut ctx = Context::new(config.clone(), ctx_opts);
     helpers::resolve_scm_token_type(&mut ctx, &config);
-    ctx.populate_time_vars();
+    ctx.populate_time_vars()?;
     ctx.populate_runtime_vars();
     helpers::resolve_git_context(&mut ctx, &config, log)?;
 

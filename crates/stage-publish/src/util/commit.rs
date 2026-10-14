@@ -193,7 +193,7 @@ pub(crate) fn resolve_commit_opts(
             let key = s
                 .key
                 .as_deref()
-                .map(|v| super::template::render_or_warn(ctx, log, "commit_author.signing.key", v))
+                .map(|v| super::config::render_secret(ctx, "commit_author.signing.key", v))
                 .transpose()?;
             let program = s
                 .program

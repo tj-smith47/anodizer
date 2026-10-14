@@ -1,47 +1,92 @@
-//! SDE-aware "now" resolver shared across stages.
+//! The source date: the one reader of `SOURCE_DATE_EPOCH` and
+//! `ANODIZE_SOURCE_DATE_EPOCH`, and the helpers that turn it into dates.
 //!
-//! The determinism harness exports `SOURCE_DATE_EPOCH` into every child
-//! build subprocess, and any timestamp that ends up in a release-pipeline
-//! artifact (filename, embedded date field, RPM changelog header, ...)
-//! must honor that env var instead of reading wall-clock time. Stages
-//! that ignored SDE silently caused harness drift before
-//! `crates/core/src/context::populate_time_vars` was made SDE-aware —
-//! this module is the canonical helper for the remaining writers that
-//! don't have a `Context` handy or that need a direct `chrono::DateTime`
-//! rather than a template-var string.
+//! [`ambient_epoch_with_env`] is the only place either variable is parsed.
+//! Its rules hold for every reader in every mode:
 //!
-//! Resolution order matches `populate_time_vars`:
+//! 1. `SOURCE_DATE_EPOCH` is read first; `ANODIZE_SOURCE_DATE_EPOCH` is read
+//!    only when `SOURCE_DATE_EPOCH` is unset or empty.
+//! 2. An empty or whitespace-only value counts as unset.
+//! 3. Any other value must be a whole number of seconds from 0 up. A value
+//!    that is not is an error that names the variable and the value.
 //!
-//! 1. `SOURCE_DATE_EPOCH` env var (seconds since epoch). Set by the
-//!    determinism harness on every child subprocess and the standard
-//!    reproducibility contract for upstream CI / packagers.
-//! 2. `chrono::Utc::now()` — wall-clock fallback for the common
-//!    non-reproducible case.
+//! [`reproducible_epoch_with_env`] adds the commit-time fallback, and
+//! [`Context::resolve_reproducible_mtime`](crate::context::Context::resolve_reproducible_mtime)
+//! applies it to a run, so the cargo child, binary and archive mtimes,
+//! wheels, the docker `created` label and SBOM timestamps carry one date.
 //!
-//! Note that `populate_time_vars` is still the preferred path when the
-//! caller has a `Context` — the template var (`Date` / `Now` / `Timestamp`)
-//! is what user-supplied templates read, and routing through the context
-//! keeps a single source of truth. Use `resolve_now()` when:
-//!
-//! - the call site has no `Context` (built-in Tera helpers registered at
-//!   engine-build time);
-//! - the caller needs a typed `DateTime<Utc>` for `.format(...)` rather
-//!   than parsing the RFC 3339 string the context exposes.
+//! The infallible helpers ([`resolve_now_with_env`],
+//! [`source_date_epoch_with_env`]) read a malformed value as unset. They run
+//! after the context is set up, and setting up the context
+//! ([`Context::populate_time_vars`](crate::context::Context::populate_time_vars))
+//! already refuses a malformed value with the reader's error.
 
 use crate::env_source::{EnvSource, ProcessEnvSource};
 use chrono::{DateTime, Utc};
 
-/// Resolve "now" honoring `SOURCE_DATE_EPOCH` read from `env`.
+/// The standard variable that fixes every reproducible timestamp.
+pub const SOURCE_DATE_EPOCH: &str = "SOURCE_DATE_EPOCH";
+
+/// The older anodizer spelling of [`SOURCE_DATE_EPOCH`], read when the
+/// standard variable is unset or empty.
+pub const ANODIZE_SOURCE_DATE_EPOCH: &str = "ANODIZE_SOURCE_DATE_EPOCH";
+
+/// Read the source date the environment sets, as seconds since
+/// 1970-01-01 UTC.
 ///
-/// Returns the SDE-derived `DateTime<Utc>` when the env var is set to a
-/// valid `i64`-parseable seconds-since-epoch value, otherwise
-/// `chrono::Utc::now()`. The injected [`EnvSource`] keeps tests off
-/// process-env mutation; production callers should use [`resolve_now`].
+/// Returns `Ok(None)` when neither variable holds a value, and an error naming
+/// the variable and its value when the value is not a whole number of
+/// seconds from 0 up that a date can hold. See the module docs for the order.
+pub fn ambient_epoch_with_env<E: EnvSource + ?Sized>(env: &E) -> anyhow::Result<Option<i64>> {
+    for name in [SOURCE_DATE_EPOCH, ANODIZE_SOURCE_DATE_EPOCH] {
+        let Some(raw) = env.var(name) else {
+            continue;
+        };
+        let value = raw.trim();
+        if value.is_empty() {
+            continue;
+        }
+        return value
+            .parse::<i64>()
+            .ok()
+            .filter(|secs| *secs >= 0 && DateTime::<Utc>::from_timestamp(*secs, 0).is_some())
+            .map(Some)
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "{name} is set to {raw:?}, which is not a whole number of seconds since \
+                     1970-01-01 UTC; set it to a value such as 1700000000, or unset it"
+                )
+            });
+    }
+    Ok(None)
+}
+
+/// The reproducible timestamp for a run: the source date from
+/// [`ambient_epoch_with_env`] when set, otherwise `commit_timestamp` (the
+/// HEAD committer time in Unix seconds).
+///
+/// A missing, unparsable or zero commit timestamp means no commit is known,
+/// so the result is `Ok(None)` when the environment sets nothing either. A
+/// source date of 0 from the environment is kept, since the operator chose it.
+pub fn reproducible_epoch_with_env<E: EnvSource + ?Sized>(
+    env: &E,
+    commit_timestamp: Option<&str>,
+) -> anyhow::Result<Option<u64>> {
+    if let Some(secs) = ambient_epoch_with_env(env)? {
+        return Ok(u64::try_from(secs).ok());
+    }
+    Ok(commit_timestamp
+        .and_then(|ts| ts.trim().parse::<u64>().ok())
+        .filter(|secs| *secs > 0))
+}
+
+/// Resolve "now": the source date from [`ambient_epoch_with_env`] when set,
+/// otherwise `chrono::Utc::now()`.
+///
+/// The injected [`EnvSource`] keeps tests off process-env mutation;
+/// production callers without a context use [`resolve_now`].
 pub fn resolve_now_with_env<E: EnvSource + ?Sized>(env: &E) -> DateTime<Utc> {
-    env.var("SOURCE_DATE_EPOCH")
-        .and_then(|s| s.parse::<i64>().ok())
-        .and_then(|secs| DateTime::<Utc>::from_timestamp(secs, 0))
-        .unwrap_or_else(Utc::now)
+    source_date_epoch_with_env(env).unwrap_or_else(Utc::now)
 }
 
 /// Resolve "now" honoring `SOURCE_DATE_EPOCH` from the process environment.
@@ -51,9 +96,8 @@ pub fn resolve_now() -> DateTime<Utc> {
     resolve_now_with_env(&ProcessEnvSource)
 }
 
-/// Return the `SOURCE_DATE_EPOCH`-derived `DateTime<Utc>` ONLY when the
-/// env var is set on `env` to a valid seconds-since-epoch value, else
-/// `None`.
+/// Return the source date from [`ambient_epoch_with_env`] as a
+/// `DateTime<Utc>` when one is set, else `None`.
 ///
 /// Distinct from [`resolve_now_with_env`], which always returns a value
 /// (falling back to `Utc::now`). Use this when a call site needs to
@@ -62,8 +106,9 @@ pub fn resolve_now() -> DateTime<Utc> {
 /// non-harness production runs keep makeself's default
 /// `LC_ALL=C date` behavior.
 pub fn source_date_epoch_with_env<E: EnvSource + ?Sized>(env: &E) -> Option<DateTime<Utc>> {
-    env.var("SOURCE_DATE_EPOCH")
-        .and_then(|s| s.parse::<i64>().ok())
+    ambient_epoch_with_env(env)
+        .ok()
+        .flatten()
         .and_then(|secs| DateTime::<Utc>::from_timestamp(secs, 0))
 }
 
@@ -160,6 +205,84 @@ mod tests {
         // Falls back to Utc::now(); assert only that it succeeded and is
         // a wall-clock value (post-2020).
         assert!(now.timestamp() > 1_577_836_800);
+    }
+
+    #[test]
+    fn an_empty_source_date_epoch_counts_as_unset() {
+        let env = MapEnvSource::new().with(SOURCE_DATE_EPOCH, "");
+        assert_eq!(ambient_epoch_with_env(&env).unwrap(), None);
+        let env = MapEnvSource::new().with(SOURCE_DATE_EPOCH, "  ");
+        assert_eq!(ambient_epoch_with_env(&env).unwrap(), None);
+    }
+
+    #[test]
+    fn an_empty_source_date_epoch_falls_through_to_the_older_spelling() {
+        let env = MapEnvSource::new()
+            .with(SOURCE_DATE_EPOCH, "")
+            .with(ANODIZE_SOURCE_DATE_EPOCH, "1600000000");
+        assert_eq!(ambient_epoch_with_env(&env).unwrap(), Some(1_600_000_000));
+    }
+
+    #[test]
+    fn source_date_epoch_wins_over_the_older_spelling() {
+        let env = MapEnvSource::new()
+            .with(SOURCE_DATE_EPOCH, "1700000000")
+            .with(ANODIZE_SOURCE_DATE_EPOCH, "1600000000");
+        assert_eq!(ambient_epoch_with_env(&env).unwrap(), Some(1_700_000_000));
+    }
+
+    #[test]
+    fn the_older_spelling_is_read_when_it_is_the_only_one_set() {
+        let env = MapEnvSource::new().with(ANODIZE_SOURCE_DATE_EPOCH, "1600000000");
+        assert_eq!(ambient_epoch_with_env(&env).unwrap(), Some(1_600_000_000));
+    }
+
+    #[test]
+    fn a_malformed_value_is_an_error_naming_the_variable_and_the_value() {
+        for (name, value) in [
+            (SOURCE_DATE_EPOCH, "soon"),
+            (SOURCE_DATE_EPOCH, "-5"),
+            (SOURCE_DATE_EPOCH, "1.5"),
+            (ANODIZE_SOURCE_DATE_EPOCH, "tomorrow"),
+        ] {
+            let env = MapEnvSource::new().with(name, value);
+            let err = ambient_epoch_with_env(&env).unwrap_err().to_string();
+            assert!(
+                err.starts_with(&format!("{name} is set to \"{value}\"")),
+                "{err}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_malformed_source_date_epoch_is_not_hidden_by_the_older_spelling() {
+        let env = MapEnvSource::new()
+            .with(SOURCE_DATE_EPOCH, "soon")
+            .with(ANODIZE_SOURCE_DATE_EPOCH, "1600000000");
+        assert!(ambient_epoch_with_env(&env).is_err());
+    }
+
+    #[test]
+    fn the_reproducible_epoch_prefers_the_environment_over_the_commit_time() {
+        let env = MapEnvSource::new().with(SOURCE_DATE_EPOCH, "1600000000");
+        assert_eq!(
+            reproducible_epoch_with_env(&env, Some("1700000000")).unwrap(),
+            Some(1_600_000_000)
+        );
+        let env = MapEnvSource::new();
+        assert_eq!(
+            reproducible_epoch_with_env(&env, Some("1700000000")).unwrap(),
+            Some(1_700_000_000)
+        );
+        assert_eq!(reproducible_epoch_with_env(&env, Some("0")).unwrap(), None);
+        assert_eq!(reproducible_epoch_with_env(&env, Some("")).unwrap(), None);
+        assert_eq!(
+            reproducible_epoch_with_env(&env, Some("not-a-number")).unwrap(),
+            None
+        );
+        assert_eq!(reproducible_epoch_with_env(&env, None).unwrap(), None);
+        let env = MapEnvSource::new().with(SOURCE_DATE_EPOCH, "soon");
+        assert!(reproducible_epoch_with_env(&env, Some("1700000000")).is_err());
     }
 
     #[test]

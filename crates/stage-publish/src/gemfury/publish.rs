@@ -54,7 +54,7 @@ pub struct GemFuryTarget {
 const MAX_PUSH_CONCURRENCY: usize = 4;
 
 /// Default env var name carrying the push token.
-const DEFAULT_PUSH_TOKEN_ENV: &str = "FURY_PUSH_TOKEN";
+pub(crate) const DEFAULT_PUSH_TOKEN_ENV: &str = "FURY_PUSH_TOKEN";
 /// Default env var name carrying the API (delete) token.
 const DEFAULT_API_TOKEN_ENV: &str = "FURY_API_TOKEN";
 /// Base URL for the push endpoint. The account name is appended per call.
@@ -118,19 +118,29 @@ pub(crate) fn fury_package_name(art_name: &str, version: &str) -> String {
 /// Resolved push-token env var name for the given config entry.
 ///
 /// A templated `secret_name` (`FURY_PUSH_{{ .Env.STAGE }}`) is rendered
-/// against `ctx` before it is used as an env-var name; without the render the
-/// literal template string is looked up, never found, and the credential is
-/// silently treated as absent on a live push.
-pub(crate) fn push_token_env_var(ctx: &Context, cfg: &GemFuryConfig) -> String {
-    crate::util::resolve_secret_name(ctx, cfg.secret_name.as_deref(), DEFAULT_PUSH_TOKEN_ENV)
+/// through [`crate::util::render_secret`] before it is used as an env-var
+/// name; without the render the literal template string is looked up, never
+/// found, and the credential is silently treated as absent on a live push.
+pub(crate) fn push_token_env_var(ctx: &Context, cfg: &GemFuryConfig) -> Result<String> {
+    crate::util::resolve_secret_name(
+        ctx,
+        "gemfury.secret_name",
+        cfg.secret_name.as_deref(),
+        DEFAULT_PUSH_TOKEN_ENV,
+    )
 }
 
 /// Resolved API-token env var name for the given config entry.
 ///
-/// Renders a templated `api_secret_name` against `ctx` before lookup, for the
-/// same reason as [`push_token_env_var`].
-pub(crate) fn api_token_env_var(ctx: &Context, cfg: &GemFuryConfig) -> String {
-    crate::util::resolve_secret_name(ctx, cfg.api_secret_name.as_deref(), DEFAULT_API_TOKEN_ENV)
+/// Renders a templated `api_secret_name` before lookup, for the same reason
+/// as [`push_token_env_var`].
+pub(crate) fn api_token_env_var(ctx: &Context, cfg: &GemFuryConfig) -> Result<String> {
+    crate::util::resolve_secret_name(
+        ctx,
+        "gemfury.api_secret_name",
+        cfg.api_secret_name.as_deref(),
+        DEFAULT_API_TOKEN_ENV,
+    )
 }
 
 /// Detect the Fury format from a filename extension. Returns `None` for
@@ -160,22 +170,18 @@ pub(crate) fn default_formats() -> Vec<&'static str> {
 }
 
 /// Resolve the push token for the given entry: `cfg.token` (templated)
-/// wins; otherwise the env var named by `secret_name`. Empty string when
-/// both unset — caller surfaces a clear "missing token" error rather than
-/// invoking the push anonymously.
+/// wins; otherwise the env var named by `secret_name`. Each value is
+/// trimmed, and one that is empty or only whitespace falls through
+/// ([`crate::util::config_or_env_secret`]). Empty string when both are unset
+/// — caller surfaces a clear "missing token" error rather than invoking the
+/// push anonymously. A `token` template that does not render is an error.
 pub(crate) fn resolve_push_token(ctx: &Context, cfg: &GemFuryConfig) -> Result<String> {
-    if let Some(raw) = cfg.token.as_deref()
-        && !raw.is_empty()
-    {
-        let rendered = ctx
-            .render_template(raw)
-            .context("gemfury: render push-token template")?;
-        if !rendered.is_empty() {
-            return Ok(rendered);
-        }
-    }
-    let env = ctx.env_source();
-    Ok(env.var(&push_token_env_var(ctx, cfg)).unwrap_or_default())
+    crate::util::config_or_env_secret(
+        ctx,
+        "gemfury.token",
+        cfg.token.as_deref(),
+        &push_token_env_var(ctx, cfg)?,
+    )
 }
 
 /// Resolve the API (delete) token. Same shape as [`resolve_push_token`]
@@ -183,18 +189,12 @@ pub(crate) fn resolve_push_token(ctx: &Context, cfg: &GemFuryConfig) -> Result<S
 /// is the only consumer; an empty result causes rollback to fall through
 /// to the warn-only manual-cleanup checklist.
 pub(crate) fn resolve_api_token(ctx: &Context, cfg: &GemFuryConfig) -> Result<String> {
-    if let Some(raw) = cfg.api_token.as_deref()
-        && !raw.is_empty()
-    {
-        let rendered = ctx
-            .render_template(raw)
-            .context("gemfury: render api-token template")?;
-        if !rendered.is_empty() {
-            return Ok(rendered);
-        }
-    }
-    let env = ctx.env_source();
-    Ok(env.var(&api_token_env_var(ctx, cfg)).unwrap_or_default())
+    crate::util::config_or_env_secret(
+        ctx,
+        "gemfury.api_token",
+        cfg.api_token.as_deref(),
+        &api_token_env_var(ctx, cfg)?,
+    )
 }
 
 /// Walk crate-level `archives:` blocks and bail when one declares multiple
@@ -621,8 +621,8 @@ pub fn publish_to_gemfury(
         let push_token = resolve_push_token(ctx, cfg)?;
         // Resolve the (templated) env-var names once per entry; every pushed
         // artifact records the same rendered names into its rollback target.
-        let push_token_env = push_token_env_var(ctx, cfg);
-        let api_token_env = api_token_env_var(ctx, cfg);
+        let push_token_env = push_token_env_var(ctx, cfg)?;
+        let api_token_env = api_token_env_var(ctx, cfg)?;
         if push_token.is_empty() {
             bail!(
                 "gemfury: push token is required to push to account '{}' (entry '{}'). \

@@ -41,7 +41,7 @@ To obtain tokens:
 1. Create a project and app at <https://developer.x.com/en/portal/dashboard>.
 2. Set the app permissions to **Read and Write**.
 3. Under **Keys and Tokens**, generate an access token and secret **for your
-   account** (not just the app-level keys).
+   account**; the app-level keys alone are not enough.
 4. Copy all four values into the corresponding environment variables.
 
 ## Tweet length

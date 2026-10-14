@@ -196,7 +196,7 @@ pub async fn fetch_published_assets(
         release_cfg.tag.as_deref(),
     )?;
 
-    let token = crate::resolve_release_token(ctx, release_cfg)
+    let token = crate::resolve_release_token(ctx, release_cfg)?
         .or_else(|| ctx.options.token.clone())
         .ok_or_else(|| {
             anyhow::anyhow!(

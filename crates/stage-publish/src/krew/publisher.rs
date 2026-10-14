@@ -123,6 +123,19 @@ pub(super) fn collect_krew_target(
     }))
 }
 
+/// The token a rollback closes the pull request of `target` with: the one
+/// the publish opened it with ([`util::resolve_pr_token`] on the krew block
+/// of the crate `target` names), so a `pull_request.token` or
+/// `repository.token` the publish used is used again. A crate no longer in
+/// the config falls back to the environment chain.
+fn rollback_pr_token(ctx: &Context, target: &KrewPrTarget) -> anyhow::Result<Option<String>> {
+    let repo = ctx
+        .config
+        .find_crate(&target.target)
+        .and_then(|c| block(c.publish.as_ref()?)?.repository.as_ref());
+    util::resolve_pr_token(ctx, repo, target.token_env_var.as_deref())
+}
+
 /// The crate-level `publish.krew` block — the single accessor the
 /// registry gate, the gate-override collapse, and the per-crate dispatch
 /// predicate all key on.
@@ -205,11 +218,8 @@ pub(crate) fn build_krew_reconcile_target(
     let (upstream_owner, upstream_repo) = resolve_krew_upstream(krew_cfg, &|t| {
         ctx.render_template(t).unwrap_or_else(|_| t.to_string())
     });
-    let token = crate::util::resolve_repo_token(
-        ctx,
-        krew_cfg.repository.as_ref(),
-        Some("KREW_INDEX_TOKEN"),
-    );
+    let token =
+        crate::util::resolve_pr_token(ctx, krew_cfg.repository.as_ref(), Some("KREW_INDEX_TOKEN"))?;
     let version = ctx.version();
     Ok(Some(crate::util::PrReconcileTarget {
         publisher: KrewPublisher::PUBLISHER_NAME.into(),
@@ -415,12 +425,7 @@ impl anodizer_core::Publisher for KrewPublisher {
         }
 
         // Resolve token at rollback time — never persisted in evidence.
-        // Falls back to ANODIZER_GITHUB_TOKEN then GITHUB_TOKEN, same as
-        // every git-revert publisher.
         let env = ctx.env_source();
-        let resolve_token = |t: &KrewPrTarget| -> Option<String> {
-            util::resolve_rollback_token(env, t.token_env_var.as_deref())
-        };
 
         // Fan out at PR granularity, not target granularity: a single
         // krew target can map to multiple open PRs if the publish path
@@ -438,7 +443,17 @@ impl anodizer_core::Publisher for KrewPublisher {
         let mut seen: std::collections::BTreeSet<(String, String, u64)> =
             std::collections::BTreeSet::new();
         for t in &targets {
-            let Some(token) = resolve_token(t) else {
+            let token = match rollback_pr_token(ctx, t) {
+                Ok(token) => token,
+                Err(e) => {
+                    log.warn(&format!(
+                        "skipped rollback for {} — {e:#}; manual cleanup required",
+                        t.target
+                    ));
+                    continue;
+                }
+            };
+            let Some(token) = token else {
                 log.warn(&format!(
                     "skipped rollback for {} — no krew token resolvable (env var ${} / \
                      {} all unset)",
@@ -456,7 +471,7 @@ impl anodizer_core::Publisher for KrewPublisher {
                 &t.branch,
                 Some(&token),
                 env_hint_for_target,
-                &anodizer_core::ProcessEnvSource,
+                env,
             ) {
                 Ok(v) => v,
                 Err(e) => {
@@ -524,11 +539,12 @@ impl anodizer_core::Publisher for KrewPublisher {
                             "closing krew PR {} ({})",
                             job.target_label, pr_url
                         ));
-                        let outcome = crate::util::close_pr_via_api(
+                        let outcome = crate::util::close_pr_via_api_with_env(
                             &job.upstream_owner,
                             &job.upstream_repo,
                             job.pr_number,
                             &job.token,
+                            env,
                         );
                         match outcome {
                             crate::util::CloseOutcome::Closed => {
@@ -590,6 +606,7 @@ impl anodizer_core::Publisher for KrewPublisher {
             ctx,
             &policy,
             "KREW_INDEX_TOKEN",
+            Some(("kubernetes-sigs", "krew-index")),
             ctx.config
                 .crate_universe()
                 .into_iter()

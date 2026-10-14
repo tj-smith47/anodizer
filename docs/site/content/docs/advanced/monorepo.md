@@ -322,8 +322,8 @@ for how this fits alongside `check config`'s other static lints.
 When `version_sync.enabled: true` is set per-crate, the tag command also updates that crate's `Cargo.toml` version, any intra-workspace `path + version` dependency specs that reference it, and `Cargo.lock`. The update is committed with `[skip ci]` and the tag points at that commit.
 
 The same commit also heals **every** internal `path + version` floor in the
-workspace against the path crate's post-bump version — not only the crates
-bumped in that run — so a bump commit that never reached the default branch
+workspace against the path crate's post-bump version, including crates that
+were not bumped in that run, so a bump commit that never reached the default branch
 cannot leave a stale floor behind to break the next `cargo publish`:
 
 ```toml
@@ -355,8 +355,8 @@ anodizer-output crates=["cfgd"]
 anodizer-output versions={"cfgd":"0.7.0"}
 ```
 
-A floor the run's own version bump already rewrites is reported by that step,
-not twice: only floors the bump leaves behind are reported as heals, in both
+A floor the run's own version bump already rewrites is reported once, by that
+step: only floors the bump leaves behind are reported as heals, in both
 modes.
 
 A floor already at or above the path crate's version is left untouched, and the
@@ -368,7 +368,7 @@ not a single lower-bounded comparator (`"*"`, `"<0.9"`, `">=0.6, <0.8"`) is
 left alone, as is a whole dependency section written as an inline
 `dependencies = { … }` value.
 
-### Release all changed crates
+### All changed crates (`--all`)
 
 ```bash
 anodizer release --all
@@ -380,7 +380,7 @@ This detects which crates have unreleased changes (commits since their last tag)
 
 When `release` (or `release --publish-only`) runs without `--crate` or `--all`, per-crate publishers (homebrew, scoop, nix, aur, krew, chocolatey, winget, cargo) iterate over **every crate whose publisher block is configured**. This matches the implicit-all behavior the determinism harness's `release --publish-only` step relies on: a single `release --publish-only` invocation publishes every configured crate to every configured publisher target, without an explicit selection flag. Pass `--crate <name>` (repeatable) to scope a run to a subset.
 
-## Auto-tagging a monorepo
+## Monorepo auto-tagging
 
 Loop `anodizer tag --crate <name>` for each crate so each workspace gets its own release:
 

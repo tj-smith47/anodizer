@@ -36,8 +36,6 @@ use super::{
     MacOSNotarizeApiConfig, MacOSSignConfig,
 };
 
-// parse_humantime_duration is pub(super) in string_or_bool — accessible from
-// sibling child modules (tests lives under config, same parent as string_or_bool)
 use super::string_or_bool::parse_humantime_duration;
 
 #[test]

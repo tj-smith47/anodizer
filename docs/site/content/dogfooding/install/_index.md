@@ -1,11 +1,11 @@
 +++
-title = "Where you install it"
+title = "Install channels"
 description = "Distribution channels users get the anodizer and cfgd binaries from, with a link to each live registry entry."
 weight = 10
 template = "section.html"
 +++
 
-# Where you install it
+# Install channels
 
 Distribution channels users get the binary from. Each row links to the live
 registry page or release asset.

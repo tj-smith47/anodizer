@@ -2420,33 +2420,6 @@ fn test_detect_cross_strategy_host_windows_keeps_cargo() {
     assert_eq!(strategy, CrossStrategy::Cargo);
 }
 
-// ---- Fix 5: resolve_reproducible_epoch tests ----
-
-use super::workspace::resolve_reproducible_epoch_with_env;
-
-#[test]
-fn test_resolve_reproducible_epoch_from_timestamp() {
-    // No SOURCE_DATE_EPOCH override — exercise the commit_timestamp
-    // fallback path through the injected env source.
-    let env = MapEnvSource::new();
-    let epoch = resolve_reproducible_epoch_with_env("1700000000", &env);
-    assert_eq!(epoch, Some(1700000000));
-}
-
-#[test]
-fn test_resolve_reproducible_epoch_invalid_timestamp() {
-    let env = MapEnvSource::new();
-    let epoch = resolve_reproducible_epoch_with_env("not-a-number", &env);
-    assert_eq!(epoch, None);
-}
-
-#[test]
-fn test_resolve_reproducible_epoch_uses_source_date_epoch_when_set() {
-    let env = MapEnvSource::new().with("SOURCE_DATE_EPOCH", "1234567890");
-    let epoch = resolve_reproducible_epoch_with_env("1700000000", &env);
-    assert_eq!(epoch, Some(1234567890));
-}
-
 // ---- Fix 5: config parsing with hooks test ----
 
 #[test]

@@ -99,8 +99,7 @@ $ anodizer release --publish-only
 
 Reconciliation fails toward publishing — a publisher skips only on a full
 positive match of package name **and** version upstream, so an unreachable
-registry or an ambiguous response still attempts the publish rather than
-assuming it succeeded.
+registry or an ambiguous response still attempts the publish.
 
 Two things this does NOT replace:
 
@@ -113,8 +112,8 @@ Two things this does NOT replace:
    the version. Immutable releases cannot be overwritten by re-running.
 
 The contract for `report.json`: it exists for human triage. Skip decisions
-come from the live upstream state via each publisher's `reconcile()`, never
-from the report.
+come from the live upstream state via each publisher's `reconcile()`; the
+report is not read for them.
 
 ## See also
 

@@ -107,7 +107,7 @@ impl Stage for super::ReleaseStage {
             // token for this crate's release API calls (cross-releasing, e.g.
             // code private / release public).
             let crate_token =
-                crate::resolve_release_token(ctx, release_cfg).or_else(|| token.clone());
+                crate::resolve_release_token(ctx, release_cfg)?.or_else(|| token.clone());
             release_one_crate(
                 ctx,
                 &log,
@@ -564,9 +564,9 @@ pub(crate) fn assemble_artifact_entries(
             ));
         } else {
             log.verbose(&format!(
-                "ids filter {:?} selected {} artifacts for crate '{}'",
+                "ids filter {:?} selected {} for crate '{}'",
                 ids,
-                artifact_entries.len(),
+                anodizer_core::text::count_noun(artifact_entries.len(), "artifact", "artifacts"),
                 crate_cfg.name
             ));
         }

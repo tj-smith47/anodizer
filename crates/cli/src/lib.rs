@@ -138,7 +138,8 @@ pub enum Commands {
         #[arg(
             long,
             default_value = "3h",
-            help = "Pipeline timeout duration (e.g., 90m, 3h, 5s). A generous \
+            help = "Pipeline timeout duration (e.g., 90m, 3h, 2d), in the \
+                    duration format config fields use, at most one year. A generous \
                     safety backstop: per-stage bounds (e.g. announce.deadline) \
                     catch a hung stage in seconds"
         )]
@@ -340,7 +341,8 @@ pub enum Commands {
         #[arg(
             long,
             default_value = "3h",
-            help = "Pipeline timeout duration (e.g., 90m, 3h, 5s). A generous \
+            help = "Pipeline timeout duration (e.g., 90m, 3h, 2d), in the \
+                    duration format config fields use, at most one year. A generous \
                     safety backstop: per-stage bounds (e.g. announce.deadline) \
                     catch a hung stage in seconds"
         )]

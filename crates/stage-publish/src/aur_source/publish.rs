@@ -108,12 +108,10 @@ pub(super) fn publish_aur_source_entry(
         // fails with "error in libcrypto".
         let strict = ctx.render_is_strict();
         let rendered_key = match cfg.private_key.as_deref() {
-            Some(pk) => Some(util::render_or_warn_with_vars(
-                &scoped_vars,
-                log,
+            Some(pk) => Some(anodizer_core::git::render_secret(
                 "aur_source.private_key",
                 pk,
-                strict,
+                &|s| anodizer_core::template::render(s, &scoped_vars),
             )?),
             None => None,
         };

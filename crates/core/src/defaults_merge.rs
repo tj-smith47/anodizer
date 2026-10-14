@@ -15,13 +15,15 @@
 //! - **List-typed fields (append + merge-by-identity)**: each defaults
 //!   entry merges into the crate entry that shares its identity key
 //!   (first entry of `formats` for archives, `id`/`name`/`package_name`
-//!   for packagers, etc.). Defaults entries with no identity-match are
-//!   appended after the crate's own entries.
+//!   for packagers, etc.). A defaults entry that matches no crate entry,
+//!   including one with no identity key, is appended after the crate's own
+//!   entries; an empty or absent crate list gets it as its one entry.
 //! - **Empty map at per-crate position**: written as `{}` in YAML, parses
 //!   to `Some(default)` and inherits all fields from defaults.
-//! - **`skip: true` at per-crate position**: suppresses the inherited
-//!   block entirely (the merge engine treats the field as if defaults
-//!   were `None`).
+//! - **`skip: true` at per-crate position** (or a `skip` string reading
+//!   `true` or `1`): a single block takes nothing from defaults. A list
+//!   entry takes nothing either, and when it shares the defaults entry's
+//!   identity key the defaults entry is not appended.
 //! - **Scalar conflict**: per-crate value wins over defaults.
 //!
 //! ## Entry point
@@ -43,14 +45,13 @@ use crate::config::{
 // Skip-block suppression
 // ---------------------------------------------------------------------------
 //
-// Any per-crate config block carrying `skip: true` (a `StringOrBool`
-// that evaluates to a truthy value) suppresses inheritance from the matching
-// `defaults.*` block entirely — the merge engine treats defaults as if they
-// were `None` for that block.
+// A per-crate config block carrying a truthy `skip` takes nothing from the
+// matching `defaults.*` block. A list entry with a different identity key
+// does not stop the defaults entry from being appended beside it.
 //
 // Rather than adding a `is_skipped` accessor on every config struct that
 // happens to carry a `skip` field (24+ types and growing), the merge inspects the
-// serialized JSON form of the value and look for a `skip` key whose value is
+// serialized JSON form of the value and looks for a `skip` key whose value is
 // truthy. This keeps the suppression rule uniform across every block — adding
 // a new `skip`-bearing config type requires no changes here.
 
@@ -98,14 +99,13 @@ fn json_skip_truthy(value: &Json) -> bool {
 /// The merge engine reads `config.defaults`; if it is `None`, this function
 /// returns immediately.
 ///
-/// Top-level `Config` fields that path-mirror in `Defaults` (`source`,
-/// `upx`, `signs`, `binary_signs`, `docker_signs`, `notarize`, `sboms`,
-/// `makeselfs`, `srpms`) are folded as a fill-when-unset pre-pipeline
-/// pass: if the top-level field is empty / `None`, the defaults entry
-/// is cloned in; if the top-level field is already set, it wins (defaults
-/// are inert). For deeply-nested `Option<T>` slots that share a struct
-/// type with the defaults slot, the per-config entry is deep-merged with
-/// the defaults entry filling any field the user left unset.
+/// Top-level `Config` fields that path-mirror in `Defaults` are folded
+/// too. `source`, `notarize` and `srpms` are deep-merged: the defaults
+/// block fills every field the top-level block left unset, or becomes the
+/// block when it is absent. `upx`, `signs`, `binary_signs`, `docker_signs`,
+/// `sboms`, `makeselfs` and `install_scripts` take the defaults entry as
+/// their one entry when the list is empty, and keep their own entries
+/// untouched otherwise.
 pub fn apply_defaults(config: &mut Config) {
     let defaults = match config.defaults.clone() {
         Some(d) => d,
@@ -132,7 +132,7 @@ pub fn apply_defaults(config: &mut Config) {
 }
 
 /// Fold defaults into the top-level `Config` fields that path-mirror in
-/// `Defaults`. Fill-when-unset — top-level user values always win.
+/// `Defaults`. A field the top-level block sets keeps its value.
 ///
 /// Each sign slice this fills is recorded in `Config::filled_from_defaults`:
 /// afterwards the entry is a plain config entry, and a diagnostic pointing at
@@ -200,7 +200,7 @@ fn apply_top_level_defaults(config: &mut Config, defaults: &Defaults) {
 ///   truthy `skip` blocks inheritance (this generalises across every
 ///   `skip`-bearing block as more single-struct fields are wired in).
 /// - **List append + merge-by-identity** via `merge_list_by_identity`:
-///   `nfpm`, `snapcrafts`, `dmgs`, `pkgs`, `msis`, `nsis`, `app_bundles`,
+///   `nfpms`, `snapcrafts`, `dmgs`, `pkgs`, `msis`, `nsis`, `app_bundles`,
 ///   `flatpaks`, `dockers_v2`. Each takes a single defaults entry and folds
 ///   into the per-crate vec by identity key.
 /// - **Archives** via dedicated `merge_archives` (handles the
@@ -212,11 +212,10 @@ fn apply_top_level_defaults(config: &mut Config, defaults: &Defaults) {
 ///   (homebrew, homebrew_cask, cargo, scoop, winget, chocolatey, krew, nix,
 ///   aur, aur_source) deep-merges from its `PublishDefaults.<name>` slot.
 ///
-/// What this function does **not** fold (top-level `Config` fields that
-/// path-mirror in `Defaults` but live on `Config`, not `CrateConfig`):
-/// `source`, `upx`, `sign`, `binary_signs`, `docker_signs`, `notarize`,
-/// `sbom`, `makeselves`, `srpms`. Not yet folded — see the
-/// `apply_defaults` rustdoc above.
+/// The `Defaults` fields that mirror top-level `Config` fields (`source`,
+/// `upx`, `sign`, `binary_signs`, `docker_signs`, `notarize`, `sbom`,
+/// `makeselves`, `srpms`, `install_scripts`) are folded by
+/// [`apply_defaults`] into the top-level config, outside this function.
 pub fn apply_to_crate(defaults: &Defaults, crate_cfg: &mut CrateConfig) {
     // ---- Scalar / Option<T> fields: fill if None ----
     if crate_cfg.cross.is_none() && defaults.cross.is_some() {
@@ -375,8 +374,8 @@ fn deep_merge_struct_inplace<T: Serialize + DeserializeOwned>(target: &mut T, de
 
 /// Merge `defaults` JSON into `target` JSON in place.
 ///
-/// - Objects: recurse field-by-field, defaults filling missing fields only
-///   (target wins for any field it sets — including explicit `null`).
+/// - Objects: recurse field-by-field. A field the target sets keeps its
+///   value; a missing field or a `null` one is filled from defaults.
 /// - Arrays: target wins (lists are merged by the caller using identity
 ///   keys, not by this generic JSON merger).
 /// - Scalars: target wins; defaults only used when target is `null` /
@@ -460,7 +459,7 @@ where
 /// Core "merge one defaults entry into a list" routine.
 ///
 /// Behaviour:
-/// - **Empty list**: append the defaults entry.
+/// - **Empty list**: the defaults entry becomes its one entry.
 /// - **Identity match (`Some(x) == Some(x)`)**: deep-merge defaults into the
 ///   FIRST matching per-crate entry only; subsequent matches are left
 ///   untouched. This avoids fanning a single defaults entry into N existing
@@ -471,9 +470,9 @@ where
 /// - **`None` identity**: never matches another `None` (two unkeyed entries
 ///   stay distinct). Required to keep unrelated unkeyed entries from
 ///   collapsing into the same defaults block.
-/// - **Skip-suppression**: any per-crate entry whose serialised form has a
-///   truthy `skip` field is skipped over for matching purposes — the
-///   user's intent is to disable that entry, not have it absorb defaults.
+/// - **Skip-suppression**: a per-crate entry whose serialised form has a
+///   truthy `skip` field still matches by identity, but takes nothing from
+///   the defaults entry; the defaults entry is not appended either.
 fn merge_one_into_list<T, F>(list: &mut Vec<T>, default_entry: &T, identity: F)
 where
     T: Clone + Serialize + DeserializeOwned,

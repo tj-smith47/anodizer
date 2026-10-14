@@ -3162,12 +3162,12 @@
           "const": "auto"
         },
         {
-          "description": "Always authenticate with the token; never attempt OIDC. Errors if `CARGO_REGISTRY_TOKEN` is unset. This is anodizer's historical behaviour.",
+          "description": "Authenticate only with the token, with no OIDC attempt. Errors if `CARGO_REGISTRY_TOKEN` is unset. This is anodizer's historical behaviour.",
           "type": "string",
           "const": "token"
         },
         {
-          "description": "Always authenticate with OIDC (Trusted Publishing); never fall back to the token. Errors if the GitHub Actions OIDC request env (`ACTIONS_ID_TOKEN_REQUEST_URL` / `_TOKEN`) is absent, so a misconfigured Trusted Publisher fails the release loudly and never falls back to a token.",
+          "description": "Authenticate only with OIDC (Trusted Publishing), with no token fallback. Errors if the GitHub Actions OIDC request env (`ACTIONS_ID_TOKEN_REQUEST_URL` / `_TOKEN`) is absent, so a misconfigured Trusted Publisher fails the release loudly.",
           "type": "string",
           "const": "oidc"
         }
@@ -3300,7 +3300,7 @@
           ]
         },
         "offline": {
-          "description": "Require offline resolution; never hit the network (`--offline`).",
+          "description": "Require offline resolution with no network access (`--offline`).",
           "default": null,
           "type": [
             "boolean",
@@ -4872,7 +4872,7 @@
       ]
     },
     "Defaults": {
-      "description": "Workspace-level defaults. Each key has the same shape as the matching key under `crates[]` or at the top level, and fills what the config left unset. A field the config sets always keeps its own value.\n\n| Key | Applied to | How |\n|---|---|---|\n| `builds` | every build of every crate | merged into each `builds[]` entry; a crate with no builds gets one build made from it |\n| `archives` | every crate | merged into the crate's archive whose first format matches; appended when none matches; a crate with `archives: false` takes nothing |\n| `nfpms`, `snapcrafts`, `flatpaks`, `app_bundles`, `dmgs`, `pkgs`, `msis`, `nsis`, `dockers_v2` | every crate | merged into the crate's entry with the same identity (`id`; `id` then `package_name` for nfpm; `name` for snapcraft); appended when none matches |\n| `checksum` | every crate | merged into the crate's `checksum` block |\n| `cross` | every crate | used when the crate sets no `cross` |\n| `version_files` | every crate | used whole when the crate sets no `version_files`; a crate list is never merged with it |\n| `crates.tag_template` | every crate | used when the crate's `tag_template` is unset or empty |\n| `publish.<publisher>` | every crate | merged into the crate's `publish.<publisher>` block |\n| `publish.on_error`, `publish.on_rollback` | every crate | appended after the crate's own hooks |\n| `source`, `notarize`, `srpms` | the top level | merged into the top-level block |\n| `upx`, `sign`, `binary_signs`, `docker_signs`, `sbom`, `makeselves`, `install_scripts` | the top level | used as the one entry of the top-level list (`upx`, `signs`, `binary_signs`, `docker_signs`, `sboms`, `makeselfs`, `install_scripts`) when that list is empty |\n| `targets` | every build | used by every build that sets no `targets` |\n| `env` | the top level | put before the top-level `env`, so a top-level entry with the same key wins |\n\n\"Merged\" means the default fills every field the entry left unset, nested blocks field by field; a list field the entry sets keeps its own list whole. An empty block (`{}`) in a crate inherits every field. A block or list entry with `skip: true` (or a `skip` string reading `true` or `1`) takes nothing from defaults; a build's `skip` does not stop the `builds` merge. A list default with no identity key matches no entry and is appended, unless the crate's list is empty.",
+      "description": "Workspace-level defaults. Each key has the same shape as the matching key under `crates[]` or at the top level, and fills what the config left unset. A field the config sets always keeps its own value.\n\n| Key | Applied to | How |\n|---|---|---|\n| `builds` | every build of every crate | merged into each `builds[]` entry; a crate with no builds gets one build made from it |\n| `archives` | every crate | merged into the crate's archive whose first format matches; appended when none matches; a crate with `archives: false` takes nothing |\n| `nfpms`, `snapcrafts`, `flatpaks`, `app_bundles`, `dmgs`, `pkgs`, `msis`, `nsis`, `dockers_v2` | every crate | merged into the crate's entry with the same identity (`id`; `id` then `package_name` for nfpm; `name` for snapcraft); appended when none matches |\n| `checksum` | every crate | merged into the crate's `checksum` block |\n| `cross` | every crate | used when the crate sets no `cross` |\n| `version_files` | every crate | used whole when the crate sets no `version_files`; a crate list is never merged with it |\n| `crates.tag_template` | every crate | used when the crate's `tag_template` is unset or empty |\n| `publish.<publisher>` | every crate | merged into the crate's `publish.<publisher>` block |\n| `publish.on_error`, `publish.on_rollback` | every crate | appended after the crate's own hooks |\n| `source`, `notarize`, `srpms` | the top level | merged into the top-level block |\n| `upx`, `sign`, `binary_signs`, `docker_signs`, `sbom`, `makeselves`, `install_scripts` | the top level | used as the one entry of the top-level list (`upx`, `signs`, `binary_signs`, `docker_signs`, `sboms`, `makeselfs`, `install_scripts`) when that list is empty |\n| `targets` | every build | used by every build that sets no `targets` |\n| `env` | the top level | put before the top-level `env`, so a top-level entry with the same key wins |\n\n\"Merged\" means the default fills every field the entry left unset, nested blocks field by field; a list field the entry sets keeps its own list whole. An empty block (`{}`) in a crate inherits every field. A block or list entry with `skip: true` (or a `skip` string reading `true` or `1`) takes nothing from defaults, and a list default that shares a skipped entry's identity key is not appended; a build's `skip` does not stop the `builds` merge. A list default that matches no entry, including one with no identity key, is appended to the crate's list; an empty or absent list gets it as its one entry.",
       "type": "object",
       "properties": {
         "app_bundles": {
@@ -5766,7 +5766,7 @@
           "minimum": 0
         },
         "delay": {
-          "description": "Duration string for the initial retry delay (default: `\"10s\"`). Examples: `\"1s\"`, `\"500ms\"`.",
+          "description": "Duration string for the initial retry delay (default: `\"10s\"`), in the duration format every config field uses, at most one year. A bare number is read as seconds. Examples: `\"1s\"`, `\"500ms\"`, `\"10\"`.",
           "default": null,
           "type": [
             "string",
@@ -5774,7 +5774,7 @@
           ]
         },
         "max_delay": {
-          "description": "Maximum delay between retries (default: `\"5m\"`). Caps the exponential backoff so attempt-9 with a 10s base does not stretch to ~42 min. Example: `\"30s\"`.",
+          "description": "Maximum delay between retries (default: `\"5m\"`), in the same format as `delay`. Caps the exponential backoff so attempt-9 with a 10s base does not stretch to ~42 min. Example: `\"30s\"`.",
           "default": null,
           "type": [
             "string",
@@ -7066,7 +7066,7 @@
           ]
         },
         "livecheck": {
-          "description": "`livecheck` stanza configuration for the cask. When unset, the cask emits `livecheck do\\n  skip \"Auto-generated on release.\"\\nend` (a binary cask's download URL/sha256 are rewritten on every release, so `brew livecheck` has nothing stable to poll). Set `strategy:` / `url:` / `regex:` (with `skip: false`) to opt into active version detection — the same shape a Homebrew cask `livecheck do … end` block accepts. Reuses the formula `livecheck` config type.",
+          "description": "`livecheck` stanza configuration for the cask. When unset, the cask emits `livecheck do\\n  skip \"Auto-generated on release.\"\\nend` (a binary cask's download URL/sha256 are rewritten on every release, so `brew livecheck` has nothing stable to poll). Setting any of `strategy:`, `url:` or `regex:` turns on active version detection, unless `skip: true` is also set. Reuses the formula `livecheck` config type; an active cask livecheck with no `url:` reads `url :url`.",
           "default": null,
           "anyOf": [
             {
@@ -8038,7 +8038,7 @@
       "additionalProperties": false
     },
     "HomebrewLivecheck": {
-      "description": "`livecheck` stanza configuration for a Homebrew formula.\n\nDefault (the struct absent from config): the formula emits a `livecheck { skip \"Auto-generated on release.\" }` block — correct for a binary tap whose archive URL/sha256 are rewritten every release. Setting any of `strategy`, `url` or `regex` turns on active version polling:\n\n```yaml\nlivecheck:\n  strategy: github_latest\n```\n\nrenders:\n\n```ruby\nlivecheck do\n  url :stable\n  strategy :github_latest\nend\n```",
+      "description": "`livecheck` stanza configuration for a Homebrew formula or cask.\n\nDefault (the struct absent from config): the formula emits a `livecheck { skip \"Auto-generated on release.\" }` block — correct for a binary tap whose archive URL/sha256 are rewritten every release. Setting any of `strategy`, `url` or `regex` turns on active version polling:\n\n```yaml\nlivecheck:\n  strategy: github_latest\n```\n\nrenders:\n\n```ruby\nlivecheck do\n  url :stable\n  strategy :github_latest\nend\n```",
       "type": "object",
       "properties": {
         "regex": {
@@ -8074,7 +8074,7 @@
           ]
         },
         "url": {
-          "description": "`url` for the livecheck. Accepts a Ruby symbol shorthand (`stable` / `head` / `homepage`, and `url` for a cask → `url :stable`) or a literal URL string (`url \"https://...\"`). Defaults to `:stable` in an active livecheck that sets no url.",
+          "description": "`url` for the livecheck: a symbol naming one of the package's own URLs (`stable`, `head` or `homepage` in a formula; `url` or `homepage` in a cask), rendered `url :stable`, or a literal URL string rendered `url \"https://...\"`. A symbol the package does not have is an error. In an active livecheck that sets no url, a formula reads `:stable` and a cask reads `:url`.",
           "default": null,
           "type": [
             "string",
@@ -8122,13 +8122,15 @@
       "additionalProperties": false
     },
     "HumanDuration": {
+      "description": "A duration: one or more whole numbers, each followed by a unit (ms, s, m, h or d), such as 90s, 1h30m or 2d. Spaces and tabs may separate the parts. The total may be at most one year (31536000s); a longer value is refused when the config loads.",
       "type": "string",
-      "pattern": "^\\s*([0-9](\\s*[0-9]){0,18}\\s*(ms|s|m|h|d)\\s*)+$",
+      "pattern": "^[ \\t]*([0-9]([ \\t]*[0-9]){0,18}[ \\t]*(ms|s|m|h|d)[ \\t]*)+$",
       "examples": [
         "90s",
         "10m",
         "1h30m",
-        "500ms"
+        "500ms",
+        "2d"
       ]
     },
     "IncludeFilePath": {
@@ -8679,7 +8681,7 @@
           ]
         },
         "ids": {
-          "description": "Build IDs whose artifacts this entry signs and notarizes. Default: the project name; with no project name, every matching artifact.",
+          "description": "Build IDs whose darwin artifacts this entry signs and notarizes: app bundles and DMGs with `use: dmg`, PKGs with `use: pkg`. Default: the project name; with no project name, every matching artifact.",
           "default": null,
           "type": [
             "array",
@@ -8847,7 +8849,7 @@
           ]
         },
         "ids": {
-          "description": "Build IDs whose darwin binaries this entry signs. Default: the project name; with no project name, every darwin binary.",
+          "description": "Build IDs whose darwin binaries and universal binaries this entry signs. Default: the project name; with no project name, every darwin binary.",
           "default": null,
           "type": [
             "array",
@@ -11685,12 +11687,12 @@
           "const": "auto"
         },
         {
-          "description": "Always authenticate with the token (`NPM_TOKEN` / `cfg.token`); never attempt OIDC. Errors if no token is available. This is anodizer's historical behaviour.",
+          "description": "Authenticate only with the token (`NPM_TOKEN` / `cfg.token`), with no OIDC attempt. Errors if no token is available. This is anodizer's historical behaviour.",
           "type": "string",
           "const": "token"
         },
         {
-          "description": "Always authenticate with OIDC (Trusted Publishing); never fall back to the token. Errors if the OIDC request env is absent. Use when every package in this entry has a configured Trusted Publisher and you want a failed exchange to fail the release loudly and never fall back to a token.",
+          "description": "Authenticate only with OIDC (Trusted Publishing), with no token fallback. Errors if the OIDC request env is absent. Use when every package in this entry has a configured Trusted Publisher and a failed exchange should fail the release loudly.",
           "type": "string",
           "const": "oidc"
         }
@@ -13015,12 +13017,12 @@
           "const": "auto"
         },
         {
-          "description": "Always authenticate with the token; never attempt OIDC. Errors if no token is available. This is anodizer's historical behaviour.",
+          "description": "Authenticate only with the token, with no OIDC attempt. Errors if no token is available. This is anodizer's historical behaviour.",
           "type": "string",
           "const": "token"
         },
         {
-          "description": "Always authenticate with OIDC (Trusted Publishing); never fall back to the token. Errors if the GitHub Actions OIDC request env (`ACTIONS_ID_TOKEN_REQUEST_URL` / `_TOKEN`) is absent, so a misconfigured Trusted Publisher fails the release loudly and never falls back to a token.",
+          "description": "Authenticate only with OIDC (Trusted Publishing), with no token fallback. Errors if the GitHub Actions OIDC request env (`ACTIONS_ID_TOKEN_REQUEST_URL` / `_TOKEN`) is absent, so a misconfigured Trusted Publisher fails the release loudly.",
           "type": "string",
           "const": "oidc"
         }
@@ -13801,7 +13803,7 @@
           ]
         },
         "max_elapsed": {
-          "description": "Cap on total retry wall-time. Each publisher run gets its own deadline: the moment the publisher starts plus this budget. Every retried request inside that run (an auth exchange, the publish request, a cleanup) shares that one deadline, and a second publisher starts a fresh one. A retry outside any publisher run starts its own deadline when it begins.\n\nRetrying stops before a backoff sleep would pass the deadline, so a long transient storm fails with the last error, and an idempotent re-run can resume. When unset the budget is 15 minutes. A release whose CI job has a hard timeout should keep it below that timeout.",
+          "description": "Cap on total retry wall-time. Each publisher run gets its own deadline: the moment the publisher starts plus this budget. Every retried request inside that run (an auth exchange, the publish request, a cleanup) shares that one deadline, and a second publisher starts a fresh one. A GitHub, GitLab or Gitea release run takes its deadline once when it starts, shared by its API calls and asset uploads. A retry outside both starts its own deadline when it begins.\n\nRetrying stops before a backoff sleep would pass the deadline, so a long transient storm fails with the last error, and an idempotent re-run can resume. When unset the budget is 15 minutes. A release whose CI job has a hard timeout should keep it below that timeout.",
           "anyOf": [
             {
               "$ref": "#/definitions/HumanDuration"
@@ -15811,7 +15813,7 @@
           }
         },
         "if": {
-          "description": "Template-conditional: when set, the hook only runs if the rendered result is truthy (not `\"false\"` / `\"0\"` / `\"no\"` / empty). Render failure hard-errors and is never skipped silently. `before.hooks[].if:` / per-build / per-archive hook `if:` fields. An absent, empty or blank `if:` imposes no gate and always runs; the falsy test applies to what a non-blank gate renders. The gate is evaluated before the hook's own `env:` is rendered, so it cannot read those entries: a skipped hook's env is never rendered and cannot fail.",
+          "description": "Template-conditional: when set, the hook only runs if the rendered result is truthy (not `\"false\"` / `\"0\"` / `\"no\"` / empty). Render failure hard-errors and is never skipped silently. An absent, empty or blank `if:` imposes no gate and always runs; the falsy test applies to what a non-blank gate renders. The gate is evaluated before the hook's own `env:` is rendered, so it cannot read those entries: a skipped hook's env is never rendered and cannot fail.",
           "default": null,
           "type": [
             "string",
@@ -16455,7 +16457,7 @@
           ]
         },
         "name": {
-          "description": "Human-readable name for this upload config.",
+          "description": "Name of this upload entry. Required: an entry without one is skipped. It keys the credential env vars `UPLOAD_{NAME}_USERNAME` and `UPLOAD_{NAME}_SECRET`, uppercased with each `-` turned into `_`.",
           "default": null,
           "type": [
             "string",
@@ -16471,7 +16473,7 @@
           ]
         },
         "password": {
-          "description": "Password for HTTP basic auth.\n\nStrongly prefer `{{ Env.UPLOAD_PASSWORD }}` (or any other env-var template) over an in-config literal — plaintext values here are NOT redacted from dry-run output and will end up in `dist/config.yaml` when the pipeline runs with `--dry-run` / `--snapshot`. Resolution order: rendered `password` template → env `UPLOAD_{NAME}_SECRET`. Password-resolution cascade.",
+          "description": "Password for HTTP basic auth.\n\nStrongly prefer `{{ Env.UPLOAD_PASSWORD }}` (or any other env-var template) over an in-config literal — plaintext values here are NOT redacted from dry-run output and will end up in `dist/config.yaml` when the pipeline runs with `--dry-run` / `--snapshot`. Resolution order: rendered `password` template → env `UPLOAD_{NAME}_SECRET`.",
           "default": null,
           "type": [
             "string",

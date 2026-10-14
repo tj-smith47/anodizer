@@ -568,7 +568,7 @@ fn render_strings(ctx: &Context, mcp: &mut McpConfig) -> Result<()> {
     let mut type_str = mcp.auth.method.as_str().to_string();
     render_in_place(ctx, &mut type_str, "auth.type")?;
     mcp.auth.method = McpAuthMethod::parse(&type_str).context("mcp: auth.type template result")?;
-    render_in_place(ctx, &mut mcp.auth.token, "auth.token")?;
+    mcp.auth.token = crate::util::render_secret(ctx, "mcp.auth.token", &mcp.auth.token)?;
 
     for (i, pkg) in mcp.packages.iter_mut().enumerate() {
         render_in_place(

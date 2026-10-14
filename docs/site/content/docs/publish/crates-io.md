@@ -84,7 +84,7 @@ The `auth` field selects how anodizer authenticates the publish:
 |---|---|
 | `auto` (default) | Uses `CARGO_REGISTRY_TOKEN` when it is set; otherwise, under GitHub Actions with `id-token: write`, creates a short-lived token via Trusted Publishing. Errors only when neither is available. |
 | `token` | Always uses `CARGO_REGISTRY_TOKEN`. anodizer's historical behaviour. |
-| `oidc` | Always uses Trusted Publishing; never falls back to a stored token. Fails loudly if the GitHub Actions OIDC request env is absent. |
+| `oidc` | Uses only Trusted Publishing, with no stored-token fallback. Fails loudly if the GitHub Actions OIDC request env is absent. |
 
 ### Token
 
@@ -122,8 +122,8 @@ fixed per workflow-run, so if your release workflow is triggered by `workflow_ru
 anodizer's `release.yml` is, after CI), the cargo publish cannot run inside it. Anodizer
 solves this by running the OIDC publishers from a standalone **`publish-oidc.yml`**
 (`on: workflow_dispatch`), which `release.yml` dispatches after its main publish and
-waits on. Register the Trusted Publisher against **`publish-oidc.yml`**, not
-`release.yml`. If your release workflow is `push`- or `release`-triggered, no split is
+waits on. Register the Trusted Publisher against **`publish-oidc.yml`**; `release.yml`
+only dispatches it. If your release workflow is `push`- or `release`-triggered, no split is
 needed — name that workflow directly. The same constraint applies to a reusable
 `workflow_call` workflow: it inherits the caller's event and cannot be a Trusted
 Publisher, so the OIDC publish must live in a standalone `workflow_dispatch` workflow.

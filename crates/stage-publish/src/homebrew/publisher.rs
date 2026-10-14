@@ -337,11 +337,8 @@ pub(crate) fn build_homebrew_crate_reconcile_target(
         &fork_name,
         &|s| ctx.render_template(s).unwrap_or_else(|_| s.to_string()),
     );
-    let token = crate::util::resolve_repo_token(
-        ctx,
-        hb_cfg.repository.as_ref(),
-        Some("HOMEBREW_TAP_TOKEN"),
-    );
+    let token =
+        crate::util::resolve_pr_token(ctx, hb_cfg.repository.as_ref(), Some("HOMEBREW_TAP_TOKEN"))?;
     let version = ctx.version();
 
     let formula_name_raw = hb_cfg.name.as_deref().unwrap_or(crate_name);
@@ -454,7 +451,7 @@ fn cask_reconcile_target(
         upstream_repo,
         package,
         version,
-        token: crate::util::resolve_repo_token(ctx, repository, Some("HOMEBREW_TAP_TOKEN")),
+        token: crate::util::resolve_pr_token(ctx, repository, Some("HOMEBREW_TAP_TOKEN"))?,
     }))
 }
 
@@ -737,9 +734,24 @@ impl anodizer_core::Publisher for HomebrewPublisher {
     ) -> anyhow::Result<()> {
         let targets = decode_homebrew_targets(&evidence.extra);
         let unique = dedup_homebrew_targets(&targets);
+        let universe = ctx.config.crate_universe();
+        let formulae = universe
+            .iter()
+            .filter_map(|c| c.publish.as_ref()?.homebrew.as_ref()?.repository.as_ref());
+        let crate_casks = universe
+            .iter()
+            .filter_map(|c| super::CrateCask::of(c.publish.as_ref()?)?.repository());
+        let casks = ctx
+            .config
+            .homebrew_casks
+            .iter()
+            .flatten()
+            .filter_map(|c| c.repository.as_ref());
+        let repos: Vec<_> = formulae.chain(crate_casks).chain(casks).collect();
         crate::util::run_token_revert_rollback(
             ctx,
             &unique,
+            &repos,
             "homebrew",
             "HOMEBREW_TAP_TOKEN",
             "tap clone targets",
@@ -759,6 +771,7 @@ impl anodizer_core::Publisher for HomebrewPublisher {
             ctx,
             &policy,
             "HOMEBREW_TAP_TOKEN",
+            None,
             ctx.config
                 .crate_universe()
                 .into_iter()
@@ -770,6 +783,7 @@ impl anodizer_core::Publisher for HomebrewPublisher {
             ctx,
             &policy,
             "HOMEBREW_TAP_TOKEN",
+            None,
             ctx.config
                 .crate_universe()
                 .into_iter()
@@ -782,6 +796,7 @@ impl anodizer_core::Publisher for HomebrewPublisher {
             ctx,
             &policy,
             "HOMEBREW_TAP_TOKEN",
+            None,
             ctx.config.homebrew_casks.iter().flatten(),
             |cask| {
                 // Casks have no `skip` field; gate on skip_upload + if only.

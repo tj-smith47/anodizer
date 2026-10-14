@@ -29,7 +29,7 @@ Both paths derive their per-platform asset table from the same engine SSOT
 
 Packager — writes a text `install.sh` asset. Its case tables come from the
 release's configured targets (via the archive stage's own asset-naming SSOT),
-not from produced artifacts, so the output is byte-identical on every build.
+whatever artifacts a run produced, so the output is byte-identical on every build.
 Not a publisher; spawns no external tool at build time.
 
 ## Minimal config
@@ -118,15 +118,14 @@ Environment:
 Supported platforms: darwin-amd64 darwin-arm64 linux-amd64 linux-arm64
 ```
 
-`--help` is the only flag; every other argument is a typo and is refused rather
-than ignored:
+`--help` is the only flag; every other argument is a typo and is refused:
 
 ```console
 $ sh install.sh --bogus
 myapp-install: error: unknown argument: --bogus (try --help)
 ```
 
-## What the generated script does
+## Script behavior
 
 1. Detects `uname -s` / `uname -m` and maps the pair to the matching release
    archive via engine-generated `case` arms. The detection vocabulary is the
@@ -145,8 +144,8 @@ myapp-install: error: unknown argument: --bogus (try --help)
    then verifies the sha256 with `sha256sum` or `shasum -a 256`, aborting on
    mismatch.
 4. Extracts the asset. Every format the archive stage can assign is handled,
-   dispatched on the format the engine baked into the matching arm rather than
-   re-derived from the filename:
+   dispatched on the format the engine wrote into the matching arm (the
+   filename is not read for it):
 
    | Format | Extracted with |
    |---|---|
@@ -160,8 +159,8 @@ myapp-install: error: unknown argument: --bogus (try --help)
    | `binary` | copied as-is — the asset *is* the executable |
 
    An unknown format aborts with `unknown archive format: <format> (<asset>)`,
-   and a missing decompressor aborts with `need <tool> to extract <asset>`
-   instead of leaving a half-installed directory.
+   and a missing decompressor aborts with `need <tool> to extract <asset>`,
+   both before any file is installed.
 
 5. Installs every binary in `binaries` with `install -m 0755` into the install
    directory — trying `sudo` when the directory is not writable, then falling
@@ -229,7 +228,7 @@ API at `<base_url>/api/v3` for any non-`github.com` host.
 
 ## Common gotchas
 
-- **POSIX `sh`, not bash**: the script targets `#!/bin/sh` with `set -eu` and
+- **POSIX `sh`**: the script targets `#!/bin/sh` with `set -eu` and
   contains no bashisms.
 - **Deterministic**: no timestamps, no `$RANDOM`, no read of produced
   artifacts; the asset arms are engine-derived in a stable order, so the emitted
@@ -241,8 +240,7 @@ API at `<base_url>/api/v3` for any non-`github.com` host.
 - **Single-file formats need a single binary**: `gz`, `xz` and `binary` assets
   hold one executable and carry no directory entries, so there is no name to
   extract by. Configuring one of them alongside two or more `binaries` is
-  refused at render time rather than emitting an installer that would misname
-  the result.
+  refused at render time, because the installer would misname the result.
 - **`curl` or `wget`**: the script uses whichever is present; one is required on
   the target host, along with `sha256sum`/`shasum` (unless
   `verify_checksum: false`) and whichever decompressor step 4 lists for the
@@ -250,5 +248,5 @@ API at `<base_url>/api/v3` for any non-`github.com` host.
 
 ## Republish / update behavior
 
-Not applicable — this is a local packaging stage, not a publisher. Each release
+Not applicable — this is a local packaging stage and publishes nothing. Each release
 emits a fresh `install.sh` alongside the archives.

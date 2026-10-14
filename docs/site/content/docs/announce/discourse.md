@@ -33,7 +33,7 @@ announce:
 |----------|----------|-------------|
 | `DISCOURSE_API_KEY` | Yes | API key from your Discourse admin panel |
 
-## How it works
+## Behavior
 
 Anodizer posts to `{server}/posts.json` using Discourse's API key authentication
 (`Api-Key` and `Api-Username` headers). The post is created with `kind: topic`,
@@ -50,7 +50,7 @@ automatically stripped.
 Alternatively, visit `{server}/categories.json` to list all categories with
 their IDs.
 
-## Creating an API key
+## API key
 
 1. Go to **Admin → API → New API Key**.
 2. Set **User Level** to **Single User** and choose the account that will

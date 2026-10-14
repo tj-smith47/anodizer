@@ -76,7 +76,7 @@ fn archive_mtime_is_source_date_epoch_when_set_even_for_a_reproducible_build() {
     // so the archive holding it must carry the same date.
     let ctx = reproducible_workspace_ctx(Some("1767225600"));
     assert_eq!(
-        crate::run_helpers::resolve_archive_mtime(&ctx),
+        ctx.resolve_reproducible_mtime().unwrap(),
         Some(1_767_225_600)
     );
 }
@@ -85,7 +85,7 @@ fn archive_mtime_is_source_date_epoch_when_set_even_for_a_reproducible_build() {
 fn archive_mtime_falls_back_to_the_commit_timestamp() {
     let ctx = reproducible_workspace_ctx(None);
     assert_eq!(
-        crate::run_helpers::resolve_archive_mtime(&ctx),
+        ctx.resolve_reproducible_mtime().unwrap(),
         Some(1_700_000_000)
     );
 }

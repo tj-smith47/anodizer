@@ -281,13 +281,12 @@ pub enum PypiAuthMode {
     /// a Trusted-Publishing token. Errors only when neither is available.
     #[default]
     Auto,
-    /// Always authenticate with the token; never attempt OIDC. Errors if no
+    /// Authenticate only with the token, with no OIDC attempt. Errors if no
     /// token is available. This is anodizer's historical behaviour.
     Token,
-    /// Always authenticate with OIDC (Trusted Publishing); never fall back to
-    /// the token. Errors if the GitHub Actions OIDC request env
-    /// (`ACTIONS_ID_TOKEN_REQUEST_URL` / `_TOKEN`) is absent, so a misconfigured
-    /// Trusted Publisher fails the release loudly and never falls back
-    /// to a token.
+    /// Authenticate only with OIDC (Trusted Publishing), with no token
+    /// fallback. Errors if the GitHub Actions OIDC request env
+    /// (`ACTIONS_ID_TOKEN_REQUEST_URL` / `_TOKEN`) is absent, so a
+    /// misconfigured Trusted Publisher fails the release loudly.
     Oidc,
 }

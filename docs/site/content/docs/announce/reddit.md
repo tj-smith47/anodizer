@@ -34,7 +34,7 @@ announce:
 | `REDDIT_SECRET` | Yes | OAuth application secret for the Reddit app |
 | `REDDIT_PASSWORD` | Yes | Password for the Reddit account specified in `username` |
 
-## How it works
+## Behavior
 
 Reddit requires an OAuth2 bearer token even for script-type apps that use
 password auth. Anodizer performs a two-step flow on every run:
@@ -48,7 +48,7 @@ Reddit's API returns HTTP 200 even when a submission fails at the application
 level. Anodizer checks the `json.errors` array in the response body and treats
 any non-empty errors array as a failure.
 
-## Setting up a Reddit app
+## Reddit app setup
 
 1. Go to <https://www.reddit.com/prefs/apps> and create a new **script** app.
 2. Copy the **client ID** (shown under the app name) into `application_id`.

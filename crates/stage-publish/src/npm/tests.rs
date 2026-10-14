@@ -5607,9 +5607,9 @@ fn requirements_token_mode_still_requires_npm_token() {
     let ctx = requirements_ctx(NpmAuthMode::Token);
     let reqs = publisher.requirements(&ctx);
 
-    // Unchanged behaviour: NPM_TOKEN is mandatory.
+    // NPM_TOKEN is mandatory.
     assert!(
-        reqs.contains(&anodizer_core::EnvRequirement::EnvAllOf {
+        reqs.contains(&anodizer_core::EnvRequirement::EnvAnyOf {
             vars: vec!["NPM_TOKEN".to_string()],
         }),
         "token mode must require NPM_TOKEN: {reqs:?}"

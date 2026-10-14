@@ -189,8 +189,8 @@ fn detect_gemfury_format_is_case_insensitive() {
 fn push_and_api_token_env_var_defaults() {
     let ctx = TestContextBuilder::new().build();
     let cfg = GemFuryConfig::default();
-    assert_eq!(push_token_env_var(&ctx, &cfg), "FURY_PUSH_TOKEN");
-    assert_eq!(api_token_env_var(&ctx, &cfg), "FURY_API_TOKEN");
+    assert_eq!(push_token_env_var(&ctx, &cfg).unwrap(), "FURY_PUSH_TOKEN");
+    assert_eq!(api_token_env_var(&ctx, &cfg).unwrap(), "FURY_API_TOKEN");
 }
 
 #[test]
@@ -201,8 +201,8 @@ fn push_and_api_token_env_var_overrides() {
         api_secret_name: Some("MY_API".into()),
         ..Default::default()
     };
-    assert_eq!(push_token_env_var(&ctx, &cfg), "MY_PUSH");
-    assert_eq!(api_token_env_var(&ctx, &cfg), "MY_API");
+    assert_eq!(push_token_env_var(&ctx, &cfg).unwrap(), "MY_PUSH");
+    assert_eq!(api_token_env_var(&ctx, &cfg).unwrap(), "MY_API");
 }
 
 /// A templated `secret_name` / `api_secret_name`
@@ -218,12 +218,18 @@ fn token_env_vars_render_templated_secret_name() {
         api_secret_name: Some("FURY_API_{{ .Env.STAGE }}".into()),
         ..Default::default()
     };
-    assert_eq!(push_token_env_var(&ctx, &cfg), "FURY_PUSH_PROD");
-    assert_eq!(api_token_env_var(&ctx, &cfg), "FURY_API_PROD");
+    assert_eq!(push_token_env_var(&ctx, &cfg).unwrap(), "FURY_PUSH_PROD");
+    assert_eq!(api_token_env_var(&ctx, &cfg).unwrap(), "FURY_API_PROD");
     // The same SSOT cloudsmith routes through resolves identically.
     assert_eq!(
-        push_token_env_var(&ctx, &cfg),
-        crate::util::resolve_secret_name(&ctx, cfg.secret_name.as_deref(), "FURY_PUSH_TOKEN")
+        push_token_env_var(&ctx, &cfg).unwrap(),
+        crate::util::resolve_secret_name(
+            &ctx,
+            "gemfury.secret_name",
+            cfg.secret_name.as_deref(),
+            "FURY_PUSH_TOKEN"
+        )
+        .unwrap()
     );
 }
 

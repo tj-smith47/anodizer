@@ -1,4 +1,4 @@
-use anodizer_core::config::PrereleaseConfig;
+use anodizer_core::config::{ForceTokenKind, PrereleaseConfig};
 use anodizer_core::context::Context;
 use anodizer_core::git;
 use anodizer_core::log::{StageLogger, Verbosity};
@@ -179,24 +179,47 @@ pub(crate) use anodizer_core::download_url::{
 /// (`release.github` / `release.gitlab` / `release.gitea`, honoring the
 /// `provider` override) wins over the pipeline token for that repo's API
 /// calls. The value may be templated (`{{ .Env.RELEASE_TOKEN }}`) and is
-/// rendered before use — the literal template string must never become the
-/// bearer credential; a failed render falls back to the raw value, mirroring
-/// publisher `repository.token` resolution. Empty values (unset, or a
-/// template that renders to nothing) yield `None` so callers fall back to
-/// the pipeline token.
+/// rendered through [`release_repo_token`]. `Ok(None)` (unset, or a value that
+/// renders empty or only whitespace) lets callers fall back to the pipeline
+/// token.
 pub(crate) fn resolve_release_token(
     ctx: &Context,
     release_cfg: &anodizer_core::config::ReleaseConfig,
-) -> Option<String> {
-    let repo = resolve_release_repo(release_cfg, ctx.token_type, ctx)
+) -> Result<Option<String>> {
+    let Some(repo) = resolve_release_repo(release_cfg, ctx.token_type, ctx)
         .ok()
-        .flatten()?;
-    let tok = repo.token.as_deref()?;
-    if tok.is_empty() {
-        return None;
-    }
-    let rendered = ctx.render_template(tok).unwrap_or_else(|_| tok.to_string());
-    (!rendered.is_empty()).then_some(rendered)
+        .flatten()
+    else {
+        return Ok(None);
+    };
+    let forge = match (&release_cfg.provider, ctx.token_type) {
+        (Some(ForceTokenKind::GitLab), _) => "gitlab",
+        (Some(ForceTokenKind::Gitea), _) => "gitea",
+        (None, ScmTokenType::GitLab) if release_cfg.gitlab.is_some() => "gitlab",
+        (None, ScmTokenType::Gitea) if release_cfg.gitea.is_some() => "gitea",
+        _ => "github",
+    };
+    release_repo_token(ctx, forge, repo.token.as_deref())
+}
+
+/// Render the `token` of the `release.<forge>` block, trimmed.
+///
+/// The render goes through [`anodizer_core::git::render_secret`]: a template
+/// that does not render is an error naming the field in every mode, so the
+/// literal template never becomes the bearer credential. A value that renders
+/// empty or only whitespace is `None`.
+pub(crate) fn release_repo_token(
+    ctx: &Context,
+    forge: &str,
+    raw: Option<&str>,
+) -> Result<Option<String>> {
+    let Some(raw) = raw else {
+        return Ok(None);
+    };
+    let token = anodizer_core::git::render_secret(&format!("release.{forge}.token"), raw, &|s| {
+        ctx.render_template(s)
+    })?;
+    Ok((!token.is_empty()).then_some(token))
 }
 
 /// Compose the public release HTML URL for the active SCM provider.

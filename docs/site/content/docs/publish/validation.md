@@ -12,14 +12,14 @@ built `.deb`/`.rpm`, the AUR `PKGBUILD` and `.SRCINFO`, the nix derivation and
 flake, and more — and validates each one against the destination registry's own
 schema and rules. It runs offline and hermetically, so a structural defect (a
 wrong-typed value, an out-of-enum field, a missing required key, a malformed
-manifest) is caught in `--snapshot` / `--dry-run` instead of after a release
-has already pushed a manifest the registry rejects.
+manifest) is caught in `--snapshot` / `--dry-run`, before a release can push a
+manifest the registry rejects.
 
 This closes the gap between "the inputs are populated" and "the whole rendered
 document conforms". A required-field check proves a value is present; artifact
 validation proves the *assembled artifact* is one the registry will accept.
 
-## How it runs
+## Execution
 
 Artifact validation runs automatically — no config needed — as part of the
 emission-validate pass, which runs in every mode: snapshot, dry-run, nightly,
@@ -48,14 +48,14 @@ When determinism runs as a target-restricted shard matrix (a shard, or a
 host-only `--single-target` build), emission-validate checks the emissions the
 current shard can satisfy and **self-skips** a publisher whose input archives
 this shard did not produce — a cross-platform aggregator (`homebrew`, `nix`) is
-validated on the shard that built its inputs, not failed on one that couldn't.
+validated on the shard that built its inputs and skipped on the others.
 On a **full** build (neither restriction set), the self-skip does not apply for
 the index/manifest publishers (`homebrew`, `nix`, `aur`, `krew`, `winget`,
 `scoop`, `chocolatey`): a configured one with no eligible artifact still errors,
 since it would otherwise generate an installable reference that 404s. The
 build-time packagers `nfpm`/`snapcraft` and the image-reference publisher `mcp`
 aren't covered by this gate — with no eligible input they simply produce
-nothing (or a config-driven skip, for `mcp`), not an error. See
+nothing (or a config-driven skip, for `mcp`) and report no error. See
 [Emission-validate on sharded builds](../advanced/determinism.md#emission-validate-on-sharded-builds).
 
 ## Two layers
@@ -85,11 +85,11 @@ top of the floor:
 | `dpkg-deb -f` / `rpm -qip` | Read back a built `.deb`/`.rpm`'s control fields |
 | `nix-instantiate --parse` | Parse the rendered nix expression |
 
-When a gated tool is absent the check is **skipped, never failed** — the
+When a gated tool is absent the check is **skipped** and does not fail — the
 hermetic floor still stands, so a missing tool can never turn into a false
 rejection.
 
-## What is checked
+## Checks
 
 | Publisher | Artifact | What is checked |
 |-----------|----------|-----------------|
@@ -118,7 +118,7 @@ winget: field '/PublisherUrl' — "acme.example" does not match "^([Hh][Tt][Tt][
 
 The message names the offending publisher, the JSON-Pointer path to the field,
 and the registry schema's own expectation — so the fix is a one-line config edit
-rather than a post-release investigation into why a manifest was rejected.
+made before anything is released.
 
 ## Schema provenance
 

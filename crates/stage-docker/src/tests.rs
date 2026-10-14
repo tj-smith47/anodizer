@@ -551,7 +551,30 @@ fn test_parse_duration_string_bare_number_as_seconds() {
 
 #[test]
 fn test_parse_duration_string_invalid_suffix() {
-    assert!(parse_duration_string("5h").is_err());
+    assert!(parse_duration_string("5x").is_err());
+}
+
+/// The docker delays read the config duration format: hours, days and
+/// compound terms load, a number too large to multiply is an error naming
+/// the value instead of an overflow, and one year is the longest delay.
+#[test]
+fn docker_retry_delays_read_the_config_duration_format_and_its_cap() {
+    assert_eq!(
+        parse_duration_string("1h30m").unwrap(),
+        Duration::from_secs(5400)
+    );
+    assert_eq!(
+        parse_duration_string("365d").unwrap(),
+        anodizer_core::config::MAX_DURATION
+    );
+    assert_eq!(
+        parse_duration_string("31536000").unwrap(),
+        anodizer_core::config::MAX_DURATION
+    );
+    for over in ["366d", "31536001", "999999999999999999m"] {
+        let err = parse_duration_string(over).unwrap_err().to_string();
+        assert!(err.contains("one year (31536000s)"), "{over}: {err}");
+    }
 }
 
 #[test]
@@ -7072,11 +7095,36 @@ mod oci_labels {
     fn created_omitted_when_no_source_date_resolvable() {
         let (mut ctx, krate) = ctx_with_full_metadata();
         ctx.determinism = None;
+        ctx.set_env_source(anodizer_core::env_source::MapEnvSource::new());
         let labels = auto_oci_labels(&ctx, &krate);
         let m = as_map(&labels);
         assert!(
             !m.contains_key("org.opencontainers.image.created"),
             "created must be omitted (never wall-clock) when no SDE is resolvable"
+        );
+    }
+
+    /// A run that never seeded the determinism state (the build stage was
+    /// skipped) still stamps `created` with the run's date: the environment's
+    /// source date ahead of the commit time.
+    #[test]
+    fn created_reads_the_run_date_when_the_build_stage_did_not_seed_it() {
+        let (mut ctx, krate) = ctx_with_full_metadata();
+        ctx.determinism = None;
+        ctx.template_vars_mut().set("CommitTimestamp", "1700000000");
+        ctx.set_env_source(
+            anodizer_core::env_source::MapEnvSource::new().with("SOURCE_DATE_EPOCH", "1600000000"),
+        );
+        let labels = auto_oci_labels(&ctx, &krate);
+        assert_eq!(
+            as_map(&labels).get("org.opencontainers.image.created"),
+            Some(&"2020-09-13T12:26:40+00:00")
+        );
+        ctx.set_env_source(anodizer_core::env_source::MapEnvSource::new());
+        let labels = auto_oci_labels(&ctx, &krate);
+        assert_eq!(
+            as_map(&labels).get("org.opencontainers.image.created"),
+            Some(&"2023-11-14T22:13:20+00:00")
         );
     }
 
@@ -7091,7 +7139,8 @@ mod oci_labels {
         let mut config = Config::default();
         config.crates = vec![krate.clone()];
         // No metadata, no git vars, no determinism.
-        let ctx = Context::new(config, ContextOptions::default());
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.set_env_source(anodizer_core::env_source::MapEnvSource::new());
 
         let labels = auto_oci_labels(&ctx, &krate);
         let m = as_map(&labels);

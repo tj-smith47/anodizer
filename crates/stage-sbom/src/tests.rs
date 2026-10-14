@@ -89,7 +89,7 @@ fn sbom_documents_glob_expands_to_matched_filenames() {
 //
 // These tests pin the contract that the CycloneDX `metadata.timestamp`
 // field is derived from the run's SOURCE_DATE_EPOCH (via
-// `ctx.determinism.sde`), not wall-clock `Utc::now()`. Without this
+// `Context::reproducible_epoch`), not wall-clock `Utc::now()`. Without this
 // wiring, two pipeline retries of the same release tag emit different
 // SBOM bytes and the second upload fails with GitHub ReleaseAsset
 // `already_exists` (size mismatch).
@@ -119,7 +119,7 @@ fn cyclonedx_output_byte_stable_for_same_timestamp() {
 }
 
 /// Pins the SDE-to-RFC3339 conversion that `run_sbom_builtin` uses on
-/// `ctx.determinism.sde`. If this conversion drifts (e.g. UTC vs
+/// `Context::reproducible_epoch`. If this conversion drifts (e.g. UTC vs
 /// local TZ, seconds vs millis), the SBOM `metadata.timestamp` field
 /// changes and breaks retry idempotency.
 #[test]

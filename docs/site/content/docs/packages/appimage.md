@@ -90,8 +90,8 @@ appimages:
   once via `sh -c`.
 - The harvested data is architecture-independent, so it is produced **once on
   the host-native binary** and reused for every target's AppImage — no QEMU.
-  If a pure cross build has no host-native binary, the stage emits a clear
-  error rather than silently skipping.
+  If a pure cross build has no host-native binary, the stage fails with an
+  error that says so.
 - The harvested tree is staged at `dist/.appimage-runtime/<id>/`, so an
   archive `extra_files` glob can ship the same `runtime/` in tarballs:
 
@@ -148,7 +148,8 @@ service calls.
 - **`.AppImage` extension** is auto-appended when a custom `filename` template
   omits it.
 - **Harvest needs a host-native binary**: a pure cross build (no artifact for
-  the host target) errors instead of silently skipping the harvest.
+  the host target) fails with an error, so the harvest is never skipped
+  without notice.
 - **Distinct configs sharing an arch must set `filename:`**: two `appimages:`
   entries that differ only by `id` and target the same arch render the same
   default output name and clobber on disk — give each an explicit `filename:`
@@ -156,7 +157,7 @@ service calls.
 
 ## Republish / update behavior
 
-Not applicable — this is a local packaging stage, not a publisher. The
+Not applicable — this is a local packaging stage and publishes nothing. The
 resulting `.AppImage` is checksummed, signed, attested, and uploaded to the
 release like any other artifact.
 

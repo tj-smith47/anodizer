@@ -21,10 +21,7 @@ use crate::binstall;
 use crate::command::BuildCommand;
 use crate::universal::{build_universal_binary, project_universal_out_path};
 use crate::version_sync;
-use crate::workspace::{
-    find_workspace_root, resolve_binary_path, resolve_copy_from,
-    resolve_reproducible_epoch_with_env,
-};
+use crate::workspace::{find_workspace_root, resolve_binary_path, resolve_copy_from};
 use anodizer_core::elf::is_dynamically_linked;
 
 pub(crate) struct BuildJob {
@@ -279,61 +276,43 @@ fn apply_source_mutations_with_resolver(
     Ok(())
 }
 
-pub(crate) fn seed_determinism_state(
-    ctx: &mut Context,
-    commit_timestamp: &str,
-    log: &StageLogger,
-) -> Result<()> {
-    if ctx.determinism.is_none() {
-        if ctx.options.snapshot {
-            let repo = ctx
-                .options
-                .project_root
-                .clone()
-                .unwrap_or_else(|| PathBuf::from("."));
-            match anodizer_core::git::resolve_snapshot_sde_with_env(&repo, ctx.env_source()) {
-                Ok(epoch) => {
-                    ctx.determinism =
-                        Some(anodizer_core::DeterminismState::seed_from_commit(epoch)?);
-                }
-                Err(err) => {
-                    log.status(&format!(
-                        "snapshot SDE resolution failed; falling back to commit timestamp: {}",
-                        err
-                    ));
-                    if let Some(epoch) =
-                        resolve_reproducible_epoch_with_env(commit_timestamp, ctx.env_source())
-                    {
-                        ctx.determinism =
-                            Some(anodizer_core::DeterminismState::seed_from_commit(epoch)?);
-                    }
-                }
-            }
-        } else if let Some(epoch) =
-            resolve_reproducible_epoch_with_env(commit_timestamp, ctx.env_source())
-        {
-            ctx.determinism = Some(anodizer_core::DeterminismState::seed_from_commit(epoch)?);
-        }
+/// Seed the determinism state from the run's reproducible timestamp
+/// ([`Context::resolve_reproducible_mtime`]) when none is set yet, and return
+/// the state's timestamp.
+///
+/// The returned value is the one the cargo child's `SOURCE_DATE_EPOCH` and
+/// the binary mtime use, and the docker `created` label and SBOM timestamps
+/// read the same state, so they carry the same date as the archives and
+/// wheels that call [`Context::resolve_reproducible_mtime`] directly.
+pub(crate) fn seed_determinism_state(ctx: &mut Context) -> Result<Option<i64>> {
+    if ctx.determinism.is_none()
+        && let Some(epoch) = ctx
+            .resolve_reproducible_mtime()?
+            .and_then(|secs| i64::try_from(secs).ok())
+    {
+        ctx.determinism = Some(anodizer_core::DeterminismState::seed_from_commit(epoch)?);
     }
     if let Some(state) = ctx.determinism.as_mut() {
         for (name, reason) in &ctx.options.runtime_nondeterministic_allowlist {
             state.append_runtime(name.clone(), reason.clone());
         }
     }
-    Ok(())
+    Ok(ctx.determinism.as_ref().map(|state| state.sde))
 }
 
 /// Shared per-stage borrows threaded into each execution path.
 ///
-/// Holds only borrows that do not collide with `&mut ctx`; `env_source`
-/// is re-borrowed via `ctx.env_source()` inside `run_parallel`'s chunk
-/// loop so the helper can keep mutable access to `ctx` between chunks.
+/// Holds only borrows that do not collide with `&mut ctx`, so the helpers
+/// keep mutable access to `ctx` between chunks.
 pub(crate) struct BuildExec<'a> {
     pub log: &'a StageLogger,
     pub template_vars: &'a TemplateVars,
     pub dist_dir: &'a Path,
     pub dry_run: bool,
-    pub commit_timestamp: &'a str,
+    /// The run's reproducible timestamp from
+    /// [`Context::resolve_reproducible_mtime`], stamped on a
+    /// `reproducible: true` build's binary.
+    pub reproducible_epoch: Option<i64>,
 }
 
 /// Dry-run path: log what each job would do and register artifacts without
@@ -563,9 +542,7 @@ pub(crate) fn run_sequential(
         }
 
         if job.reproducible && resolved_bin.exists() {
-            if let Some(epoch) =
-                resolve_reproducible_epoch_with_env(exec.commit_timestamp, ctx.env_source())
-            {
+            if let Some(epoch) = exec.reproducible_epoch {
                 anodizer_core::util::set_file_mtime_epoch(&resolved_bin, epoch)?;
             } else {
                 exec.log.warn(
@@ -631,11 +608,6 @@ pub(crate) fn run_sequential(
 /// Parallel path: fan jobs out across `parallelism`-sized chunks via
 /// `thread::scope`. Each thread brackets its compile with the job's
 /// pre/post hooks so per-job ordering matches the sequential path.
-///
-/// The `env_source` borrow is captured inside each chunk via
-/// `ctx.env_source()` and held only for the `thread::scope` body, so
-/// post-chunk artifact registration regains the `&mut ctx` borrow under
-/// NLL.
 pub(crate) fn run_parallel(
     ctx: &mut Context,
     exec: &BuildExec<'_>,
@@ -655,8 +627,7 @@ pub(crate) fn run_parallel(
     for chunk in build_jobs.chunks(parallelism) {
         let template_vars = exec.template_vars;
         let log = exec.log;
-        let commit_timestamp = exec.commit_timestamp;
-        let env_source: &dyn anodizer_core::EnvSource = ctx.env_source();
+        let reproducible_epoch = exec.reproducible_epoch;
         let results: Vec<Result<BuildResult>> = std::thread::scope(|s| {
             let handles: Vec<_> = chunk
                 .iter()
@@ -681,7 +652,6 @@ pub(crate) fn run_parallel(
                     let reproducible = job.reproducible;
                     let no_unique_dist_dir = job.no_unique_dist_dir;
                     let job_crate_path = job.crate_path.clone();
-                    let commit_ts = commit_timestamp.to_string();
                     let pre_hooks = job.pre_hooks.clone();
                     let post_hooks = job.post_hooks.clone();
                     let build_env = job.build_env.clone();
@@ -749,9 +719,7 @@ pub(crate) fn run_parallel(
                         }
 
                         if reproducible && bin_path.exists() {
-                            if let Some(epoch) =
-                                resolve_reproducible_epoch_with_env(&commit_ts, env_source)
-                            {
+                            if let Some(epoch) = reproducible_epoch {
                                 anodizer_core::util::set_file_mtime_epoch(&bin_path, epoch)?;
                             } else {
                                 warn_log.warn(
@@ -1751,7 +1719,7 @@ mod run_helpers_tests {
     }
 
     // -------------------------------------------------------------------------
-    // seed_determinism_state (lines 272-282, 288-290)
+    // seed_determinism_state
     // -------------------------------------------------------------------------
 
     /// Non-snapshot mode with a valid commit timestamp: determinism state is
@@ -1762,12 +1730,10 @@ mod run_helpers_tests {
         // inject a clean MapEnvSource with no SOURCE_DATE_EPOCH so the
         // commit_timestamp branch fires.
         ctx.set_env_source(MapEnvSource::new());
-        let log = mk_log();
-        seed_determinism_state(&mut ctx, "1700000000", &log).unwrap();
-        assert!(
-            ctx.determinism.is_some(),
-            "determinism state must be seeded from commit timestamp"
-        );
+        ctx.template_vars_mut().set("CommitTimestamp", "1700000000");
+        let epoch = seed_determinism_state(&mut ctx).unwrap();
+        assert_eq!(epoch, Some(1_700_000_000));
+        assert_eq!(ctx.determinism.as_ref().map(|d| d.sde), Some(1_700_000_000));
     }
 
     /// Non-snapshot mode with SOURCE_DATE_EPOCH overriding the commit timestamp.
@@ -1775,8 +1741,9 @@ mod run_helpers_tests {
     fn seed_determinism_state_respects_source_date_epoch_env() {
         let mut ctx = mk_ctx();
         ctx.set_env_source(MapEnvSource::new().with("SOURCE_DATE_EPOCH", "1600000000"));
-        let log = mk_log();
-        seed_determinism_state(&mut ctx, "0", &log).unwrap();
+        ctx.template_vars_mut().set("CommitTimestamp", "1700000000");
+        let epoch = seed_determinism_state(&mut ctx).unwrap();
+        assert_eq!(epoch, Some(1_600_000_000));
         assert_eq!(ctx.determinism.as_ref().map(|d| d.sde), Some(1_600_000_000));
     }
 
@@ -1830,17 +1797,21 @@ mod run_helpers_tests {
             repo.path(),
             MapEnvSource::new().with("SOURCE_DATE_EPOCH", "1767225600"),
         );
-        seed_determinism_state(&mut ctx, "1715000000", &mk_log()).unwrap();
+        ctx.template_vars_mut().set("CommitTimestamp", "1715000000");
+        seed_determinism_state(&mut ctx).unwrap();
         assert_eq!(ctx.determinism.as_ref().map(|d| d.sde), Some(1_767_225_600));
     }
 
-    /// With no SOURCE_DATE_EPOCH a snapshot run seeds the HEAD commit time,
-    /// and a dirty tree does not move it.
+    /// With no SOURCE_DATE_EPOCH a snapshot run seeds the HEAD commit time
+    /// its git info carries, and a dirty tree does not move it.
     #[test]
     fn a_snapshot_without_source_date_epoch_seeds_the_commit_time() {
         let repo = dirty_repo_at_1715000000();
         let mut ctx = snapshot_ctx(repo.path(), MapEnvSource::new());
-        seed_determinism_state(&mut ctx, "1715000000", &mk_log()).unwrap();
+        ctx.git_info =
+            Some(anodizer_core::git::detect_git_info_in(repo.path(), "v0.0.0", true).unwrap());
+        ctx.populate_git_vars();
+        seed_determinism_state(&mut ctx).unwrap();
         assert_eq!(ctx.determinism.as_ref().map(|d| d.sde), Some(1_715_000_000));
     }
 
@@ -1850,12 +1821,13 @@ mod run_helpers_tests {
     fn seed_determinism_state_does_not_overwrite_existing() {
         let mut ctx = mk_ctx();
         ctx.set_env_source(MapEnvSource::new());
-        let log = mk_log();
         // Seed once.
-        seed_determinism_state(&mut ctx, "1700000000", &log).unwrap();
+        ctx.template_vars_mut().set("CommitTimestamp", "1700000000");
+        seed_determinism_state(&mut ctx).unwrap();
         let state_ptr = ctx.determinism.as_ref().unwrap() as *const _;
         // Seed again — must not replace.
-        seed_determinism_state(&mut ctx, "1800000000", &log).unwrap();
+        ctx.template_vars_mut().set("CommitTimestamp", "1800000000");
+        seed_determinism_state(&mut ctx).unwrap();
         let state_ptr2 = ctx.determinism.as_ref().unwrap() as *const _;
         assert_eq!(
             state_ptr, state_ptr2,
@@ -1880,8 +1852,8 @@ mod run_helpers_tests {
             },
         );
         ctx.set_env_source(MapEnvSource::new());
-        let log = mk_log();
-        seed_determinism_state(&mut ctx, "1700000000", &log).unwrap();
+        ctx.template_vars_mut().set("CommitTimestamp", "1700000000");
+        seed_determinism_state(&mut ctx).unwrap();
         assert!(
             ctx.determinism.is_some(),
             "state must be seeded so allowlist append runs"
@@ -1898,8 +1870,8 @@ mod run_helpers_tests {
     fn seed_determinism_state_zero_epoch_leaves_determinism_none() {
         let mut ctx = mk_ctx();
         ctx.set_env_source(MapEnvSource::new());
-        let log = mk_log();
-        seed_determinism_state(&mut ctx, "0", &log).unwrap();
+        ctx.template_vars_mut().set("CommitTimestamp", "0");
+        seed_determinism_state(&mut ctx).unwrap();
         assert!(
             ctx.determinism.is_none(),
             "epoch=0 must not seed determinism state"
@@ -1920,7 +1892,7 @@ mod run_helpers_tests {
             template_vars: tvars,
             dist_dir,
             dry_run: true,
-            commit_timestamp: "0",
+            reproducible_epoch: None,
         }
     }
 
@@ -2197,7 +2169,7 @@ mod run_helpers_tests {
             template_vars: &tvars,
             dist_dir: &dist,
             dry_run: false,
-            commit_timestamp: "0",
+            reproducible_epoch: None,
         };
 
         // copy_from is None — this is the programmer-bug path.
@@ -2409,14 +2381,14 @@ mod run_exec_tests {
         log: &'a StageLogger,
         tvars: &'a TemplateVars,
         dist: &'a std::path::Path,
-        commit_timestamp: &'a str,
+        reproducible_epoch: Option<i64>,
     ) -> BuildExec<'a> {
         BuildExec {
             log,
             template_vars: tvars,
             dist_dir: dist,
             dry_run: false,
-            commit_timestamp,
+            reproducible_epoch,
         }
     }
 
@@ -2456,7 +2428,7 @@ mod run_exec_tests {
 
         let log = mk_log();
         let tvars = TemplateVars::default();
-        let exec = mk_exec(&log, &tvars, &dist, "0");
+        let exec = mk_exec(&log, &tvars, &dist, None);
         let mut ctx = mk_ctx();
         run_sequential(&mut ctx, &exec, &[job], &[]).unwrap();
 
@@ -2467,6 +2439,39 @@ mod run_exec_tests {
         assert_eq!(arts.len(), 1);
         assert_eq!(arts[0].path, work.join("myproj"));
         assert_eq!(arts[0].target.as_deref(), Some("x86_64-unknown-linux-gnu"));
+    }
+
+    /// A source date set in the environment wins over the commit time for
+    /// the binary mtime of a reproducible build.
+    #[test]
+    fn a_reproducible_binary_mtime_takes_the_ambient_source_date() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dist = tmp.path().join("dist");
+        std::fs::create_dir_all(&dist).unwrap();
+        let work = tmp.path().join("crate");
+        std::fs::create_dir_all(&work).unwrap();
+
+        let tools = FakeToolDir::new();
+        tools.tool("cargo").creates("app", "x").install();
+        let mut job = building_job(
+            &tools.tool_path("cargo"),
+            &work,
+            "app",
+            "x86_64-unknown-linux-gnu",
+        );
+        job.reproducible = true;
+
+        let log = mk_log();
+        let mut ctx = mk_ctx();
+        ctx.set_env_source(MapEnvSource::new().with("SOURCE_DATE_EPOCH", "1600000000"));
+        ctx.template_vars_mut().set("CommitTimestamp", "1700000000");
+        let epoch = seed_determinism_state(&mut ctx).unwrap();
+        let tvars = TemplateVars::default();
+        let exec = mk_exec(&log, &tvars, &dist, epoch);
+        run_sequential(&mut ctx, &exec, &[job], &[]).unwrap();
+
+        assert_eq!(mtime_epoch(&work.join("app")), 1_600_000_000);
+        assert_eq!(ctx.determinism.as_ref().map(|d| d.sde), Some(1_600_000_000));
     }
 
     /// reproducible=true with a usable commit timestamp: the produced binary's
@@ -2491,7 +2496,7 @@ mod run_exec_tests {
 
         let log = mk_log();
         let tvars = TemplateVars::default();
-        let exec = mk_exec(&log, &tvars, &dist, "1700000000");
+        let exec = mk_exec(&log, &tvars, &dist, Some(1_700_000_000));
         let mut ctx = mk_ctx();
         run_sequential(&mut ctx, &exec, &[job], &[]).unwrap();
 
@@ -2525,7 +2530,7 @@ mod run_exec_tests {
 
         let log = mk_log();
         let tvars = TemplateVars::default();
-        let exec = mk_exec(&log, &tvars, &dist, "0");
+        let exec = mk_exec(&log, &tvars, &dist, None);
         let mut ctx = mk_ctx();
         run_sequential(&mut ctx, &exec, &[job], &[]).unwrap();
 
@@ -2566,7 +2571,7 @@ mod run_exec_tests {
 
         let log = mk_log();
         let tvars = TemplateVars::default();
-        let exec = mk_exec(&log, &tvars, &dist, "0");
+        let exec = mk_exec(&log, &tvars, &dist, None);
         let mut ctx = mk_ctx();
         run_sequential(&mut ctx, &exec, &[job], &[]).unwrap();
 
@@ -2596,7 +2601,7 @@ mod run_exec_tests {
 
         let log = mk_log();
         let tvars = TemplateVars::default();
-        let exec = mk_exec(&log, &tvars, &dist, "0");
+        let exec = mk_exec(&log, &tvars, &dist, None);
         let mut ctx = mk_ctx();
         let err = run_sequential(&mut ctx, &exec, &[job], &[]).unwrap_err();
         let msg = format!("{err:#}");
@@ -2645,7 +2650,7 @@ mod run_exec_tests {
 
             let (log, capture) = StageLogger::with_capture("test", Verbosity::Verbose);
             let tvars = TemplateVars::default();
-            let exec = mk_exec(&log, &tvars, &dist, "0");
+            let exec = mk_exec(&log, &tvars, &dist, None);
             let mut ctx = mk_ctx();
             let err = if parallel {
                 run_parallel(&mut ctx, &exec, &[job], &[], 1).unwrap_err()
@@ -2700,7 +2705,7 @@ mod run_exec_tests {
 
         let log = mk_log();
         let tvars = TemplateVars::default();
-        let exec = mk_exec(&log, &tvars, &dist, "0");
+        let exec = mk_exec(&log, &tvars, &dist, None);
         let mut ctx = mk_ctx();
         let err = run_sequential(&mut ctx, &exec, &[job], &[]).unwrap_err();
         let msg = format!("{err:#}").to_lowercase();
@@ -2732,7 +2737,7 @@ mod run_exec_tests {
 
         let log = mk_log();
         let tvars = TemplateVars::default();
-        let exec = mk_exec(&log, &tvars, &dist, "0");
+        let exec = mk_exec(&log, &tvars, &dist, None);
         let mut ctx = mk_ctx();
         let err = run_sequential(&mut ctx, &exec, &[job], &[]).unwrap_err();
         assert!(
@@ -2763,7 +2768,7 @@ mod run_exec_tests {
 
         let log = mk_log();
         let tvars = TemplateVars::default();
-        let exec = mk_exec(&log, &tvars, &dist, "0");
+        let exec = mk_exec(&log, &tvars, &dist, None);
         let mut ctx = mk_ctx();
         run_sequential(&mut ctx, &exec, &[job], &[]).unwrap();
 
@@ -2805,7 +2810,7 @@ mod run_exec_tests {
 
         let log = mk_log();
         let tvars = TemplateVars::default();
-        let exec = mk_exec(&log, &tvars, &dist, "0");
+        let exec = mk_exec(&log, &tvars, &dist, None);
         let mut ctx = mk_ctx();
         run_parallel(&mut ctx, &exec, &[job_a, job_b], &[], 2).unwrap();
 
@@ -2845,7 +2850,7 @@ mod run_exec_tests {
 
         let log = mk_log();
         let tvars = TemplateVars::default();
-        let exec = mk_exec(&log, &tvars, &dist, "0");
+        let exec = mk_exec(&log, &tvars, &dist, None);
         let mut ctx = mk_ctx();
         run_parallel(&mut ctx, &exec, &jobs, &[], 1).unwrap();
 
@@ -2878,7 +2883,7 @@ mod run_exec_tests {
 
         let log = mk_log();
         let tvars = TemplateVars::default();
-        let exec = mk_exec(&log, &tvars, &dist, "0");
+        let exec = mk_exec(&log, &tvars, &dist, None);
         let mut ctx = mk_ctx();
         let err = run_parallel(&mut ctx, &exec, &[job], &[], 1).unwrap_err();
         let msg = format!("{err:#}");
@@ -2910,7 +2915,7 @@ mod run_exec_tests {
 
         let log = mk_log();
         let tvars = TemplateVars::default();
-        let exec = mk_exec(&log, &tvars, &dist, "1600000000");
+        let exec = mk_exec(&log, &tvars, &dist, Some(1_600_000_000));
         let mut ctx = mk_ctx();
         run_parallel(&mut ctx, &exec, &[job], &[], 1).unwrap();
 
@@ -2939,7 +2944,7 @@ mod run_exec_tests {
 
         let log = mk_log();
         let tvars = TemplateVars::default();
-        let exec = mk_exec(&log, &tvars, &dist, "0");
+        let exec = mk_exec(&log, &tvars, &dist, None);
         let mut ctx = mk_ctx();
         run_parallel(&mut ctx, &exec, &[job], &[], 1).unwrap();
 
@@ -2964,7 +2969,7 @@ mod run_exec_tests {
 
         let log = mk_log();
         let tvars = TemplateVars::default();
-        let exec = mk_exec(&log, &tvars, &dist, "0");
+        let exec = mk_exec(&log, &tvars, &dist, None);
         let mut ctx = mk_ctx();
         let err = run_parallel(&mut ctx, &exec, &[job], &[], 1).unwrap_err();
         assert!(
@@ -3023,7 +3028,7 @@ mod run_exec_tests {
 
         let log = mk_log();
         let tvars = TemplateVars::default();
-        let exec = mk_exec(&log, &tvars, &dist, "0");
+        let exec = mk_exec(&log, &tvars, &dist, None);
         run_sequential(&mut ctx, &exec, &[], &[copy_job]).unwrap();
 
         assert_eq!(std::fs::read(&dst).unwrap(), b"SRC", "copy must reach dst");
@@ -3098,7 +3103,7 @@ mod run_exec_tests {
             template_vars: &tvars,
             dist_dir: &dist,
             dry_run: true,
-            commit_timestamp: "0",
+            reproducible_epoch: None,
         };
         let mut ctx = mk_ctx();
         run_dry_run(&mut ctx, &exec, &[job], &[]).unwrap();
@@ -3185,7 +3190,7 @@ mod run_exec_tests {
 
         let log = mk_log();
         let tvars = TemplateVars::default();
-        let exec = mk_exec(&log, &tvars, &dist, "0");
+        let exec = mk_exec(&log, &tvars, &dist, None);
         let mut ctx = mk_ctx(); // MapEnvSource without the marker
         run_sequential(&mut ctx, &exec, &[job], &[]).unwrap();
 
@@ -3211,7 +3216,7 @@ mod run_exec_tests {
 
         let log = mk_log();
         let tvars = TemplateVars::default();
-        let exec = mk_exec(&log, &tvars, &dist, "0");
+        let exec = mk_exec(&log, &tvars, &dist, None);
         let mut ctx = mk_ctx();
         ctx.set_env_source(MapEnvSource::new().with("ANODIZER_IN_DETERMINISM_HARNESS", "1"));
         run_sequential(&mut ctx, &exec, &[job], &[]).unwrap();
@@ -3282,7 +3287,7 @@ mod run_exec_tests {
 
         let log = mk_log();
         let tvars = TemplateVars::default();
-        let exec = mk_exec(&log, &tvars, &dist, "0");
+        let exec = mk_exec(&log, &tvars, &dist, None);
         let mut ctx = mk_ctx();
         ctx.set_env_source(MapEnvSource::new().with("ANODIZER_IN_DETERMINISM_HARNESS", "1"));
         run_sequential(&mut ctx, &exec, &[job], &[]).unwrap();
@@ -3331,7 +3336,7 @@ mod run_exec_tests {
 
         let log = mk_log();
         let tvars = TemplateVars::default();
-        let exec = mk_exec(&log, &tvars, &dist, "0");
+        let exec = mk_exec(&log, &tvars, &dist, None);
         let mut ctx = mk_ctx();
         ctx.set_env_source(MapEnvSource::new().with("ANODIZER_IN_DETERMINISM_HARNESS", "1"));
         run_sequential(&mut ctx, &exec, &[job1, job2], &[]).unwrap();
@@ -3366,7 +3371,7 @@ mod run_exec_tests {
 
         let log = mk_log();
         let tvars = TemplateVars::default();
-        let exec = mk_exec(&log, &tvars, &dist, "0");
+        let exec = mk_exec(&log, &tvars, &dist, None);
         let mut ctx = mk_ctx();
         run_parallel(&mut ctx, &exec, &[job], &[], 2).unwrap();
 
@@ -3391,7 +3396,7 @@ mod run_exec_tests {
 
         let log = mk_log();
         let tvars = TemplateVars::default();
-        let exec = mk_exec(&log, &tvars, &dist, "0");
+        let exec = mk_exec(&log, &tvars, &dist, None);
         let mut ctx = mk_ctx();
         ctx.set_env_source(MapEnvSource::new().with("ANODIZER_IN_DETERMINISM_HARNESS", "1"));
         run_parallel(&mut ctx, &exec, &[job], &[], 2).unwrap();
@@ -3426,7 +3431,7 @@ mod run_exec_tests {
 
         let log = mk_log();
         let tvars = TemplateVars::default();
-        let exec = mk_exec(&log, &tvars, &dist, "0");
+        let exec = mk_exec(&log, &tvars, &dist, None);
         let mut ctx = mk_ctx();
         ctx.set_env_source(MapEnvSource::new().with("ANODIZER_IN_DETERMINISM_HARNESS", "1"));
         run_parallel(&mut ctx, &exec, &[job1, job2], &[], 2).unwrap();

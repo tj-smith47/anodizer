@@ -49,7 +49,7 @@ The release job **publishes the shards' preserved dist — it never rebuilds.** 
 
 ## The jobs, one at a time
 
-### 1. `preflight` — run the whole check before tagging
+### 1. `preflight` — full check before tagging
 
 Tagging is a half-irreversible act: once `vX.Y.Z` is pushed, a downstream release fires. The preflight job runs the [one preflight engine](@/docs/general/preflight.md) **before** the tag is issued: every tool, secret, endpoint and key blob the later jobs need is present and well-formed, every publisher's credential works, and no one-way-door registry already holds the version the tag job is about to cut. A truncated `COSIGN_KEY`, a missing `CARGO_REGISTRY_TOKEN`, an unreachable blob endpoint or a crates.io version that already exists aborts the run with nothing published and no orphan tag.
 
@@ -155,7 +155,7 @@ A reusable workflow fans the determinism harness across four shards (one per hos
 
 `determinism: true` is the entire body of a shard — the action installs Rust, the cross-build deps, `rustup target add`s the configured triples for the shard's OS, and runs `anodizer check determinism`. See [Determinism](@/docs/advanced/determinism.md) for the harness semantics and [`preserve-dist`](@/docs/ci/anodizer-action.md#determinism-harness) for the artifact contract.
 
-### 4. `release` — publish the proven bytes
+### 4. `release` — publication of the proven bytes
 
 The publish job downloads and merges all four shards' preserved dist, asserts every shard arrived, then runs `release --publish-only`. **It does not rebuild** — it publishes the byte-stable artifacts the shards already proved. `--skip=npm,pypi,cargo` peels the OIDC publishers onto the standalone workflow dispatched below.
 
@@ -302,7 +302,7 @@ git commit -m "fix!: drop the legacy flag"              # conventional!   → ma
 
 The full precedence table, the `Cargo.toml`-ahead guard, and every `tag:` config field live in [Auto-Tagging](@/docs/advanced/auto-tagging.md).
 
-## Why split CI, tag, and publish?
+## Separate CI, tag, and publish jobs
 
 | Concern | Where it lives | Why |
 |---------|----------------|-----|

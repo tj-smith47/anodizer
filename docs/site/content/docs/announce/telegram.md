@@ -28,7 +28,7 @@ The optional `parse_mode` field controls how Telegram renders the message text. 
 
 ### Environment variables
 
-Store the bot token in an environment variable rather than committing it to your config file. When `bot_token` is unset, anodizer falls back to the `TELEGRAM_TOKEN` env var:
+Store the bot token in an environment variable so it stays out of your committed config file. When `bot_token` is unset, anodizer falls back to the `TELEGRAM_TOKEN` env var:
 
 ```yaml
 announce:

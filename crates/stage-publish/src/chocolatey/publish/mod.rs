@@ -4,6 +4,7 @@
 mod build;
 mod orchestrate;
 
+pub(crate) use build::resolve_api_key;
 use build::*;
 pub use orchestrate::*;
 

@@ -235,12 +235,9 @@ pub fn render_with_env(
         },
     );
 
-    // Re-register the SDE-aware `time` / `now_format` helpers so they
-    // resolve `SOURCE_DATE_EPOCH` against the injected host env, not
-    // `std::env::var`. BASE_TERA registers placeholder shapes that read
-    // through `ProcessEnvSource` — fine for production, but tests injecting
-    // a `MapEnvSource` need the overrides to see their fixture value.
-    let host_for_time = host_snapshot.clone();
+    // BASE_TERA's `time` / `now_format` read the source date from the
+    // process env; a render handed another env must read it from that one.
+    let source_date = crate::sde::source_date_epoch_with_env(host_env);
     tera.register_json_function(
         "time",
         move |args: &HashMap<String, Value>| -> TeraResult<Value> {
@@ -249,16 +246,11 @@ pub fn render_with_env(
                 .and_then(|v| v.as_str())
                 .unwrap_or("%Y-%m-%dT%H:%M:%SZ");
             let chrono_fmt = translate_go_time_format(fmt);
-            let sde = host_for_time.get("SOURCE_DATE_EPOCH").cloned();
-            let now = sde
-                .and_then(|s| s.parse::<i64>().ok())
-                .and_then(|secs| chrono::DateTime::<chrono::Utc>::from_timestamp(secs, 0))
-                .unwrap_or_else(chrono::Utc::now);
+            let now = source_date.unwrap_or_else(chrono::Utc::now);
             Ok(Value::String(now.format(&chrono_fmt).to_string()))
         },
     );
 
-    let host_for_now_format = host_snapshot.clone();
     tera.register_json_filter(
         "now_format",
         move |_value: &Value, args: &HashMap<String, Value>| {
@@ -267,11 +259,7 @@ pub fn render_with_env(
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| tera::Error::message("now_format requires a `format` argument"))?;
             let chrono_fmt = translate_go_time_format(fmt);
-            let sde = host_for_now_format.get("SOURCE_DATE_EPOCH").cloned();
-            let now = sde
-                .and_then(|s| s.parse::<i64>().ok())
-                .and_then(|secs| chrono::DateTime::<chrono::Utc>::from_timestamp(secs, 0))
-                .unwrap_or_else(chrono::Utc::now);
+            let now = source_date.unwrap_or_else(chrono::Utc::now);
             Ok(Value::String(now.format(&chrono_fmt).to_string()))
         },
     );

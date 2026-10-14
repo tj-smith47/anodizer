@@ -344,8 +344,10 @@ renders into the formula:
   end
 ```
 
-`url` accepts a Ruby symbol shorthand (`stable` / `head` / `homepage` →
-`url :stable`) or a literal URL string. `regex` is raw Ruby (e.g.
+`url` takes `stable` (`url :stable`, the default when a `strategy` or
+`regex` is set without it), `head`, `homepage` or a literal URL string. `url`
+names a cask's download URL and is refused in a formula with an error naming
+the field. `regex` is raw Ruby (e.g.
 `%r{v(\d+\.\d+)}i`) for `page_match`-style strategies. Setting `skip: false`
 without any of `strategy`/`url`/`regex` falls back to `skip` with a warning —
 an empty `livecheck do … end` is invalid.

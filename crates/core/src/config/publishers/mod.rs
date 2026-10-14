@@ -364,7 +364,7 @@ pub struct CargoPublishConfig {
     pub manifest_path: Option<PathBuf>,
     /// Require an up-to-date `Cargo.lock` matching the resolver (`--locked`).
     pub locked: Option<bool>,
-    /// Require offline resolution; never hit the network (`--offline`).
+    /// Require offline resolution with no network access (`--offline`).
     pub offline: Option<bool>,
     /// Both `--locked` and `--offline` (`--frozen`).
     pub frozen: Option<bool>,
@@ -457,15 +457,14 @@ pub enum CargoAuthMode {
     /// Errors only when neither is available.
     #[default]
     Auto,
-    /// Always authenticate with the token; never attempt OIDC. Errors if
+    /// Authenticate only with the token, with no OIDC attempt. Errors if
     /// `CARGO_REGISTRY_TOKEN` is unset. This is anodizer's historical
     /// behaviour.
     Token,
-    /// Always authenticate with OIDC (Trusted Publishing); never fall back to
-    /// the token. Errors if the GitHub Actions OIDC request env
+    /// Authenticate only with OIDC (Trusted Publishing), with no token
+    /// fallback. Errors if the GitHub Actions OIDC request env
     /// (`ACTIONS_ID_TOKEN_REQUEST_URL` / `_TOKEN`) is absent, so a
-    /// misconfigured Trusted Publisher fails the release loudly and never
-    /// falls back to a token.
+    /// misconfigured Trusted Publisher fails the release loudly.
     Oidc,
 }
 

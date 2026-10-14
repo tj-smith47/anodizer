@@ -108,8 +108,7 @@ upx:
 ```
 
 With `required: true`, the build fails immediately if `upx` is not found on
-the system. This is useful in CI where a missing tool should be a hard error
-rather than a silent skip.
+the system. This is useful in CI, where a missing tool should be a hard error.
 
 ### Custom UPX binary path
 
@@ -144,7 +143,7 @@ Note that UPX itself does not support every executable format. If UPX
 encounters a binary it cannot compress (for example, a format it does not
 recognize), it reports a known exception such as `CantPackException` or
 `UnknownExecutableFormatException`. Anodizer treats these as warnings and
-skips the binary rather than failing the build.
+skips the binary, and the build goes on.
 
 ## Pipeline position
 

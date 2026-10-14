@@ -53,7 +53,7 @@ fn clone_tap_and_write_formula(
         ctx,
         hb_cfg.repository.as_ref(),
         Some("HOMEBREW_TAP_TOKEN"),
-    );
+    )?;
     crate::util::clone_repo(
         ctx,
         hb_cfg.repository.as_ref(),
@@ -536,7 +536,7 @@ pub(super) fn render_formula_inner(
         custom_block: custom_block.as_deref(),
         plist: plist.as_deref(),
         service: service.as_deref(),
-        livecheck: super::super::formula::render_livecheck(hb_cfg.livecheck.as_ref(), log),
+        livecheck: super::super::livecheck::render_livecheck(hb_cfg.livecheck.as_ref(), log)?,
         // Render the `license` stanza from the parsed SPDX expression so a dual
         // license (`Apache-2.0 OR MIT`) becomes `license any_of: [...]` rather
         // than an invalid bare string. `None` when no license resolved → the
@@ -638,7 +638,11 @@ pub fn publish_to_homebrew(ctx: &mut Context, crate_name: &str, log: &StageLogge
         log,
         "homebrew",
         crate_name,
-        crate::publisher_helpers::pr_token_before_push(ctx, hb_cfg.repository.as_ref()),
+        crate::publisher_helpers::pr_token_before_push(
+            ctx,
+            hb_cfg.repository.as_ref(),
+            "HOMEBREW_TAP_TOKEN",
+        ),
     )?
     else {
         return Ok(false);

@@ -12,7 +12,9 @@ use super::{ExtraFileSpec, StringOrBool, deserialize_string_or_bool_opt};
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct UploadConfig {
-    /// Human-readable name for this upload config.
+    /// Name of this upload entry. Required: an entry without one is skipped.
+    /// It keys the credential env vars `UPLOAD_{NAME}_USERNAME` and
+    /// `UPLOAD_{NAME}_SECRET`, uppercased with each `-` turned into `_`.
     pub name: Option<String>,
     /// Build IDs filter: only upload artifacts whose `id` is in this list.
     pub ids: Option<Vec<String>>,
@@ -45,7 +47,6 @@ pub struct UploadConfig {
     /// redacted from dry-run output and will end up in `dist/config.yaml`
     /// when the pipeline runs with `--dry-run` / `--snapshot`. Resolution
     /// order: rendered `password` template → env `UPLOAD_{NAME}_SECRET`.
-    /// Password-resolution cascade.
     pub password: Option<String>,
     /// HTTP method: PUT or POST (default: PUT).
     pub method: Option<String>,

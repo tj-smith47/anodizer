@@ -65,9 +65,10 @@ pub(crate) use commit::{
     CommitOutcome, GIT_FETCH_TIMEOUT, commit_and_push_with_opts, resolve_commit_opts,
 };
 pub(crate) use config::{
-    find_crate_in_universe, get_publish_config, resolve_artifact_kind, resolve_repo_owner_name,
-    resolve_repo_token, resolve_rollback_token, resolve_secret_name, run_github_token,
-    should_skip_publisher_with_if, should_skip_upload, skip_upload_line,
+    config_or_env_secret, find_crate_in_universe, get_publish_config, render_secret,
+    resolve_artifact_kind, resolve_pr_token, resolve_repo_owner_name, resolve_repo_token,
+    resolve_secret_name, run_github_token, should_skip_publisher_with_if, should_skip_upload,
+    skip_upload_line,
 };
 pub(crate) use disambiguate::{DisambiguateConfig, disambiguate_by_format};
 #[cfg(test)]
@@ -81,8 +82,8 @@ pub(crate) use git_revert::RevertTarget;
 // out of the re-export surface honours the "only living surface" rule
 // in the module rustdoc above.
 pub(crate) use github_pr::{
-    CloseOutcome, close_pr_via_api, close_pr_via_api_with_env,
-    find_open_pr_numbers_for_head_with_env, find_open_prs_for_head_with_env,
+    CloseOutcome, close_pr_via_api_with_env, find_open_pr_numbers_for_head_with_env,
+    find_open_prs_for_head_with_env,
 };
 pub(crate) use parallelism::{
     ROLLBACK_PARALLELISM, RevertCounts, join_or_warn, lock_recover, revert_summary_line,

@@ -356,9 +356,7 @@ impl Stage for AppImageStage {
         let project_name = ctx.config.project_name.clone();
         // Resolve SOURCE_DATE_EPOCH once in the serial phase so each job
         // carries the value (the parallel phase never touches `std::env`).
-        let sde_epoch = ctx
-            .env_var("SOURCE_DATE_EPOCH")
-            .and_then(|s| s.parse::<i64>().ok());
+        let sde_epoch = anodizer_core::sde::ambient_epoch_with_env(ctx.env_source())?;
 
         // One guard spans every `appimages:` config of the project: two configs
         // with the default (or identical) `filename:` render the same `.AppImage`

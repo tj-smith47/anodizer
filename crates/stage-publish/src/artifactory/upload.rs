@@ -620,7 +620,10 @@ pub(crate) fn publish_to_artifactory_recording(
                 entry.extra_files.as_deref(),
                 log,
             )?;
-            log.status(&format!("(dry-run) {} artifacts matched", artifacts.len()));
+            log.status(&format!(
+                "(dry-run) {} matched",
+                anodizer_core::text::count_noun(artifacts.len(), "artifact", "artifacts")
+            ));
             // Render per-artifact URLs through the same path live mode uses
             // so dry-run reflects template behaviour exactly.
             for a in &artifacts {
@@ -719,8 +722,8 @@ pub(crate) fn publish_to_artifactory_recording(
         }
 
         log.status(&format!(
-            "uploading {} artifacts to artifactory '{}' (mode={})",
-            artifacts.len(),
+            "uploading {} to artifactory '{}' (mode={})",
+            anodizer_core::text::count_noun(artifacts.len(), "artifact", "artifacts"),
             name,
             mode
         ));

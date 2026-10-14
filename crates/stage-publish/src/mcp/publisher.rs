@@ -76,9 +76,8 @@ fn rollback_one_target(
     log: &StageLogger,
 ) -> anyhow::Result<RollbackOutcome> {
     // Re-render the token at rollback time; the value is never stored in evidence.
-    let rendered_token = ctx
-        .render_template(&ctx.config.mcp.auth.token)
-        .context("mcp: render auth.token for rollback")?;
+    let rendered_token =
+        crate::util::render_secret(ctx, "mcp.auth.token", &ctx.config.mcp.auth.token)?;
 
     let policy = ctx.retry_policy();
     // One wall-clock budget for this target's auth exchange plus its PATCH, so
@@ -235,7 +234,7 @@ impl anodizer_core::Publisher for McpPublisher {
                 } else {
                     crate::publisher_helpers::secret_requirement(
                         Some(cfg.auth.token.as_str()),
-                        "MCP_GITHUB_TOKEN",
+                        &["MCP_GITHUB_TOKEN"],
                     )
                     .into_iter()
                     .collect()

@@ -76,12 +76,16 @@ pub(crate) fn rollback_publish(
         return Ok(());
     }
 
-    // Resolve the close-PR token at rollback time — evidence never persists it.
-    // Falls back to ANODIZER_GITHUB_TOKEN then GITHUB_TOKEN, matching every
-    // git-revert publisher.
+    // Resolve the close-PR token at rollback time — evidence never persists
+    // it. The publish opened the pull request with the token of the one
+    // `schemastore.repository` block, so the rollback reads the same chain.
     let env = ctx.env_source();
-    let resolve_token = |t: &SchemastoreTargetSnapshot| -> Option<String> {
-        crate::util::resolve_rollback_token(env, t.token_env_var.as_deref())
+    let resolve_token = |t: &SchemastoreTargetSnapshot| {
+        crate::util::resolve_pr_token(
+            ctx,
+            ctx.config.schemastore.repository.as_ref(),
+            t.token_env_var.as_deref(),
+        )
     };
 
     let (mut closed, mut already_closed, mut failed) = (0usize, 0usize, 0usize);
@@ -89,7 +93,18 @@ pub(crate) fn rollback_publish(
         let label = format!("{}/{}", t.upstream_owner, t.upstream_repo);
         let env_hint = t.token_env_var.as_deref().unwrap_or(DEFAULT_TOKEN_ENV_VAR);
 
-        let Some(token) = resolve_token(t) else {
+        let token = match resolve_token(t) {
+            Ok(token) => token,
+            Err(e) => {
+                log.warn(&format!(
+                    "skipped rollback for head {}:{} — {e:#}; manual cleanup required",
+                    t.fork_owner, t.branch
+                ));
+                failed += 1;
+                continue;
+            }
+        };
+        let Some(token) = token else {
             log.warn(&format!(
                 "skipped rollback for head {}:{} — no schemastore token resolvable for \
                  {label} (env var ${env_hint} / {} all unset)",

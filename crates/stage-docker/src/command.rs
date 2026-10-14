@@ -58,10 +58,10 @@ pub fn resolve_backend(
 /// Return an error when the current host OS is not Linux. Used to gate the
 /// podman backend (both build and manifest paths) to Linux hosts only.
 ///
-/// The podman backend is restricted to Linux environments. A macOS or
-/// Windows user who sets `use: podman` would otherwise get a confusing
-/// `podman: command not found` at build time; failing at config validation
-/// produces an actionable error pointing back at the relevant field.
+/// The config loader and `check config` do not call this; the docker stage
+/// does, before it spawns anything. A macOS or Windows host that sets
+/// `use: podman` would otherwise get a confusing `podman: command not found`;
+/// this error points back at the field instead.
 pub fn enforce_podman_linux_only() -> Result<()> {
     let os = std::env::consts::OS;
     if os != "linux" {
@@ -85,9 +85,9 @@ pub(crate) fn podman_not_linux_message(os: &str) -> String {
 
 /// Flags that ONLY make sense for `docker buildx build` and that plain
 /// `podman build` does not recognise. Configs that opt into the podman
-/// backend via `use: podman` are validated against this list so a typo
-/// or copy-paste from a buildx config fails fast at config-load time
-/// rather than at podman's argv parser with a generic "unknown flag".
+/// backend via `use: podman` are checked against this list by the docker
+/// stage before it spawns anything, so a flag copied from a buildx config
+/// fails with an error naming it instead of podman's generic "unknown flag".
 ///
 /// The list is conservative: only flags whose presence under podman is a
 /// real UX bug (`--rewrite-timestamp` for byte-stable layers,
@@ -351,8 +351,8 @@ pub struct DockerV2Spec<'a> {
     pub labels: &'a [(String, String)],
     /// Arbitrary extra flags passed directly to buildx.
     pub flags: &'a [String],
-    /// When true, adds `--attest=type=sbom`. Buildx-only — rejected at
-    /// config-validation time when `backend == Some("podman")`.
+    /// When true, adds `--attest=type=sbom`. Buildx-only: the docker stage
+    /// fails a `use: podman` entry with SBOM on before building it.
     pub sbom: bool,
     /// When `true`, adds `--push` to the command.
     pub push: bool,

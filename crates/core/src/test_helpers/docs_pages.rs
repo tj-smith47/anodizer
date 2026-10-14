@@ -28,27 +28,50 @@ pub fn read_docs_page(relative: &str) -> String {
     std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()))
 }
 
-/// Every `.md` page under [`docs_dir`], as paths relative to it, sorted.
-pub fn docs_pages() -> Vec<PathBuf> {
-    fn collect(dir: &Path, root: &Path, pages: &mut Vec<PathBuf>) {
-        for entry in std::fs::read_dir(dir).unwrap_or_else(|e| panic!("{}: {e}", dir.display())) {
-            let path = entry.expect("docs entry").path();
-            if path.is_dir() {
-                collect(&path, root, pages);
-            } else if path.extension().is_some_and(|ext| ext == "md") {
-                pages.push(
-                    path.strip_prefix(root)
-                        .expect("under the root")
-                        .to_path_buf(),
-                );
+/// Every `.md` file under `dir`, skipping the directory `skip`, as paths
+/// relative to `root`.
+fn collect_pages(dir: &Path, root: &Path, skip: Option<&Path>, pages: &mut Vec<PathBuf>) {
+    for entry in std::fs::read_dir(dir).unwrap_or_else(|e| panic!("{}: {e}", dir.display())) {
+        let path = entry.expect("docs entry").path();
+        if path.is_dir() {
+            if skip != Some(path.as_path()) {
+                collect_pages(&path, root, skip, pages);
             }
+        } else if path.extension().is_some_and(|ext| ext == "md") {
+            pages.push(
+                path.strip_prefix(root)
+                    .expect("under the root")
+                    .to_path_buf(),
+            );
         }
     }
+}
+
+/// Every `.md` page under [`docs_dir`], as paths relative to it, sorted.
+pub fn docs_pages() -> Vec<PathBuf> {
     let root = docs_dir();
     let mut pages = Vec::new();
-    collect(&root, &root, &mut pages);
+    collect_pages(&root, &root, None, &mut pages);
     pages.sort();
     assert!(pages.len() > 100, "the docs site has its pages");
+    pages
+}
+
+/// Every other `.md` page of the docs site: the pages under
+/// `docs/site/content` outside [`docs_dir`] (the migration guides, the
+/// dogfooding log), as paths relative to [`repo_root`], sorted.
+pub fn other_site_pages() -> Vec<PathBuf> {
+    let root = repo_root();
+    let docs = docs_dir();
+    let mut pages = Vec::new();
+    collect_pages(
+        &root.join("docs/site/content"),
+        &root,
+        Some(docs.as_path()),
+        &mut pages,
+    );
+    pages.sort();
+    assert!(pages.len() > 5, "the docs site has its other pages");
     pages
 }
 

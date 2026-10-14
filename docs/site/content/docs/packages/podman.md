@@ -9,14 +9,14 @@ Anodizer supports the `podman` backend as a swap-in alternative to `docker build
 
 ## Linux-only
 
-The podman backend is **Linux-only**. Anodizer refuses to load a config with `use: podman` on macOS or Windows hosts and reports a clear error rather than failing later with `podman: command not found`.
+The podman backend is **Linux-only**. A config with `use: podman` loads on any host, and `anodizer check config` does not look at the host. On macOS or Windows the docker stage fails the entry before it spawns anything, with an error that names the field to change. This holds for a `dockers_v2[]` build and for a `docker_manifests[]` entry.
 
 ```text
 $ anodizer release         # on macOS
        Error podman backend is supported on Linux only (host OS: macos); remove `use: podman` or run on a Linux host
 ```
 
-## Opt in
+## Selecting podman
 
 Set `use: podman` on a `dockers_v2[]` entry (build path) or a `docker_manifests[]` entry (manifest-list path):
 
@@ -30,7 +30,7 @@ crates:
         dockerfile: Dockerfile
         platforms: ["linux/amd64", "linux/arm64"]
         use: podman           # opt in (Linux-only)
-        sbom: false           # MUST be false under podman
+        sbom: false           # sbom defaults to true, which podman cannot build
     docker_manifests:
       - name_template: "ghcr.io/myorg/myapp:{{ Version }}"
         image_templates:
@@ -43,7 +43,7 @@ The default (`use:` unset) keeps the historical `docker buildx` invocation.
 
 ## Flag compatibility
 
-Plain `podman build` does **not** accept the BuildKit-only flag set. Anodizer rejects configs that mix `use: podman` with any of:
+Plain `podman build` does **not** accept the BuildKit-only flag set. The docker stage fails a `use: podman` entry that carries any of:
 
 | Flag | Why rejected |
 |------|--------------|
@@ -54,7 +54,7 @@ Plain `podman build` does **not** accept the BuildKit-only flag set. Anodizer re
 | `--output` | BuildKit exporter selector (OCI / registry / image) |
 | `--cache-from` | BuildKit cache importer |
 | `--cache-to` | BuildKit cache exporter |
-| `sbom: true` | Resolves to `--attest=type=sbom`; same reason |
+| `sbom` reading true outside a snapshot (the default) | Resolves to `--attest=type=sbom`; same reason |
 
 ```text
        Error dockers_v2 with `use: podman` is incompatible with buildx-only flag '--cache-from=type=gha'; remove the flag or switch to `use: buildx`
@@ -121,11 +121,11 @@ Date: Sun, 13 Sep 2026 07:25:46 GMT
 {"schemaVersion":2,"mediaType":"application/vnd.oci.image.index.v1+json","manifests":[{"mediaType":"application/vnd.oci.image.manifest.v1+json","digest":"sha256:4fc24e873ce52bc5f8400cb780f6319c2abb1343c18627b3d49b607e874a26d2","size":567,"platform":{"architecture":"amd64","os":"linux"}}]}
 ```
 
-**Podman 2.0 is the floor for the podman backend.** `podman push` took `--digestfile` in 1.6.0 — "The `podman push` command now supports the `--digestfile` option to save a file containing the pushed digest" ([RELEASE_NOTES.md at v1.6.0, 1.6.0 Features](https://github.com/podman-container-tools/podman/blob/v1.6.0/RELEASE_NOTES.md)) — and `podman manifest push` did not exist before 2.0.0: v1.9.0 carries no `podman-manifest-*` man page at all, and v2.0.0's [`podman-manifest-push.1.md`](https://github.com/podman-container-tools/podman/blob/v2.0.0/docs/source/markdown/podman-manifest-push.1.md) documents the flag from the start. The higher of the two is the floor. An older podman exits non-zero on the unknown option, which fails the push rather than degrading to a build with no digest. A podman that accepts the flag but writes nothing degrades cleanly: anodizer notes the missing file under `-v` and records no digest for that tag.
+**Podman 2.0 is the floor for the podman backend.** `podman push` took `--digestfile` in 1.6.0 — "The `podman push` command now supports the `--digestfile` option to save a file containing the pushed digest" ([RELEASE_NOTES.md at v1.6.0, 1.6.0 Features](https://github.com/podman-container-tools/podman/blob/v1.6.0/RELEASE_NOTES.md)) — and `podman manifest push` did not exist before 2.0.0: v1.9.0 carries no `podman-manifest-*` man page at all, and v2.0.0's [`podman-manifest-push.1.md`](https://github.com/podman-container-tools/podman/blob/v2.0.0/docs/source/markdown/podman-manifest-push.1.md) documents the flag from the start. The higher of the two is the floor. An older podman exits non-zero on the unknown option, which fails the push, so no build is left without a digest. A podman that accepts the flag but writes nothing degrades cleanly: anodizer notes the missing file under `-v` and records no digest for that tag.
 
 A build that pushes nothing (a snapshot, a dry run, `skip_push:`) records no digest under either backend — `podman build`'s own `--iidfile` holds the LOCAL image ID, which names different content than a registry serves.
 
-## What anodizer does NOT do
+## Limits
 
 - **No auto-install.** Anodizer never installs `podman` for you. CI runners must have `podman` already on `PATH`.
 - **No credential setup.** Push credentials are resolved from the host's `~/.docker/config.json` (or `~/.config/containers/auth.json` for rootless podman). Run `podman login` (or `docker login`) before releasing, or wire `DOCKER_USERNAME` / `DOCKER_PASSWORD` into a `before:` hook.
@@ -134,14 +134,7 @@ A build that pushes nothing (a snapshot, a dry run, `skip_push:`) records no dig
 
 ## Determinism Harness compatibility
 
-`anodizer check determinism` shells out to `docker buildx build --output=type=oci,rewrite-timestamp=true,...` for its byte-stability probe. Those flags are BuildKit-only and have no podman equivalent. When the project config has `use: podman` set on any `dockers_v2[]` entry, the harness skips the docker stage with an explanatory warning:
-
-```text
-warn: docker stage requested but project config has `use: podman` (Linux-only);
-      the determinism harness only probes BuildKit-based builds, so the docker
-      stage is skipped for this run. Verify podman image byte-stability outside
-      the harness.
-```
+`anodizer check determinism` shells out to `docker buildx build --output=type=oci,rewrite-timestamp=true,...` for its byte-stability probe. Those flags are BuildKit-only and have no podman equivalent. When the project config has `use: podman` set on any `dockers_v2[]` entry, the harness skips the docker stage and prints a warning that says so. When `docker` is named in `--stages`, the harness fails instead and asks for `docker` to be removed from `--stages` or the image to be built with BuildKit, so it never reports byte-stability for an image it did not probe.
 
 Verify podman image reproducibility out-of-band (re-build the image twice, compare the layer-tar hashes).
 

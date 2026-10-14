@@ -23,7 +23,7 @@ The message is delivered as a Microsoft [Adaptive Card](https://adaptivecards.io
 
 ### Environment variables
 
-Store the webhook URL in an environment variable rather than committing it to your config file. When `webhook_url` is unset, anodizer falls back to the `TEAMS_WEBHOOK` env var:
+Store the webhook URL in an environment variable so it stays out of your committed config file. When `webhook_url` is unset, anodizer falls back to the `TEAMS_WEBHOOK` env var:
 
 ```yaml
 announce:

@@ -400,7 +400,11 @@ pub(crate) fn clone_repo(
         // SSH key file / used as the clone URL and ssh fails.
         let rendered_url = render_or_warn(ctx, log, "repository.git.url", url)?;
         let rendered_key = match git.private_key.as_deref() {
-            Some(pk) => Some(render_or_warn(ctx, log, "repository.git.private_key", pk)?),
+            Some(pk) => Some(super::config::render_secret(
+                ctx,
+                "repository.git.private_key",
+                pk,
+            )?),
             None => None,
         };
         let rendered_ssh = match git.ssh_command.as_deref() {

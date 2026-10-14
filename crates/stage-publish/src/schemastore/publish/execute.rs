@@ -301,12 +301,12 @@ pub(super) fn run_real(
     let fork_name =
         crate::util::render_or_warn(ctx, log, "schemastore.repository.name", &fork_name_raw)?;
 
-    let token = crate::util::resolve_repo_token(ctx, Some(repo), Some(TOKEN_ENV_VAR));
+    let token = crate::util::resolve_repo_token(ctx, Some(repo), Some(TOKEN_ENV_VAR))?;
     // Resolved before the clone: a template that does not render is this
     // block's one fork, so it stays a hard error, and nothing is cloned or
     // pushed for a pull request that cannot open.
     let pr_token =
-        crate::util::configured_pr_token(cfg.repository.as_ref(), &|s| ctx.render_template(s))?;
+        crate::util::resolve_pr_token(ctx, cfg.repository.as_ref(), Some(TOKEN_ENV_VAR))?;
 
     let tmp_dir = tempfile::tempdir().context("schemastore: create temp dir")?;
     let repo_path = tmp_dir.path();

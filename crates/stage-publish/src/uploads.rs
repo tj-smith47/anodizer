@@ -277,7 +277,10 @@ pub(crate) fn publish_uploads_recording(
                 entry.extra_files.as_deref(),
                 log,
             )?;
-            log.status(&format!("(dry-run) {} artifacts matched", artifacts.len()));
+            log.status(&format!(
+                "(dry-run) {} matched",
+                anodizer_core::text::count_noun(artifacts.len(), "artifact", "artifacts")
+            ));
             // Render per-artifact URLs through the same path live mode uses so
             // dry-run reflects template behaviour exactly.
             for a in &artifacts {
@@ -366,8 +369,8 @@ pub(crate) fn publish_uploads_recording(
         }
 
         log.status(&format!(
-            "uploading {} artifacts to '{}' (mode={})",
-            artifacts.len(),
+            "uploading {} to '{}' (mode={})",
+            anodizer_core::text::count_noun(artifacts.len(), "artifact", "artifacts"),
             name,
             mode
         ));
@@ -574,13 +577,13 @@ impl anodizer_core::Publisher for UploadsPublisher {
                 .replace('-', "_");
             if let Some(req) = crate::publisher_helpers::secret_requirement(
                 entry.username.as_deref(),
-                &format!("UPLOAD_{}_USERNAME", name_upper),
+                &[format!("UPLOAD_{}_USERNAME", name_upper).as_str()],
             ) {
                 out.push(req);
             }
             if let Some(req) = crate::publisher_helpers::secret_requirement(
                 entry.password.as_deref(),
-                &format!("UPLOAD_{}_SECRET", name_upper),
+                &[format!("UPLOAD_{}_SECRET", name_upper).as_str()],
             ) {
                 out.push(req);
             }
@@ -1660,7 +1663,7 @@ mod tests {
             !joined.contains("app.tar.gz (archive) →"),
             "archive should be excluded under extra_files_only:\n{joined}"
         );
-        assert!(joined.contains("1 artifacts matched"), "{joined}");
+        assert!(joined.contains("1 artifact matched"), "{joined}");
     }
 
     /// A glob matching multiple files expands to one artifact per match, and a

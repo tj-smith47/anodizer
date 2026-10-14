@@ -408,21 +408,30 @@ fn the_publish_token_satisfies_the_rollback_scope() {
         p.missing_rollback_scope(&ctx),
         Some("CLOUDSMITH_TOKEN package_delete")
     );
-    assert_eq!(resolve_rollback_token(&ctx), None);
+    assert_eq!(resolve_rollback_token(&ctx, None).unwrap(), None);
 
     ctx.set_env_source(anodizer_core::MapEnvSource::new().with("CLOUDSMITH_TOKEN", "pub"));
     assert_eq!(p.missing_rollback_scope(&ctx), None);
-    assert_eq!(resolve_rollback_token(&ctx).as_deref(), Some("pub"));
+    assert_eq!(
+        resolve_rollback_token(&ctx, None).unwrap().as_deref(),
+        Some("pub")
+    );
 
     ctx.set_env_source(
         anodizer_core::MapEnvSource::new()
             .with("CLOUDSMITH_TOKEN", "pub")
             .with("CLOUDSMITH_API_KEY", "explicit"),
     );
-    assert_eq!(resolve_rollback_token(&ctx).as_deref(), Some("explicit"));
+    assert_eq!(
+        resolve_rollback_token(&ctx, None).unwrap().as_deref(),
+        Some("explicit")
+    );
 
     ctx.config.cloudsmiths = Some(vec![entry(Some("CS_PUSH"))]);
     ctx.set_env_source(anodizer_core::MapEnvSource::new().with("CS_PUSH", "named"));
-    assert_eq!(resolve_rollback_token(&ctx).as_deref(), Some("named"));
+    assert_eq!(
+        resolve_rollback_token(&ctx, None).unwrap().as_deref(),
+        Some("named")
+    );
     assert_eq!(p.missing_rollback_scope(&ctx), None);
 }

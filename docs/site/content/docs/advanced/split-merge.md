@@ -11,7 +11,7 @@ This avoids slow cross-compilation and lets each job run on hardware that matche
 
 > If your CI already runs the [determinism harness](@/docs/advanced/determinism.md), prefer `preserve-dist` + `release --publish-only` — the harness's per-platform builds are already byte-stable, so a separate split/merge matrix repeats work.
 
-## How it works
+## Overview
 
 1. **Matrix jobs** — each job runs `anodizer release --split` on its native runner. This builds only the binaries for that job's platform and writes a `context.json` (artifacts list + git state) to a `dist/<platform>/` subdirectory.
 2. **Artifact handoff** — each job uploads its `dist/<platform>/` directory as a CI artifact.
@@ -125,7 +125,7 @@ dist/
 
 The `context.json` file contains the artifact metadata (paths, kinds, checksums) and git context (tag, commit, branch, template variables). The merge job uses this to reconstruct the artifact registry without rebuilding.
 
-A `dist/matrix.json` file is also written (on the first `--split` run) listing the CI matrix entries with runner suggestions. The merge step cross-checks the shards it finds against it: every matrix entry must be covered by the targets some shard built, and no shard may cover a target outside the matrix. A shard is identified by its artifacts' targets folded onto the `partial.by` axis — never by the name of the `dist/` subdirectory it wrote — so the selection flags a split job ran with cannot make the merge miscount it.
+A `dist/matrix.json` file is also written (on the first `--split` run) listing the CI matrix entries with runner suggestions. The merge step cross-checks the shards it finds against it: every matrix entry must be covered by the targets some shard built, and no shard may cover a target outside the matrix. A shard is identified by its artifacts' targets folded onto the `partial.by` axis; the name of the `dist/` subdirectory it wrote is not read, so the selection flags a split job ran with cannot make the merge miscount it.
 
 ## GitHub Actions example
 
@@ -256,8 +256,8 @@ diverge:
 
 **Cross-tool migration is one-way:** shards produced by one tool cannot
 be merged by the other. If you are migrating an existing GoReleaser
-project, regenerate shards with anodizer on the next release rather
-than mixing layouts.
+project, regenerate every shard with anodizer on the next release, so
+no merge mixes the two layouts.
 
 ## Idempotency
 

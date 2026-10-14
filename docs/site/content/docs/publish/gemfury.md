@@ -118,7 +118,7 @@ and only require the wider API token in the rollback flow.
   per the top-level `retry:` block; a `429` waits the `Retry-After` or
   `RateLimit-Reset` the server sent instead of the backoff step.
   Non-transient failures break out immediately.
-- Rollback: per uploaded artifact, issue `DELETE https://api.fury.io/<account>/packages/<name>/versions/<version>`. When the API token is unavailable, rollback emits a manual-cleanup warn instead of erroring.
+- Rollback: per uploaded artifact, issue `DELETE https://api.fury.io/<account>/packages/<name>/versions/<version>`. When the API token is unavailable, rollback emits a manual-cleanup warning and does not fail.
 
 ## Common gotchas
 

@@ -162,8 +162,8 @@ dotted (`-rc.1`) and suffix (`-rc1`) number forms accepted:
 
 A **bare label with no number defaults the number to `0`** (`1.2.3-rc` →
 `1.2.3rc0`). A prerelease whose label is outside this set (e.g.
-`-nightly.20260712`) has no faithful PEP 440 equivalent and is an **error**,
-not a silent rename — uploading a version pip would order differently than
+`-nightly.20260712`) has no faithful PEP 440 equivalent and is an **error**:
+uploading a version pip would order differently than
 cargo does is worse than failing.
 
 ## Source distributions (`sdist`)
@@ -200,8 +200,8 @@ Publishing](https://docs.pypi.org/trusted-publishers/) (GitHub Actions OIDC):
 | `auth` | Behaviour |
 |---|---|
 | `auto` *(default)* | A token when one is available, otherwise a Trusted-Publishing exchange when an OIDC context is present. Errors only when neither exists. |
-| `token` | Always the token; never OIDC. |
-| `oidc` | Always Trusted Publishing; never fall back to a token. Errors loudly if the OIDC request env is absent. |
+| `token` | Uses only the token, with no OIDC attempt. |
+| `oidc` | Uses only Trusted Publishing, with no token fallback. Errors loudly if the OIDC request env is absent. |
 
 ### Token
 

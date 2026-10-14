@@ -166,7 +166,7 @@ impl anodizer_core::Publisher for NpmPublisher {
         for entry in active {
             let token_req = crate::publisher_helpers::secret_requirement(
                 entry.token.as_deref(),
-                crate::npm::manifest::token_env_var(entry),
+                &[crate::npm::manifest::token_env_var(entry)],
             );
             match entry.auth {
                 // Token-only: the token is mandatory, exactly as before.
@@ -185,14 +185,14 @@ impl anodizer_core::Publisher for NpmPublisher {
                 NpmAuthMode::Auto => match token_req {
                     // Literal `cfg.token` → the credential is always inline.
                     None => {}
-                    Some(anodizer_core::EnvRequirement::EnvAllOf { vars }) => {
+                    Some(anodizer_core::EnvRequirement::EnvAnyOf { vars })
+                    | Some(anodizer_core::EnvRequirement::EnvAllOf { vars }) => {
                         let mut any = vars;
                         any.extend(oidc_vars());
                         out.push(anodizer_core::EnvRequirement::EnvAnyOf { vars: any });
                     }
-                    // `secret_requirement` only yields `EnvAllOf`/`None` today; if a
-                    // future core change returns another shape, forward it verbatim
-                    // (a slightly over-broad preflight gate) rather than panicking.
+                    // A tool requirement carries no variable to join with the
+                    // OIDC pair, so it is kept as it is.
                     Some(other) => out.push(other),
                 },
             }

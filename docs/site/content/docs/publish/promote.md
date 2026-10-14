@@ -42,7 +42,7 @@ explicit.
 
 anodizer reads your existing publisher config (`snapcrafts:`, `npms:`,
 `dockers_v2:`, `release.github`) only to learn each publisher's native track
-vocabulary and locate its repos — never to trigger a promotion.
+vocabulary and locate its repos. Reading it triggers no promotion.
 
 ## Track vocabulary
 

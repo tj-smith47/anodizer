@@ -633,9 +633,8 @@ pub(crate) fn reconcile_open_prs(
 /// the fork is synced with upstream before submitting.
 ///
 /// Tries `gh` CLI first; if unavailable, falls back to the GitHub REST API.
-/// Both transports authenticate with the same token: `pull_request.token`,
-/// else `repository.token`, else the `ANODIZER_GITHUB_TOKEN` / `GITHUB_TOKEN`
-/// environment chain (gh receives it as `GH_TOKEN`).
+/// Both transports authenticate with the same token, resolved by
+/// [`super::config::resolve_pr_token`] (gh receives it as `GH_TOKEN`).
 ///
 /// Returns `Some(PublisherOutcome::PendingValidation)` when the PR
 /// already exists and could not be updated, or `Some(Failed(msg))` when
@@ -644,10 +643,12 @@ pub(crate) fn reconcile_open_prs(
 /// `Context::record_publisher_outcome` or the dispatch summary table
 /// will misreport the silent failure as `succeeded`.
 ///
-/// `token` is the one the config names, already rendered by
-/// [`super::pr_token::configured_pr_token`] before the caller's push; `None` resolves from the
-/// environment chain. The body and base-branch templates keep their text
-/// when they fail to render, as they always have.
+/// `token` is the one [`super::config::resolve_pr_token`] resolved before
+/// the caller's push: `pull_request.token`, `repository.token`, the
+/// publisher's own variable, the run token on a GitHub run, then
+/// `ANODIZER_GITHUB_TOKEN` / `GITHUB_TOKEN` / `GH_TOKEN`. With `None` only
+/// the last three are read again. The body and base-branch templates keep
+/// their text when they fail to render, as they always have.
 #[must_use = "the returned outcome override must be forwarded to \
               Context::record_publisher_outcome — dropping it silently \
               misreports a PR-already-exists skip or a PR-creation failure \
@@ -729,8 +730,6 @@ pub(crate) fn maybe_submit_pr_with_env<E: EnvSource + ?Sized>(
         .and_then(|b| b.branch.as_deref())
         .map(render)
         .unwrap_or_else(|| "main".to_string());
-    // A blank rendering falls through to ANODIZER_GITHUB_TOKEN -> GITHUB_TOKEN
-    // inside the resolver.
     let token = anodizer_core::git::resolve_github_token_with_env(token, &|key| env.var(key));
 
     // Fork sync: when the PR targets a different upstream repository, sync first.
@@ -839,8 +838,9 @@ pub(crate) fn classify_pr_transport(gh_available: bool, token_present: bool) -> 
 pub(crate) struct SubmitPrOpts {
     /// When true, force-push to an existing PR branch rather than skipping.
     pub update_existing_pr: bool,
-    /// The token the config names for the pull request, already rendered
-    /// ([`super::pr_token::configured_pr_token`]). `None` resolves from the environment chain.
+    /// The token for the pull request, resolved by
+    /// [`super::config::resolve_pr_token`]. With `None` only
+    /// `ANODIZER_GITHUB_TOKEN` / `GITHUB_TOKEN` / `GH_TOKEN` are read.
     pub token: Option<String>,
 }
 

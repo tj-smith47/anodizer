@@ -21,7 +21,7 @@ cargo install --path crates/cli
 
 ## In GitHub Actions
 
-Use [`tj-smith47/anodizer-action`](https://github.com/tj-smith47/anodizer-action) instead of `cargo install` — it caches the binary, auto-installs pipeline dependencies (nfpm, cosign, zig, snapcraft, ...), and imports signing keys in a single step:
+Use [`tj-smith47/anodizer-action`](https://github.com/tj-smith47/anodizer-action) in a workflow — it caches the binary, auto-installs pipeline dependencies (nfpm, cosign, zig, snapcraft, ...), and imports signing keys in a single step:
 
 ```yaml
 # not an anodizer config
@@ -35,7 +35,7 @@ Use [`tj-smith47/anodizer-action`](https://github.com/tj-smith47/anodizer-action
 
 See [GitHub Actions](@/docs/ci/github-actions.md) for full examples.
 
-## Verify installation
+## Installation check
 
 ```bash
 anodizer --version

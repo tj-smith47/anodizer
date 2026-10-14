@@ -193,7 +193,7 @@ pub(crate) fn run(mut opts: ReleaseOpts) -> Result<()> {
             ctx.publisher_deselected(name)
         });
         helpers::resolve_scm_token_type(&mut ctx, &config);
-        ctx.populate_time_vars();
+        ctx.populate_time_vars()?;
         ctx.populate_runtime_vars();
         ctx.populate_metadata_var()?;
 

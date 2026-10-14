@@ -52,7 +52,7 @@ Not applicable — app bundle creation is a local build step with no external se
 
 ## Republish / update behavior
 
-Not applicable — this is a local packaging stage, not a publisher.
+Not applicable — this is a local packaging stage and publishes nothing.
 
 ## Signing and Notarization
 
@@ -123,7 +123,7 @@ specific knob.
 
 The `info.mode`, `info.owner`, and `info.group` fields are accepted by the
 schema but **not used for app bundles** (macOS reads file metadata from the
-filesystem, not from a manifest). Anodizer emits a warning when any of them
+filesystem itself). Anodizer emits a warning when any of them
 are set so the no-op is visible.
 
 **Glob + `dst` rename caveat**: when `dst` is set, the `src` glob must match

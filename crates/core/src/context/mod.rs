@@ -108,10 +108,9 @@ pub struct Context {
     pub verify_gate: Option<VerifyGate>,
     /// SOURCE_DATE_EPOCH seed + non-determinism allow-list state for the
     /// run. `None` until a stage (typically `BuildStage`) seeds it from
-    /// `resolve_reproducible_epoch(commit_timestamp)`; downstream stages
-    /// (`stage-sbom`, `stage-archive`, `stage-sign`) read `sde` to derive
-    /// deterministic timestamps. Lazy-init by design: tests and snapshot
-    /// runs without a clean commit can still proceed.
+    /// [`Context::resolve_reproducible_mtime`]; the docker and SBOM stages
+    /// read it through [`Context::reproducible_epoch`]. Lazy-init by design:
+    /// tests and runs with no known commit can still proceed.
     pub determinism: Option<crate::DeterminismState>,
     /// Per-publisher outcome override published by `Publisher::run` when
     /// the artifact reached a non-`Succeeded` terminal state but `run`

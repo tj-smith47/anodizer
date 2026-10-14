@@ -73,7 +73,7 @@ Matching details:
   rewritten to their bumped spelling (`0.2.0` / `v0.2.0`).
 - **Word-boundary anchored.** `0.1.0` does not match inside `10.1.0`, so an
   unrelated longer version on the same line is left untouched.
-- **A zero-match file is warned, not failed.** An enrolled file that does not
+- **A zero-match file is a warning.** An enrolled file that does not
   contain the old version (usually a stale enrollment) produces a warning and
   the tag run continues:
 
@@ -113,7 +113,7 @@ regex against the crate's current version and reports
 `STALE: <file> (match <anchor>: expected <version>, not found)` when that anchor
 selects nothing — so a version present elsewhere in the file does not mask the
 drift. A `match` that omits `{version}` or is not a valid regex is reported as a
-finding rather than crashing the guard.
+finding, and the guard keeps running.
 
 When no crate enrolls any `version_files`, the guard is a no-op and exits 0 with
 a short note (`no version_files configured`). Wire it into CI as a pre-release
@@ -157,8 +157,7 @@ Enrollment is idempotent (already-enrolled paths are never re-added) and
 preserves the existing comments and key order in `.anodizer.yaml`. Discovery has
 no basis to infer an anchor, so `init` only ever writes bare `- <path>` items —
 but it reads both forms, so a file already enrolled with a `match` anchor is
-never re-offered, and a new item arrives after the anchored mapping, not inside
-it.
+never re-offered, and a new item is placed after the anchored mapping.
 
 ## Config modes
 
@@ -238,8 +237,8 @@ The rules:
 | `{version}` | Stands for the OLD version — the one the file currently carries — regex-escaped before matching, so its `.` separators are literal. Only the literal 9-character token `{version}` is substituted, so regex quantifiers like `\d{2}` are untouched. The anchor is never re-rendered with the new version: it exists to FIND the region, and the replacement happens inside it. |
 | Required | `match` must contain `{version}` at least once. An anchor without it cannot be verified and is refused. |
 | The rewrite | Inside a match, the replacement is the SAME word-boundary literal replace the bare form uses — bare and `v`-prefixed spellings both. `match` selects the region; it never supplies the new text, and the surrounding text the anchor matched is left byte-for-byte alone. |
-| Every match | All regions the anchor selects are rewritten, not just the first. |
-| Zero matches | An **error** that fails the tag before any file is written (unlike a bare entry's warning). An anchor states a precise intent, so a silent no-op is a defect, not a nuisance. |
+| Every match | Every region the anchor selects is rewritten. |
+| Zero matches | An **error** that fails the tag before any file is written (unlike a bare entry's warning). An anchor states a precise intent, so a silent no-op is a defect. |
 | Two anchors | Two anchors on one file must select disjoint regions; anodizer does not check that they do. |
 
 ```text
@@ -271,7 +270,7 @@ anything is written, identically in `--dry-run` and a real run:
   version_files conflict: shared.md is enrolled by crates whose bumps chain (core 0.1.0 → 0.2.0 then cli 0.2.0 → 0.3.0); the second rewrite would consume the first's output — give each enrollment its own `match` anchor
   ```
 
-  The chain test is on the matcher, not on string equality, so a prerelease
+  The chain test asks the word-boundary matcher, so a prerelease
   beside its release base is a chain too: `0.1.0-rc1 → 0.1.0-rc2` beside
   `0.1.0 → 0.2.0` is refused, because the word-boundary matcher for `0.1.0`
   fires inside `0.1.0-rc2` and would corrupt it to `0.2.0-rc2`. Give each

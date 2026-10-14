@@ -241,9 +241,7 @@ impl SourceStage {
                 resolved_commit.as_str()
             }
         };
-        let sde_mtime = ctx
-            .env_var("SOURCE_DATE_EPOCH")
-            .and_then(|s| s.parse::<u64>().ok());
+        let sde_mtime = ctx.resolve_reproducible_mtime()?;
         let output_path = create_source_archive(&SourceArchiveInputs {
             dist,
             format: &format,

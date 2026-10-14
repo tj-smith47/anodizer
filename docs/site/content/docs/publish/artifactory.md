@@ -121,7 +121,7 @@ Credentials are resolved in this order:
 | Username | config value, then `ARTIFACTORY_{NAME}_USERNAME` |
 | Password | config value, then `ARTIFACTORY_{NAME}_SECRET` |
 
-Where `{NAME}` is the `name` field uppercased, with each `-` turned into `_` (`prod-eu` reads `ARTIFACTORY_PROD_EU_SECRET`). A config value that renders blank falls through to the env var.
+Where `{NAME}` is the `name` field uppercased, with each `-` turned into `_` (`prod-eu` reads `ARTIFACTORY_PROD_EU_SECRET`). Each value is trimmed, and a config value that renders blank falls through to the env var. A `username` or `password` template that does not render is an error, so its text is never sent as a credential.
 
 ## Common gotchas
 

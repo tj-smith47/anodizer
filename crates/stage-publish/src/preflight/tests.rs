@@ -783,6 +783,100 @@ fn winget_preflight_probes_the_rendered_package_identifier() {
     assert_eq!(winget.package, "Acme.tool");
 }
 
+/// The winget probe searches `microsoft/winget-pkgs` pull requests with the
+/// token the publish opens its pull request with: `pull_request.token`
+/// first, then `WINGET_PKGS_TOKEN` (trimmed) ahead of the run token.
+#[test]
+fn winget_preflight_probes_with_the_pull_request_token() {
+    use anodizer_core::config::{
+        CrateConfig, PublishConfig, PullRequestConfig, RepositoryConfig, WingetConfig,
+    };
+    use anodizer_core::log::{StageLogger, Verbosity};
+    use anodizer_core::test_helpers::TestContextBuilder;
+    use std::sync::Mutex;
+
+    struct RecordingFactory {
+        inner: CannedFactory,
+        winget_tokens: Mutex<Vec<Option<String>>>,
+    }
+    impl CheckerFactory for RecordingFactory {
+        fn cargo(
+            &self,
+            p: RetryPolicy,
+            d: Option<std::time::Instant>,
+        ) -> Box<dyn PreflightChecker> {
+            self.inner.cargo(p, d)
+        }
+        fn chocolatey(
+            &self,
+            s: String,
+            p: RetryPolicy,
+            d: Option<std::time::Instant>,
+        ) -> Box<dyn PreflightChecker> {
+            self.inner.chocolatey(s, p, d)
+        }
+        fn winget(
+            &self,
+            t: Option<String>,
+            p: RetryPolicy,
+            d: Option<std::time::Instant>,
+        ) -> Box<dyn PreflightChecker> {
+            self.winget_tokens.lock().unwrap().push(t.clone());
+            self.inner.winget(t, p, d)
+        }
+        fn aur(&self, p: RetryPolicy, d: Option<std::time::Instant>) -> Box<dyn PreflightChecker> {
+            self.inner.aur(p, d)
+        }
+    }
+
+    let probe_token = |pr_token: Option<&str>| {
+        let krate = CrateConfig {
+            name: "mytool".to_string(),
+            publish: Some(PublishConfig {
+                winget: Some(WingetConfig {
+                    package_identifier: Some("Acme.tool".to_string()),
+                    repository: Some(RepositoryConfig {
+                        owner: Some("acme".to_string()),
+                        name: Some("winget-pkgs".to_string()),
+                        pull_request: pr_token.map(|t| PullRequestConfig {
+                            token: Some(t.to_string()),
+                            ..Default::default()
+                        }),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut ctx = TestContextBuilder::new()
+            .crates(vec![krate])
+            .sealed_env()
+            .env("WINGET_PKGS_TOKEN", " winget-pat\n")
+            .token(Some("run-token".to_string()))
+            .build();
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        let factory = RecordingFactory {
+            inner: CannedFactory {
+                cargo_state: PublisherState::Clean,
+                choco_state: PublisherState::Clean,
+                winget_state: PublisherState::Clean,
+                aur_state: PublisherState::Clean,
+            },
+            winget_tokens: Mutex::new(Vec::new()),
+        };
+        let log = StageLogger::new("preflight", Verbosity::Normal);
+        run_preflight_with_factory(&mut ctx, &log, &factory).expect("ok");
+        let tokens = factory.winget_tokens.into_inner().unwrap();
+        assert_eq!(tokens.len(), 1, "{tokens:?}");
+        tokens.into_iter().next().unwrap()
+    };
+
+    assert_eq!(probe_token(None).as_deref(), Some("winget-pat"));
+    assert_eq!(probe_token(Some("fork-pat")).as_deref(), Some("fork-pat"));
+}
+
 /// A per-crate workspace releases each crate at its own version, so the
 /// state probes ask about each crate's planned version, and a crate the plan
 /// left alone is asked about the context's version.

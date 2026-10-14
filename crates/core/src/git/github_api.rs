@@ -217,11 +217,63 @@ pub fn resolve_github_token_with_env(
     explicit: Option<&str>,
     env: &dyn Fn(&str) -> Option<String>,
 ) -> Option<String> {
-    let non_empty = |s: String| if s.is_empty() { None } else { Some(s) };
-    let explicit = explicit.filter(|t| !t.is_empty()).map(str::to_string);
+    let explicit = explicit.and_then(non_blank_token);
     GITHUB_TOKEN_ENV_LADDER.iter().fold(explicit, |acc, var| {
-        acc.or_else(|| env(var).and_then(non_empty))
+        acc.or_else(|| env(var).as_deref().and_then(non_blank_token))
     })
+}
+
+/// A credential value with its surrounding whitespace removed, or `None`
+/// when nothing is left.
+///
+/// Every token source is read through this one function: a rendered config
+/// value, a publisher's own variable, the run token and the
+/// `ANODIZER_GITHUB_TOKEN` / `GITHUB_TOKEN` / `GH_TOKEN` ladder. A value that
+/// is empty or only whitespace counts as unset, so the next source is tried.
+/// GitHub Actions passes a missing secret as `""`, and a secret pasted with a
+/// trailing newline would otherwise be sent with it.
+pub fn non_blank_token(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_string())
+}
+
+/// Render the credential template `raw` for the config field `field` and
+/// return it with its surrounding whitespace removed.
+///
+/// A template that fails to render is an error in every mode, strict or not,
+/// so a literal template is never sent as a credential. The error names
+/// `field` and the cause of the failure, with every line of the template's
+/// own text replaced by `<template>`: a mixed template
+/// (`ghp_…{{ Undefined }}`) holds a literal half that must not reach a log
+/// line or the run summary.
+pub fn render_secret(
+    field: &str,
+    raw: &str,
+    render: &dyn Fn(&str) -> Result<String>,
+) -> Result<String> {
+    match render(raw) {
+        Ok(rendered) => Ok(rendered.trim().to_string()),
+        Err(e) => bail!("{field} does not render: {}", secret_render_cause(raw, &e)),
+    }
+}
+
+/// The root cause of a failed secret render, flattened to one line, without
+/// the source excerpt the template engine appends after ` --> ` and with every
+/// line of the template's text replaced by `<template>`. The excerpt quotes
+/// the PREPROCESSED source (`{{ .X }}` already rewritten to `{{ X }}`), so a
+/// text match against the raw template alone misses it, and the render
+/// layers quote the template in their context as well.
+fn secret_render_cause(raw: &str, err: &anyhow::Error) -> String {
+    let cause = err.root_cause().to_string();
+    let mut cause = cause.split(" --> ").next().unwrap_or("").to_string();
+    for part in std::iter::once(raw)
+        .chain(raw.lines())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        cause = cause.replace(part, "<template>");
+    }
+    cause.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 /// Process-env wrapper of [`resolve_github_token_with_env`] for call sites

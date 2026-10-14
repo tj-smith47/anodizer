@@ -227,7 +227,7 @@ fn fill_empty_repo_fields(block: &mut GitHubConfig, slug: Option<&git::RepoSlug>
 ///   5. Resolve git context (tag discovery, git info)
 pub fn setup_context(ctx: &mut Context, config: &Config, log: &StageLogger) -> Result<()> {
     resolve_scm_token_type(ctx, config);
-    ctx.populate_time_vars();
+    ctx.populate_time_vars()?;
     ctx.populate_runtime_vars();
     // Default the `IsPrepare` template var to `"false"` for every
     // command that flows through `setup_context`. The release command
@@ -280,11 +280,24 @@ pub fn resolve_scm_token_type(ctx: &mut Context, config: &Config) {
 
     ctx.token_type = scm::resolve_token_type(force_token.as_ref(), env_hint);
 
-    // Resolve the token value if not already provided via CLI flag.
+    // Resolve the token value if not already provided via CLI flag. Every
+    // source is trimmed here, once, so a blank `--token ""` or `GITLAB_TOKEN=""`
+    // (the shape GH Actions gives a missing secret) counts as unset and a
+    // pasted trailing newline is never sent.
+    ctx.options.token = ctx
+        .options
+        .token
+        .as_deref()
+        .and_then(anodizer_core::git::non_blank_token);
     if ctx.options.token.is_none() {
+        let env = |var: &str| {
+            ctx.env_var(var)
+                .as_deref()
+                .and_then(anodizer_core::git::non_blank_token)
+        };
         ctx.options.token = match ctx.token_type {
-            ScmTokenType::GitLab => ctx.env_var("GITLAB_TOKEN"),
-            ScmTokenType::Gitea => ctx.env_var("GITEA_TOKEN"),
+            ScmTokenType::GitLab => env("GITLAB_TOKEN"),
+            ScmTokenType::Gitea => env("GITEA_TOKEN"),
             // Route through the canonical resolver so an empty
             // `GITHUB_TOKEN=""` (the shape GH Actions gives a missing secret)
             // falls through to the next source instead of being taken as a

@@ -128,13 +128,10 @@ pub(crate) fn build_sdist(
         .arg(&manifest_path)
         .arg("--out")
         .arg(out_dir);
-    // Pin SOURCE_DATE_EPOCH from the run context so maturin's tarball
-    // timestamps are reproducible across re-runs of the same commit.
-    if let Some(epoch) = ctx
-        .env_var("SOURCE_DATE_EPOCH")
-        .or_else(|| ctx.template_vars().get("CommitTimestamp").cloned())
-    {
-        cmd.env("SOURCE_DATE_EPOCH", epoch);
+    // The run's one reproducible timestamp, so maturin's tarball entries
+    // match the wheels and archives of the same run.
+    if let Some(epoch) = ctx.resolve_reproducible_mtime()? {
+        cmd.env("SOURCE_DATE_EPOCH", epoch.to_string());
     }
     let log = &log.with_child_env(&cmd);
     anodizer_core::run::run_checked(&mut cmd, log, "maturin sdist")

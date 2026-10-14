@@ -41,7 +41,7 @@ attestations:
 | `artifacts` | list | *all release artifacts* | Which produced-artifact **kinds** to attest. anodizer derives the subject set (file names + sha256) from the artifacts it produced; nothing is listed by hand. |
 | `skip` | bool \| template | — | Skip the stage (also `--skip=attest`). |
 
-### What gets attested
+### Attested artifacts
 
 When `artifacts:` is **omitted**, anodizer attests **every release artifact** —
 the full set that reaches the GitHub release, minus signatures/certificates
@@ -97,7 +97,7 @@ the Action's OIDC identity does. This is the path used by fd, biome, and gping.
 ]
 ```
 
-### How the manifest is consumed
+### Manifest consumers
 
 The JSON manifest is INPUT to **anodizer-action's own code**, which iterates the
 entries and fans each out to the stock action via `subject-name` +
@@ -115,7 +115,7 @@ entries and fans each out to the stock action via `subject-name` +
 > **Do not** point the stock action's `subject-path:` at
 > `attestation-subjects.json`. `subject-path` expects the ACTUAL artifact files
 > (the action hashes them itself); aiming it at the manifest would attest the
-> JSON file's own hash, not your artifacts.
+> JSON file's own hash and none of your artifacts.
 
 ### Consuming directly with the stock action
 

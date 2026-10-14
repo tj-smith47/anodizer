@@ -67,7 +67,7 @@ pub(crate) fn resolve_token(ctx: &Context, cfg: &PypiConfig) -> Result<String> {
     crate::publisher_helpers::resolve_token_with_ladder(
         ctx,
         cfg.token.as_deref(),
-        "pypi: render token template",
+        "pypi.token",
         &TOKEN_ENV_VARS,
     )
 }
@@ -218,15 +218,6 @@ pub(crate) fn resolve_repository(ctx: &Context, cfg: &PypiConfig) -> Result<Stri
             .context("pypi: render index_url template"),
         None => Ok(DEFAULT_REPOSITORY.to_string()),
     }
-}
-
-/// Wheel mtime seed — the shared reproducible-mtime ladder
-/// ([`Context::resolve_reproducible_mtime`]) that the archive stage also
-/// uses, so a wheel and an archive built in the same run pin to the SAME
-/// timestamp (a reproducible build prefers the commit timestamp; otherwise
-/// `SOURCE_DATE_EPOCH` then the commit timestamp).
-fn wheel_mtime(ctx: &Context) -> Option<u64> {
-    ctx.resolve_reproducible_mtime()
 }
 
 /// Build the [`WheelSpec`] metadata shared by every file of one entry,
@@ -472,7 +463,9 @@ pub(crate) fn publish_to_pypi(
         }
         let spec_base = build_spec_base(ctx, cfg, &name, &version, &crate_name)?;
         let staging = ctx.config.dist.join("pypi").join(&label);
-        let mtime = wheel_mtime(ctx);
+        // The run's one reproducible timestamp, so a wheel and the archive
+        // built beside it carry the same date.
+        let mtime = ctx.resolve_reproducible_mtime()?;
 
         let mut dist_files: Vec<DistFile> = Vec::new();
         let mut seen_tags: Vec<String> = Vec::new();
@@ -692,15 +685,10 @@ impl anodizer_core::Publisher for PypiPublisher {
             // The token requirement in isolation: a templated token's env refs,
             // else the PYPI_TOKEN/MATURIN_PYPI_TOKEN any-of fallback ladder. A
             // literal inline token declares nothing (`None`).
-            let token_req = match entry.token.as_deref().filter(|t| !t.is_empty()) {
-                Some(_) => crate::publisher_helpers::secret_requirement(
-                    entry.token.as_deref(),
-                    TOKEN_ENV_VARS[0],
-                ),
-                None => Some(anodizer_core::EnvRequirement::EnvAnyOf {
-                    vars: TOKEN_ENV_VARS.iter().map(|s| s.to_string()).collect(),
-                }),
-            };
+            let token_req = crate::publisher_helpers::secret_requirement(
+                entry.token.as_deref(),
+                &TOKEN_ENV_VARS,
+            );
             let oidc_vars = || -> Vec<String> {
                 super::oidc::OIDC_ENV_VARS
                     .iter()
@@ -728,7 +716,7 @@ impl anodizer_core::Publisher for PypiPublisher {
                         any.extend(oidc_vars());
                         out.push(anodizer_core::EnvRequirement::EnvAnyOf { vars: any });
                     }
-                    // secret_requirement only yields EnvAllOf/None today; forward
+                    // secret_requirement only yields EnvAnyOf/None today; forward
                     // any other shape verbatim rather than dropping the gate.
                     Some(other) => out.push(other),
                 },

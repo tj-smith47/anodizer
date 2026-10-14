@@ -37,6 +37,19 @@ mod faked_time_tests {
         assert_eq!(args, vec!["--batch".to_string(), "--detach-sig".into()]);
     }
 
+    /// An empty source date is unset, so no `--faked-system-time=!` reaches
+    /// gpg; the older spelling is read when it is the only one set.
+    #[test]
+    fn reads_the_source_date_through_the_shared_reader() {
+        let mut args = vec!["--batch".into()];
+        inject_gpg_faked_system_time("gpg", &mut args, &env_with_sde(""));
+        assert_eq!(args, vec!["--batch".to_string()]);
+
+        let env = MapEnvSource::new().with("ANODIZE_SOURCE_DATE_EPOCH", " 1715000000 ");
+        inject_gpg_faked_system_time("gpg", &mut args, &env);
+        assert_eq!(args[1], "--faked-system-time=1715000000!");
+    }
+
     #[test]
     fn no_inject_when_cmd_is_not_gpg() {
         let env = env_with_sde("1715000000");

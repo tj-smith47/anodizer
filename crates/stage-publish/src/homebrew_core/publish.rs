@@ -60,13 +60,16 @@ pub(crate) fn publish_to_homebrew_core(
             continue;
         }
         // Resolved before any request is made, so a template that does not
-        // render leaves no branch and no fork behind it.
+        // render leaves no branch and no fork behind it. With neither
+        // `pull_request.token` nor `repository.token` set, the pull request
+        // opens with the bump token, whose ladder is this publisher's own.
         let Some(pr_token) = crate::publisher_helpers::absorb_entry_skip(
             ctx,
             log,
             "homebrew-core",
             &label,
-            crate::publisher_helpers::pr_token_before_push(ctx, cfg.repository.as_ref()),
+            crate::util::configured_pr_token(cfg.repository.as_ref(), &|s| ctx.render_template(s))
+                .map_err(|e| anodizer_core::pipe_skip::entry_skip(format!("{e:#}"))),
         )?
         else {
             continue;

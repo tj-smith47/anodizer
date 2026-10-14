@@ -11,6 +11,7 @@
 //! git-revert publishers drive through this primitive.
 
 use crate::publisher_helpers::count_noun;
+use anodizer_core::config::RepositoryConfig;
 use anodizer_core::context::Context;
 use anodizer_core::log::StageLogger;
 use anodizer_core::retry::RetryPolicy;
@@ -247,14 +248,16 @@ pub(crate) fn revert_summary_line(
 }
 
 /// Drive the full token-publisher rollback for a set of already-deduped
-/// [`TokenRevertTarget`]s: resolve each target's token from the live env,
-/// map to [`RevertTarget`], fan out [`run_revert_targets_parallel`], and
-/// emit the per-publisher summary line.
+/// [`TokenRevertTarget`]s: resolve each target's token the way the publish
+/// resolved it ([`rollback_push_token`]), map to [`RevertTarget`], fan out
+/// [`run_revert_targets_parallel`], and emit the per-publisher summary line.
 ///
 /// Collapses the byte-identical `rollback()` bodies of scoop / homebrew /
 /// nix into one call. The caller supplies the decode + dedup (its evidence
 /// variant and `(repo_url, branch, commit)` dedup are publisher-typed) plus the
 /// publisher's nouns:
+/// - `repos` — every `repository:` block the publisher's config holds; the
+///   one that names a target's repository supplies its `repository.token`.
 /// - `default_env_hint` — token env var named in failure warns when a
 ///   target carries none (e.g. `HOMEBREW_TAP_TOKEN`).
 /// - `empty_evidence_noun` — what the empty-evidence warn calls the missing
@@ -265,6 +268,7 @@ pub(crate) fn revert_summary_line(
 pub(crate) fn run_token_revert_rollback<T: TokenRevertTarget>(
     ctx: &Context,
     deduped_targets: &[T],
+    repos: &[&RepositoryConfig],
     publisher: &str,
     default_env_hint: &str,
     empty_evidence_noun: &str,
@@ -282,17 +286,30 @@ pub(crate) fn run_token_revert_rollback<T: TokenRevertTarget>(
     // Resolve auth tokens at rollback time — never persisted in evidence.
     // `token_env_var` is only the NAME of the env var; the value lives in
     // the injected env source.
-    let env = ctx.env_source();
+    let mut unresolved = 0usize;
     let prepared: Vec<RevertTarget> = deduped_targets
         .iter()
-        .map(|t| RevertTarget {
-            target: t.target().to_string(),
-            repo_url: t.repo_url().to_string(),
-            branch: t.branch().map(str::to_string),
-            commit: t.commit().map(str::to_string),
-            token: crate::util::resolve_rollback_token(env, t.token_env_var()),
-            private_key: None,
-            ssh_command: None,
+        .filter_map(|t| {
+            let token = match rollback_push_token(ctx, repos, t.repo_url(), t.token_env_var()) {
+                Ok(token) => token,
+                Err(e) => {
+                    log.warn(&format!(
+                        "{publisher} rollback of '{}' failed — {e:#}",
+                        t.target()
+                    ));
+                    unresolved += 1;
+                    return None;
+                }
+            };
+            Some(RevertTarget {
+                target: t.target().to_string(),
+                repo_url: t.repo_url().to_string(),
+                branch: t.branch().map(str::to_string),
+                commit: t.commit().map(str::to_string),
+                token,
+                private_key: None,
+                ssh_command: None,
+            })
         })
         .collect();
     // Every target in one publisher's rollback carries the same env-var hint
@@ -307,7 +324,7 @@ pub(crate) fn run_token_revert_rollback<T: TokenRevertTarget>(
     let RevertCounts {
         reverted,
         skipped,
-        failed,
+        mut failed,
     } = run_revert_targets_parallel(
         &prepared,
         publisher,
@@ -316,6 +333,7 @@ pub(crate) fn run_token_revert_rollback<T: TokenRevertTarget>(
         ctx.retry_deadline(),
         &log,
     );
+    failed += unresolved;
     log.status(&revert_summary_line(
         publisher,
         reverted_noun,
@@ -331,10 +349,55 @@ pub(crate) fn run_token_revert_rollback<T: TokenRevertTarget>(
     if failed > 0 {
         anyhow::bail!(
             "{publisher} rollback: {failed} of {} failed to revert (see per-target warnings above)",
-            count_noun(prepared.len(), reverted_noun, &format!("{reverted_noun}s"))
+            count_noun(
+                deduped_targets.len(),
+                reverted_noun,
+                &format!("{reverted_noun}s")
+            )
         );
     }
     Ok(())
+}
+
+/// The token a rollback pushes to `repo_url` with: the push token of the
+/// `repository:` block among `repos` that names that repository
+/// ([`crate::util::resolve_repo_token`], so a `repository.token` the publish
+/// used is used again), else the chain the publish falls through to without
+/// one ([`crate::util::resolve_token`]). A `repository.token` that does not
+/// render is an error.
+fn rollback_push_token(
+    ctx: &Context,
+    repos: &[&RepositoryConfig],
+    repo_url: &str,
+    env_var: Option<&str>,
+) -> anyhow::Result<Option<String>> {
+    crate::util::resolve_repo_token(ctx, repository_for_url(ctx, repos, repo_url), env_var)
+}
+
+/// The block among `repos` whose `owner` and `name` (rendered) name the
+/// GitHub repository `repo_url` a publish recorded. Owner and name compare
+/// without regard to case, as GitHub resolves them.
+fn repository_for_url<'a>(
+    ctx: &Context,
+    repos: &[&'a RepositoryConfig],
+    repo_url: &str,
+) -> Option<&'a RepositoryConfig> {
+    let render = |s: &str| {
+        ctx.render_template(s)
+            .unwrap_or_else(|_| s.to_string())
+            .trim()
+            .to_string()
+    };
+    repos.iter().copied().find(|r| {
+        crate::util::resolve_repo_owner_name(Some(r)).is_some_and(|(owner, name)| {
+            let url = format!(
+                "https://github.com/{}/{}.git",
+                render(&owner),
+                render(&name)
+            );
+            url.eq_ignore_ascii_case(repo_url)
+        })
+    })
 }
 
 #[cfg(test)]
@@ -756,6 +819,7 @@ mod tests {
         run_token_revert_rollback(
             &ctx,
             &targets,
+            &[],
             "scoop",
             "SCOOP_BUCKET_TOKEN",
             "bucket clone targets",
@@ -824,6 +888,7 @@ mod tests {
         run_token_revert_rollback(
             &ctx,
             &empty,
+            &[],
             "nix",
             "NIX_PKGS_TOKEN",
             "overlay clone targets",
@@ -871,6 +936,7 @@ mod tests {
         let err = run_token_revert_rollback(
             &ctx,
             &targets,
+            &[],
             "scoop",
             "SCOOP_BUCKET_TOKEN",
             "bucket clone targets",

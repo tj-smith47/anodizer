@@ -1,26 +1,20 @@
-//! The token the config names for opening a pull request, rendered once
+//! The tokens the config names for a publisher's repository, rendered
 //! before any publisher clones or pushes.
 
 use anodizer_core::config::RepositoryConfig;
 
 /// The token the config names for opening a pull request:
-/// `pull_request.token`, else `repository.token`, each rendered and trimmed
-/// of surrounding whitespace, the way a token file is read
-/// (`anodizer_core::config::read_token_file_with_env`). A link whose render
-/// is empty or only whitespace falls through to the next one, and `None`
-/// leaves the choice to the environment chain
-/// (`anodizer_core::git::resolve_github_token_with_env`).
+/// `pull_request.token`, else `repository.token`, each rendered through
+/// [`anodizer_core::git::render_secret`] and trimmed of surrounding
+/// whitespace. A link whose render is empty or only whitespace falls through
+/// to the next one, and `None` leaves the choice to the environment links of
+/// [`crate::util::resolve_pr_token`].
 ///
 /// A link that fails to render is an error naming its field and the render
-/// failure's cause, with the template's own text taken out
-/// ([`token_render_cause`]): sending the literal template as a bearer would
-/// fail the PR with an authentication error that names nothing, and a mixed
-/// template (`ghp_…{{ Undefined }}`) echoed into the error would print its
-/// literal half into the run summary.
-///
-/// Every publisher resolves this BEFORE its clone and push, so a template the
-/// run cannot render leaves nothing on the fork
-/// ([`crate::publisher_helpers::pr_token_before_push`]).
+/// failure's cause, with the template's own text taken out: sending the
+/// literal template as a bearer would fail the PR with an authentication
+/// error that names nothing, and a mixed template (`ghp_…{{ Undefined }}`)
+/// echoed into the error would print its literal half into the run summary.
 pub(crate) fn configured_pr_token(
     repo: Option<&RepositoryConfig>,
     render: &dyn Fn(&str) -> anyhow::Result<String>,
@@ -28,45 +22,44 @@ pub(crate) fn configured_pr_token(
     let Some(repo) = repo else {
         return Ok(None);
     };
-    let links = [
-        (
-            "pull_request.token",
-            repo.pull_request
-                .as_ref()
-                .and_then(|pr| pr.token.as_deref()),
-        ),
-        ("repository.token", repo.token.as_deref()),
-    ];
+    first_configured(
+        &[
+            (
+                "pull_request.token",
+                repo.pull_request
+                    .as_ref()
+                    .and_then(|pr| pr.token.as_deref()),
+            ),
+            ("repository.token", repo.token.as_deref()),
+        ],
+        render,
+    )
+}
+
+/// The token the config names for pushing to a publisher's repository:
+/// `repository.token`, read the way [`configured_pr_token`] reads it.
+pub(crate) fn configured_push_token(
+    repo: Option<&RepositoryConfig>,
+    render: &dyn Fn(&str) -> anyhow::Result<String>,
+) -> anyhow::Result<Option<String>> {
+    first_configured(
+        &[("repository.token", repo.and_then(|r| r.token.as_deref()))],
+        render,
+    )
+}
+
+fn first_configured(
+    links: &[(&str, Option<&str>)],
+    render: &dyn Fn(&str) -> anyhow::Result<String>,
+) -> anyhow::Result<Option<String>> {
     for (field, raw) in links {
         let Some(raw) = raw else { continue };
-        let rendered = render(raw).map_err(|e| {
-            anyhow::anyhow!("{field} does not render: {}", token_render_cause(raw, &e))
-        })?;
-        let token = rendered.trim();
+        let token = anodizer_core::git::render_secret(field, raw, render)?;
         if !token.is_empty() {
-            return Ok(Some(token.to_string()));
+            return Ok(Some(token));
         }
     }
     Ok(None)
-}
-
-/// The root cause of a failed token render, flattened to one line, without
-/// the source excerpt the template engine appends after ` --> ` and with every
-/// line of the template's text replaced by `<template>`. The excerpt quotes
-/// the PREPROCESSED source (`{{ .X }}` already rewritten to `{{ X }}`), so a
-/// text match against the raw template alone misses it, and the render
-/// layers quote the template in their context as well.
-fn token_render_cause(raw: &str, err: &anyhow::Error) -> String {
-    let cause = err.root_cause().to_string();
-    let mut cause = cause.split(" --> ").next().unwrap_or("").to_string();
-    for part in std::iter::once(raw)
-        .chain(raw.lines())
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-    {
-        cause = cause.replace(part, "<template>");
-    }
-    cause.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 #[cfg(test)]

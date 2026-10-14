@@ -52,7 +52,7 @@ Not applicable — makeself archive creation is a local build step with no exter
 
 ## Republish / update behavior
 
-Not applicable — this is a local packaging stage, not a publisher.
+Not applicable — this is a local packaging stage and publishes nothing.
 
 ## Makeself config fields
 

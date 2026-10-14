@@ -60,8 +60,8 @@ binary_signs:
 ```
 
 The signature and certificate upload as release assets alongside the archives.
-Each is named from the crate's `archives:` **config** — never from which
-archives the run happens to have built, so `anodizer build` and
+Each is named from the crate's `archives:` **config**, whichever archives
+the run happens to have built, so `anodizer build` and
 `anodizer release` name the same binary's signature identically. The name is
 unique per crate, target **and binary**:
 

@@ -100,7 +100,7 @@ pub struct CaskParams<'a> {
     /// `None` ⇒ the default `skip "Auto-generated on release."` line: a cask
     /// the release rewrites on every tag has nothing for `brew livecheck` to
     /// find. Build via
-    /// [`render_livecheck`](super::formula::render_livecheck).
+    /// [`render_cask_livecheck`](super::livecheck::render_cask_livecheck).
     pub livecheck: Option<String>,
     /// Manpage file paths.
     pub manpages: &'a [String],
@@ -709,7 +709,7 @@ pub fn generate_cask(params: &CaskParams<'_>) -> Result<String> {
     groups.push(identity.join("\n"));
 
     // `None` keeps the default skip line; `Some(body)` is the pre-rendered
-    // stanza body built via `formula::render_livecheck`.
+    // stanza body built via `livecheck::render_cask_livecheck`.
     let livecheck_body = params
         .livecheck
         .as_deref()

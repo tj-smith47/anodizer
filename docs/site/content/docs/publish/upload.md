@@ -27,7 +27,7 @@ uploads:
 
 ```yaml
 uploads:
-  - name: upload                       # optional; identifier used for env-var lookup
+  - name: upload                       # required; identifier used for env-var lookup
     target: "https://files.example.com/releases/{{ Version }}/"  # required (template)
     mode: archive                      # optional; archive | binary
     method: PUT                        # optional; PUT | POST
@@ -74,12 +74,14 @@ warning so a typo'd glob is never a silent empty upload.
 
 ## Authentication
 
+Credentials are resolved in this order:
+
 | Variable | Fallback |
 |----------|----------|
 | Username | config value, then `UPLOAD_{NAME}_USERNAME` |
-| Password | `UPLOAD_{NAME}_SECRET`, then config value |
+| Password | config value, then `UPLOAD_{NAME}_SECRET` |
 
-Where `{NAME}` is the uppercased `name` field.
+Where `{NAME}` is the `name` field uppercased, with each `-` turned into `_` (`prod-eu` reads `UPLOAD_PROD_EU_SECRET`). Each value is trimmed, and a config value that renders blank falls through to the env var. A `username` or `password` template that does not render is an error, so its text is never sent as a credential.
 
 ## Common gotchas
 
@@ -91,7 +93,7 @@ Where `{NAME}` is the uppercased `name` field.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `name` | string | `upload` | Identifier used for env var lookup |
+| `name` | string | **required** | Identifier used for env var lookup; an entry with no `name` is skipped with `entry is missing required 'name' field` |
 | `target` | string | **required** | Upload URL (template, artifact-specific vars available) |
 | `mode` | string | `archive` | Artifact selection: `"archive"` or `"binary"` |
 | `method` | string | `PUT` | HTTP method (`PUT` or `POST`) |

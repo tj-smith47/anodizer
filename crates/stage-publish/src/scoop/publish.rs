@@ -62,7 +62,11 @@ pub fn publish_to_scoop(ctx: &mut Context, crate_name: &str, log: &StageLogger) 
         log,
         "scoop",
         crate_name,
-        crate::publisher_helpers::pr_token_before_push(ctx, scoop_cfg.repository.as_ref()),
+        crate::publisher_helpers::pr_token_before_push(
+            ctx,
+            scoop_cfg.repository.as_ref(),
+            "SCOOP_BUCKET_TOKEN",
+        ),
     )?
     else {
         return Ok(false);
@@ -98,7 +102,7 @@ pub fn publish_to_scoop(ctx: &mut Context, crate_name: &str, log: &StageLogger) 
         ctx,
         scoop_cfg.repository.as_ref(),
         Some("SCOOP_BUCKET_TOKEN"),
-    );
+    )?;
 
     let tmp_dir = tempfile::tempdir().context("scoop: create temp dir")?;
     let repo_path = tmp_dir.path();

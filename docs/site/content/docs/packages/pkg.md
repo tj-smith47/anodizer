@@ -54,7 +54,7 @@ Not applicable — PKG creation is a local build step using the native `pkgbuild
 
 ## Republish / update behavior
 
-Not applicable — this is a local packaging stage, not a publisher.
+Not applicable — this is a local packaging stage and publishes nothing.
 
 ## Required tools
 
@@ -86,7 +86,7 @@ PKG only processes binary artifacts targeting Darwin (macOS) — the *output* is
 | `skip` | bool/string | `false` | Skip this PKG config. Accepts `true`/`false` or a Tera template. Also accepts the `disable:` spelling for back-compat with imported GoReleaser configs. |
 | `if` | string | | Template-conditional: skip this config when the rendered value is `false`, `0`, `no` or empty, in any letter case. Render failure is a hard error. An absent, empty or blank `if:` imposes no gate and always runs; the falsy test applies to what a non-blank gate renders. |
 
-## How it works
+## Behavior
 
 One `.pkg` is produced per binary — pkg installers are single-binary by design. Unlike DMG (which groups multiple binaries into one container image), each pkg wraps exactly one payload binary so that Homebrew formula installers and macOS Installer.app each target a discrete, independently versionable package. Multi-binary crates therefore emit N packages per target triple.
 

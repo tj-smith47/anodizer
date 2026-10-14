@@ -56,7 +56,7 @@ Not applicable — Flatpak bundle creation is a local build step. Publishing to 
 
 ## Republish / update behavior
 
-Not applicable — this is a local packaging stage, not a publisher.
+Not applicable — this is a local packaging stage and publishes nothing.
 
 ## Flatpak config fields
 

@@ -775,8 +775,16 @@ fn an_own_tap_cask_inherits_each_unset_gate_from_the_formula() {
                 EnvRequirement::Tool {
                     name: "git".to_string(),
                 },
-                EnvRequirement::EnvAllOf {
-                    vars: vec!["CASK_TOKEN".to_string()],
+                EnvRequirement::EnvAnyOf {
+                    vars: [
+                        "CASK_TOKEN",
+                        "HOMEBREW_TAP_TOKEN",
+                        "ANODIZER_GITHUB_TOKEN",
+                        "GITHUB_TOKEN",
+                        "GH_TOKEN",
+                    ]
+                    .map(String::from)
+                    .to_vec(),
                 },
             ]
         } else {

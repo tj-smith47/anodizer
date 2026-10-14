@@ -315,11 +315,12 @@ where
     deserializer.deserialize_any(StringOrBoolVisitor)
 }
 
-/// A typed duration value parsed from a humantime-style string in YAML.
+/// A typed duration value parsed from a duration string in YAML.
 ///
-/// Accepts `"10m"`, `"15s"`, `"1h30m"`, `"500ms"`, etc. Used by notarize
-/// timeouts so the schema is typed and validation catches malformed values
-/// when the config loads, before any stage runs.
+/// Accepts `"10m"`, `"15s"`, `"1h30m"`, `"500ms"`, `"2d"`, up to one year
+/// ([`MAX_DURATION`]). Every duration config field uses it, so the schema is
+/// typed and a malformed or too-long value is refused when the config loads,
+/// before any stage runs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct HumanDuration(
     #[serde(serialize_with = "serialize_human_duration")] pub std::time::Duration,
@@ -359,7 +360,8 @@ impl HumanDuration {
 
 /// The schema of a duration is the string the loader parses: one or more
 /// whole numbers of up to 19 digits, each followed by a unit (`ms`, `s`,
-/// `m`, `h`, `d`), with whitespace allowed between the parts.
+/// `m`, `h`, `d`), with spaces or tabs allowed between the parts, and a total
+/// of at most one year.
 impl JsonSchema for HumanDuration {
     fn schema_name() -> std::borrow::Cow<'static, str> {
         "HumanDuration".into()
@@ -369,25 +371,43 @@ impl JsonSchema for HumanDuration {
         schemars::json_schema!({
             "type": "string",
             "pattern": HUMAN_DURATION_PATTERN,
-            "examples": ["90s", "10m", "1h30m", "500ms"],
+            "description": HUMAN_DURATION_DESCRIPTION,
+            "examples": ["90s", "10m", "1h30m", "500ms", "2d"],
         })
     }
 }
 
+/// The description the schema gives every duration field. A pattern cannot
+/// express the one-year cap, so the description states it.
+const HUMAN_DURATION_DESCRIPTION: &str = "A duration: one or more whole numbers, \
+     each followed by a unit (ms, s, m, h or d), such as 90s, 1h30m or 2d. \
+     Spaces and tabs may separate the parts. The total may be at most one year \
+     (31536000s); a longer value is refused when the config loads.";
+
 /// The shape `parse_humantime_duration` accepts, as a JSON Schema pattern:
 /// one or more terms, each a number of 1 to [`MAX_DURATION_DIGITS`] digits
-/// (whitespace allowed between the digits) followed by a unit. Every string
-/// the parser accepts matches it. A string that matches it is accepted by the
-/// parser unless one term or the sum is longer than the longest
-/// `std::time::Duration` (`18446744073709551615s` and 999999999 nanoseconds),
-/// a range a pattern cannot express.
-const HUMAN_DURATION_PATTERN: &str = r"^\s*([0-9](\s*[0-9]){0,18}\s*(ms|s|m|h|d)\s*)+$";
+/// (spaces or tabs allowed between the digits) followed by a unit. Every
+/// string the parser accepts matches it. A string that matches it is
+/// accepted by the parser unless its total is longer than
+/// [`MAX_DURATION`], a bound a pattern cannot express.
+///
+/// The whitespace is spelled `[ \t]` because `\s` means different sets of
+/// characters in Rust's `regex` and in the ECMA-262 regular expressions a
+/// JSON Schema validator uses (U+0085 is in one and not the other, U+FEFF the
+/// reverse), and the parser takes exactly those two characters.
+const HUMAN_DURATION_PATTERN: &str = r"^[ \t]*([0-9]([ \t]*[0-9]){0,18}[ \t]*(ms|s|m|h|d)[ \t]*)+$";
 
 /// The longest number a duration term may spell. Every 19-digit number fits
-/// a `u64`, and the 20-digit numbers above `u64::MAX` cannot be told apart
-/// from the ones below it by a pattern, so the parser and the pattern both
-/// stop at 19.
+/// a `u64`, and a pattern cannot tell a longer number with leading zeros from
+/// one past the cap, so the parser and the pattern both stop at 19.
 const MAX_DURATION_DIGITS: usize = 19;
+
+/// The longest duration a config field or `--timeout` accepts: one year
+/// (31536000 seconds). Every duration is later added to
+/// `std::time::Instant::now()` as a deadline, and an `Instant` holds a
+/// different range on each platform, so the cap is a value every platform
+/// can add without overflow.
+pub const MAX_DURATION: std::time::Duration = std::time::Duration::from_secs(31_536_000);
 
 impl<'de> Deserialize<'de> for HumanDuration {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
@@ -429,22 +449,36 @@ fn serialize_human_duration<S: serde::Serializer>(
     serializer.serialize_str(&HumanDuration(*d).as_humantime_string())
 }
 
-/// Parse a humantime-style duration string. Recognizes `ms`, `s`, `m`, `h`,
-/// `d` units and concatenated forms like `"1h30m"`. Whitespace between
-/// components is tolerated. A number longer than [`MAX_DURATION_DIGITS`]
-/// digits, and a term or total longer than the longest `Duration`, is an
-/// error naming the value.
-pub(super) fn parse_humantime_duration(input: &str) -> Result<std::time::Duration, String> {
-    let s = input.trim();
+/// Whether `c` may separate the parts of a duration: a space or a tab, the
+/// two characters [`HUMAN_DURATION_PATTERN`] names.
+fn is_duration_space(c: char) -> bool {
+    c == ' ' || c == '\t'
+}
+
+/// Parse a duration string, the one grammar every duration config field and
+/// the `--timeout` flag share. Recognizes `ms`, `s`, `m`, `h` and `d` units
+/// and concatenated forms like `"1h30m"`, with spaces or tabs allowed between
+/// the parts. A number longer than [`MAX_DURATION_DIGITS`] digits is an
+/// error, and so is a total longer than [`MAX_DURATION`] (one year); both
+/// errors name the value.
+pub fn parse_humantime_duration(input: &str) -> Result<std::time::Duration, String> {
+    let s = input.trim_matches(is_duration_space);
     if s.is_empty() {
         return Err("empty duration string".to_string());
     }
+    let too_long = || {
+        format!(
+            "'{input}' is longer than the longest duration anodizer accepts, \
+             one year ({}s)",
+            MAX_DURATION.as_secs()
+        )
+    };
     let mut total = std::time::Duration::ZERO;
     let mut number_buf = String::new();
     let mut had_any = false;
     let mut iter = s.chars().peekable();
     while let Some(&c) = iter.peek() {
-        if c.is_whitespace() {
+        if is_duration_space(c) {
             iter.next();
             continue;
         }
@@ -475,13 +509,6 @@ pub(super) fn parse_humantime_duration(input: &str) -> Result<std::time::Duratio
         let n: u64 = number_buf
             .parse()
             .map_err(|e| format!("invalid number '{number_buf}' in '{input}': {e}"))?;
-        let too_long = || {
-            format!(
-                "'{number_buf}{unit}' in '{input}' is longer than the longest duration \
-                 ({}s)",
-                u64::MAX
-            )
-        };
         let seconds = |per_unit: u64| {
             n.checked_mul(per_unit)
                 .map(std::time::Duration::from_secs)
@@ -495,12 +522,10 @@ pub(super) fn parse_humantime_duration(input: &str) -> Result<std::time::Duratio
             "d" => seconds(86_400)?,
             other => return Err(format!("unknown duration unit '{other}' in '{input}'")),
         };
-        total = total.checked_add(segment).ok_or_else(|| {
-            format!(
-                "the total of '{input}' is longer than the longest duration ({}s)",
-                u64::MAX
-            )
-        })?;
+        total = total
+            .checked_add(segment)
+            .filter(|t| *t <= MAX_DURATION)
+            .ok_or_else(too_long)?;
         number_buf.clear();
         had_any = true;
     }
@@ -1018,50 +1043,69 @@ mod tests {
         assert!(parse_humantime_duration("10").is_err());
     }
 
-    /// A number over 19 digits, or a term or a total past the longest
-    /// `Duration`, is an error that names the value, in a debug and a release
-    /// build alike.
+    /// The cap is one year: exactly 31536000 seconds loads, one second more
+    /// is refused, and the error names the value and the cap. A number over
+    /// 19 digits, and a term past the longest `Duration`, are refused too.
     #[test]
-    fn a_duration_past_the_longest_is_refused_with_its_value() {
+    fn a_duration_past_one_year_is_refused_with_its_value_and_the_cap() {
+        assert_eq!(super::MAX_DURATION, Duration::from_secs(31_536_000));
+        for at_cap in [
+            "31536000s",
+            "365d",
+            "8760h",
+            "525600m",
+            "31536000000ms",
+            "364d 24h",
+        ] {
+            assert_eq!(
+                parse_humantime_duration(at_cap).unwrap(),
+                super::MAX_DURATION,
+                "{at_cap}"
+            );
+        }
+        for over in ["31536001s", "365d 1s", "31536000001ms", "366d"] {
+            let err = parse_humantime_duration(over).unwrap_err();
+            assert_eq!(
+                err,
+                format!(
+                    "'{over}' is longer than the longest duration anodizer accepts, \
+                     one year (31536000s)"
+                ),
+            );
+        }
         for (input, names) in [
             (
                 "18446744073709551615s 1s",
                 "'18446744073709551615' in '18446744073709551615s 1s' has more than 19 digits",
             ),
-            (
-                "9999999999999999999s 9999999999999999999s",
-                "the total of '9999999999999999999s 9999999999999999999s'",
-            ),
-            ("307445734561825861m", "'307445734561825861m'"),
-            ("5124095576030432h", "'5124095576030432h'"),
-            ("213503982334602d", "'213503982334602d'"),
-            ("18446744073709551616s", "'18446744073709551616'"),
+            ("9999999999999999999s", "'9999999999999999999s' is longer"),
+            ("307445734561825861m", "'307445734561825861m' is longer"),
+            ("213503982334602d", "'213503982334602d' is longer"),
             ("99999999999999999999ms", "'99999999999999999999'"),
         ] {
             let err = parse_humantime_duration(input).unwrap_err();
             assert!(err.contains(names), "{input:?}: {err}");
         }
-        assert_eq!(
-            parse_humantime_duration("307445734561825860m").unwrap(),
-            Duration::from_secs(307_445_734_561_825_860 * 60)
-        );
-        assert_eq!(
-            parse_humantime_duration("9999999999999999999s").unwrap(),
-            Duration::from_secs(9_999_999_999_999_999_999)
-        );
     }
 
-    /// The schema pattern and the parser agree on every sample: a string the
-    /// parser accepts matches the pattern, and a string the pattern matches
-    /// is accepted by the parser unless a term or the total is longer than
-    /// the longest `Duration`.
+    /// The schema pattern and the parser agree on every sample, under the
+    /// pattern as Rust's `regex` reads it and as the JSON Schema validator
+    /// (ECMA-262) reads it: a string the parser accepts matches the pattern,
+    /// and a string the pattern matches is accepted by the parser unless its
+    /// total is longer than one year. U+0085 and U+FEFF, which the two regex
+    /// dialects place on opposite sides of `\s`, are refused by all three.
     #[test]
     fn the_duration_pattern_and_the_parser_agree() {
         let pattern = regex::Regex::new(super::HUMAN_DURATION_PATTERN).unwrap();
+        let ecma = jsonschema::validator_for(
+            &serde_json::json!({ "type": "string", "pattern": super::HUMAN_DURATION_PATTERN }),
+        )
+        .unwrap();
         let numbers = [
             "0",
             "1",
             "1 0",
+            "1\t0",
             "90",
             "007",
             "9999999999999999999",
@@ -1072,7 +1116,7 @@ mod tests {
             "1.5",
             "",
         ];
-        let units = ["ms", "s", "m", "h", "d", "", "x", " m"];
+        let units = ["ms", "s", "m", "h", "d", "", "x", " m", "\tm"];
         let mut terms = Vec::new();
         for n in numbers {
             for u in units {
@@ -1084,16 +1128,31 @@ mod tests {
             for b in ["1h", "30m", "18446744073709551615s", "1 0s"] {
                 samples.push(format!("{a}{b}"));
                 samples.push(format!(" {b} {a} "));
+                samples.push(format!("\t{b}\t{a}\t"));
             }
+        }
+        let odd_spaces = [
+            '\u{0085}', '\u{FEFF}', '\u{00A0}', '\n', '\r', '\u{000B}', '\u{000C}',
+        ];
+        for c in odd_spaces {
+            samples.push(format!("1s{c}"));
+            samples.push(format!("{c}1s"));
+            samples.push(format!("1{c}s"));
+            samples.push(format!("1h{c}30m"));
         }
         let mut accepted_by_both = 0;
         for s in &samples {
             let parsed = super::parse_humantime_duration(s);
             let matched = pattern.is_match(s);
+            assert_eq!(
+                matched,
+                ecma.is_valid(&serde_json::json!(s)),
+                "Rust regex and the JSON Schema validator disagree on {s:?}"
+            );
             match &parsed {
                 Ok(_) => assert!(matched, "the parser accepts {s:?}, the pattern does not"),
                 Err(e) if matched => assert!(
-                    e.contains("longer than the longest duration"),
+                    e.contains("is longer than the longest duration anodizer accepts"),
                     "the pattern matches {s:?}, the parser refuses it: {e}"
                 ),
                 Err(_) => {}
@@ -1104,16 +1163,18 @@ mod tests {
             accepted_by_both > 100,
             "only {accepted_by_both} samples parsed"
         );
-        for v in ["90s", "1h30m", "0s", "1 0s"] {
+        for v in ["90s", "1h30m", "0s", "1 0s", "\t1h\t30m\t"] {
             assert!(
                 super::parse_humantime_duration(v).is_ok() && pattern.is_match(v),
                 "{v}"
             );
         }
-        for v in ["1.5s", "0", "", "90"] {
+        for v in ["1.5s", "0", "", "90", "1s\u{0085}", "1s\u{FEFF}"] {
             assert!(
-                super::parse_humantime_duration(v).is_err() && !pattern.is_match(v),
-                "{v}"
+                super::parse_humantime_duration(v).is_err()
+                    && !pattern.is_match(v)
+                    && !ecma.is_valid(&serde_json::json!(v)),
+                "{v:?}"
             );
         }
     }
@@ -1783,9 +1844,14 @@ mod tests {
     /// number of times the line occurs in that function.
     type ComparisonHits = std::collections::BTreeMap<(String, String, String), usize>;
 
+    /// The owner a comparison outside every function body is counted under:
+    /// a `const` or `static` initialiser, or any other item-level code.
+    const OUTSIDE_ANY_FN: &str = "(outside any fn)";
+
     /// Every line of `text` (the production half of `rel`) that compares
     /// against `true` / `false`, counted under the innermost function that
-    /// holds it. Returns the number of function bodies read.
+    /// holds it, or under [`OUTSIDE_ANY_FN`] when no function holds it.
+    /// Returns the number of function bodies read.
     fn bool_word_comparisons(rel: &str, text: &str, hits: &mut ComparisonHits) -> usize {
         use crate::test_helpers::test_sources::{function_bodies, production_half};
         fn fn_name(body: &str) -> String {
@@ -1797,8 +1863,28 @@ mod tests {
                 .unwrap_or_default()
                 .to_string()
         }
-        let bodies = function_bodies(production_half(text));
+        let mut count = |owner: &str, code: &str| {
+            for line in code.lines() {
+                let trimmed = line.trim();
+                if trimmed.starts_with("//") {
+                    continue;
+                }
+                if compares_a_bool_word(before_comment(line)) {
+                    *hits
+                        .entry((rel.to_string(), owner.to_string(), trimmed.to_string()))
+                        .or_default() += 1;
+                }
+            }
+        };
+        // Joined on `\n` so every body, which `function_bodies` joins the same
+        // way, is found verbatim in it and can be cut out.
+        let production = production_half(text).lines().collect::<Vec<_>>().join("\n");
+        let bodies = function_bodies(&production);
+        let mut outside = production.clone();
         for (i, body) in bodies.iter().enumerate() {
+            if let Some(at) = outside.find(body.as_str()) {
+                outside.replace_range(at..at + body.len(), "");
+            }
             // `function_bodies` yields a nested fn both inside its parent and
             // on its own; cutting it out of the parent counts each line once,
             // under the function that holds it.
@@ -1808,36 +1894,30 @@ mod tests {
                     own = own.replacen(nested.as_str(), "", 1);
                 }
             }
-            let name = fn_name(body);
-            for line in own.lines() {
-                let trimmed = line.trim();
-                if trimmed.starts_with("//") {
-                    continue;
-                }
-                if compares_a_bool_word(before_comment(line)) {
-                    *hits
-                        .entry((rel.to_string(), name.clone(), trimmed.to_string()))
-                        .or_default() += 1;
-                }
-            }
+            count(&fn_name(body), &own);
         }
+        count(OUTSIDE_ANY_FN, &outside);
         bodies.len()
     }
 
+    /// One helper allowed to compare the words: the file and the function.
+    type Helper = (&'static str, &'static str);
+
     /// The comparisons no helper and no `allowed` entry accounts for, and the
-    /// `allowed` entries that match no comparison. An entry names one line of
-    /// one function and covers one occurrence of it, so a second comparison
-    /// added to an allowed function, or the same line copied into another
-    /// function, is reported.
+    /// `allowed` entries that match no comparison. A helper is a function of
+    /// one file, so a function of the same name elsewhere is not one. An
+    /// entry names one line of one function and covers one occurrence of it,
+    /// so a second comparison added to an allowed function, or the same line
+    /// copied into another function, is reported.
     fn unaccounted_comparisons<'a>(
         hits: &ComparisonHits,
-        helpers: &[&str],
+        helpers: &[Helper],
         allowed: &'a [AllowedComparison],
     ) -> (Vec<String>, Vec<&'a AllowedComparison>) {
         let mut used = std::collections::BTreeSet::new();
         let mut failures = Vec::new();
         for ((file, owner, line), &count) in hits {
-            if helpers.contains(&owner.as_str()) {
+            if helpers.iter().any(|(f, n)| f == file && n == owner) {
                 continue;
             }
             let entry = allowed
@@ -1862,6 +1942,37 @@ mod tests {
             .map(|(_, e)| e)
             .collect();
         (failures, stale)
+    }
+
+    /// A helper is matched by file and function: a function with a helper's
+    /// name in another file is reported. A comparison in a `const` or
+    /// `static` initialiser, outside every function, is reported too.
+    #[test]
+    fn a_helper_name_elsewhere_and_a_comparison_outside_a_fn_are_reported() {
+        let source = r#"
+            const IS_ON: fn(&str) -> bool = |v| v == "true";
+            static WORDS: &[bool] = &[matches!("x", "false")];
+            fn is_true_spelling(value: &str) -> bool {
+                value == "true"
+            }
+        "#;
+        let mut hits = ComparisonHits::new();
+        assert_eq!(bool_word_comparisons("x.rs", source, &mut hits), 1);
+        let helpers: &[Helper] = &[(
+            "crates/core/src/config/string_or_bool.rs",
+            "is_true_spelling",
+        )];
+        let (failures, _) = unaccounted_comparisons(&hits, helpers, &[]);
+        assert_eq!(
+            failures,
+            [
+                r#"x.rs ((outside any fn)): const IS_ON: fn(&str) -> bool = |v| v == "true";"#,
+                r#"x.rs ((outside any fn)): static WORDS: &[bool] = &[matches!("x", "false")];"#,
+                r#"x.rs (is_true_spelling): value == "true""#,
+            ]
+        );
+        let (failures, _) = unaccounted_comparisons(&hits, &[("x.rs", "is_true_spelling")], &[]);
+        assert_eq!(failures.len(), 2, "{failures:?}");
     }
 
     /// A function on the allowed list that gains a second comparison is
@@ -1895,7 +2006,7 @@ mod tests {
         let (failures, stale) = unaccounted_comparisons(&hits, &[], allowed);
         assert_eq!(failures, [r#"x.rs (reads_git): answer == "false""#]);
         assert_eq!(stale, [&allowed[1]]);
-        let (failures, _) = unaccounted_comparisons(&hits, &["reads_git"], allowed);
+        let (failures, _) = unaccounted_comparisons(&hits, &[("x.rs", "reads_git")], allowed);
         assert!(
             failures.is_empty(),
             "a helper owns every line: {failures:?}"
@@ -1986,7 +2097,16 @@ mod tests {
     fn no_production_function_matches_a_rendered_value_against_true_or_false() {
         use crate::test_helpers::test_sources::workspace_production_sources;
 
-        const HELPERS: &[&str] = &["is_true_spelling", "is_false_spelling"];
+        const HELPERS: &[Helper] = &[
+            (
+                "crates/core/src/config/string_or_bool.rs",
+                "is_true_spelling",
+            ),
+            (
+                "crates/core/src/config/string_or_bool.rs",
+                "is_false_spelling",
+            ),
+        ];
         const ALLOWED: &[AllowedComparison] = &[
             (
                 "crates/cli/src/commands/tag/bump_detect.rs",
@@ -2147,12 +2267,11 @@ mod tests {
             stale.is_empty(),
             "ALLOWED entries that match nothing: {stale:#?}"
         );
-        for helper in HELPERS {
+        for (file, helper) in HELPERS {
             assert!(
-                hits.keys().any(|(f, owner, _)| {
-                    f == "crates/core/src/config/string_or_bool.rs" && owner == helper
-                }),
-                "{helper} no longer matches the words"
+                hits.keys()
+                    .any(|(f, owner, _)| f == file && owner == helper),
+                "{helper} in {file} no longer matches the words"
             );
         }
     }

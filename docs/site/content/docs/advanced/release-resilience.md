@@ -141,8 +141,8 @@ is safe.
 
 ## Per-publisher classification
 
-The "Rollback action" column below is invoked only by `anodizer tag rollback`
-— never automatically. A release run that fails leaves published state exactly
+The "Rollback action" column below is invoked only by `anodizer tag rollback`;
+nothing invokes it automatically. A release run that fails leaves published state exactly
 where it stopped; withdrawing it is always an explicit operator command (see
 [Recovering a poisoned tag with `tag rollback`](#poisoned-tag-recovery-with-tag-rollback)).
 
@@ -346,12 +346,12 @@ For ad-hoc notifications (outside a release), use `anodizer notify`.
 
 ## `on_rollback` hooks
 
-`on_rollback` fires from `anodizer tag rollback`'s publisher-unwind step —
-never automatically during `anodizer release`, which does not touch published
-state on failure. When an operator runs `tag rollback` to withdraw a release,
+`on_rollback` fires from `anodizer tag rollback`'s publisher-unwind step only.
+`anodizer release` does not touch published state on failure, so it never
+fires there. When an operator runs `tag rollback` to withdraw a release,
 it can revert a publisher that **succeeded and never errored** — a pushed
-Homebrew tap, an opened PR — because the operator withdrew the whole run, not
-because that publisher itself failed. That reverted-but-not-failed publisher
+Homebrew tap, an opened PR — because the operator withdrew the whole run,
+though that publisher itself did not fail. That reverted-but-not-failed publisher
 has no `on_error` surface. `on_rollback` is its notification surface: it fires
 once per publisher the unwind reverted, including the succeeded-then-reverted
 case, and including a revert that itself failed (`{{ .RollbackFailed }}` is
@@ -604,8 +604,8 @@ evaluates skip-inactive right now — `skip:`/`skip_upload:` truthy or `if:`
 falsy on all of them, including with `--crate <name>` selection narrowed to
 one of those inactive entries. Distinct from `NotConfigured` (the block is
 absent entirely): a `ConfigSkipped` publisher was registered but had nothing
-active to publish, so it is recorded and never reaches `run()` — never
-reported as `Succeeded` for work it never did.
+active to publish, so it is recorded, never reaches `run()`, and is not
+reported as `Succeeded`.
 
 `EntriesSkipped` (`skipped-entries-skipped` in the run summary and
 `--summary-json` output) fires when `run()` did execute, at least one entry it
@@ -650,8 +650,8 @@ held a one-way-door publisher: after the reversible Assets and Manager
 groups have already dispatched, the gate checks the just-published release's
 asset content before any Submitter-group publisher (cargo, npm, PyPI,
 chocolatey, winget, …) is allowed to run. A failed check, or the check
-itself erroring, blocks every Submitter-group publisher this run — never
-selectively.
+itself erroring, blocks every Submitter-group publisher in this run, all
+of them together.
 
 Stage-level statuses on the run summary (printed at end-of-pipeline):
 

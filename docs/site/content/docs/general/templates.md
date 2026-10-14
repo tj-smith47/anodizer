@@ -152,7 +152,7 @@ name_template: "{{ Some?.Missing or \"\" }}"
 
 `or` short-circuits past an undefined left-hand side the same way `~`
 coerces one. `?.` suppresses the Undefined error at *every* link of a
-dotted path — including a wholly undefined root — not just a missing leaf
+dotted path — including a wholly undefined root as well as a missing leaf
 field, so it composes with `or` for a safe default anywhere in a chain.
 
 ## Bool-or-template values
@@ -308,8 +308,8 @@ If you hit a construct not covered here, open an issue with the failing template
 | `ShortCommit` | Short commit hash | `abc1234` |
 | `Commit` | Alias for `FullCommit` | `abc123def456...` |
 | `Branch` | Current git branch name | `main` |
-| `CommitDate` | ISO 8601 author date of HEAD | `2024-01-15T10:30:00Z` |
-| `CommitTimestamp` | Unix timestamp of HEAD | `1705312200` |
+| `CommitDate` | Committer date of HEAD in strict ISO 8601, with the committer's UTC offset | `2024-01-15T10:30:00+00:00` |
+| `CommitTimestamp` | Committer date of HEAD as a Unix timestamp | `1705312200` |
 | `PreviousTag` | Previous matching git tag | `v1.2.2` |
 | `IsGitDirty` | `true` if working tree is dirty | `true` |
 | `GitTreeState` | Working tree state | `clean` or `dirty` |
@@ -404,9 +404,19 @@ conditions with a hard error; the stage is not silently skipped.
 
 | Variable | Description | Example |
 |----------|-------------|---------|
-| `Date` | Current date | `2024-01-15` |
+| `Date` | Current UTC time in RFC 3339 | `2024-01-15T10:30:00+00:00` |
 | `Timestamp` | Current Unix timestamp | `1705312200` |
-| `Now` | Current UTC time (ISO 8601) | `2024-01-15T10:30:00Z` |
+| `Now` | Current UTC time in RFC 3339, the same value as `Date` | `2024-01-15T10:30:00+00:00` |
+| `Year` | Four-digit UTC year | `2024` |
+| `Month` | Two-digit UTC month | `01` |
+| `Day` | Two-digit UTC day of the month | `15` |
+| `Hour` | Two-digit UTC hour | `10` |
+| `Minute` | Two-digit UTC minute | `30` |
+
+When `SOURCE_DATE_EPOCH` (or the older `ANODIZE_SOURCE_DATE_EPOCH`) is set, every time
+variable is that instant in place of the current time, so two runs of one commit render the
+same values. An empty value counts as unset; the rules are on
+[Reproducible Builds](../advanced/reproducible-builds.md#the-source-date).
 
 ### Host runtime
 

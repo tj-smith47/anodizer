@@ -41,30 +41,44 @@ struct Target<'a> {
 /// releases on (`ctx.token_type`). Pass, with no network call, when no
 /// release is configured.
 pub fn release_preflight(ctx: &Context) -> PreflightCheck {
-    let targets = targets(ctx);
+    let (targets, token_errors) = targets(ctx);
+    // A repository token that does not render fails the release stage, so it
+    // is a blocker here, named the way the release stage names it.
+    let blocked = token_errors
+        .into_iter()
+        .fold(PreflightCheck::Pass, |acc, e| {
+            acc.merge(PreflightCheck::Blocker(e))
+        });
     if targets.is_empty() {
-        return PreflightCheck::Pass;
+        return blocked;
     }
-    match ctx.token_type {
+    blocked.merge(match ctx.token_type {
         ScmTokenType::GitHub => github(ctx, targets),
         ScmTokenType::GitLab => gitlab(ctx, targets),
         ScmTokenType::Gitea => gitea(ctx, targets),
-    }
+    })
 }
 
 /// One target per selected, non-skipped crate whose release block names a
 /// repository on the run's forge, with the token the release stage would
 /// use for it: the repository block's own `token`, else the run's token.
-fn targets(ctx: &Context) -> Vec<Target<'_>> {
+/// A repository `token` that does not render leaves its crate out of the
+/// targets and is returned as an error line instead.
+fn targets(ctx: &Context) -> (Vec<Target<'_>>, Vec<String>) {
     let run_token = match ctx.token_type {
         ScmTokenType::GitHub => {
             anodizer_core::git::resolve_github_token_with_env(ctx.options.token.as_deref(), &|k| {
                 ctx.env_var(k)
             })
         }
-        _ => ctx.options.token.clone().filter(|t| !t.is_empty()),
+        _ => ctx
+            .options
+            .token
+            .as_deref()
+            .and_then(anodizer_core::git::non_blank_token),
     };
     let mut out = Vec::new();
+    let mut errors = Vec::new();
     for crate_cfg in active_release_configs(ctx) {
         let release_cfg = crate_cfg
             .release
@@ -75,17 +89,26 @@ fn targets(ctx: &Context) -> Vec<Target<'_>> {
         if let Ok(Some(ScmRepoConfig { owner, name, .. })) =
             crate::resolve_release_repo(release_cfg, ctx.token_type, ctx)
         {
+            let token = match crate::resolve_release_token(ctx, release_cfg) {
+                Ok(token) => token.or_else(|| run_token.clone()),
+                Err(e) => {
+                    errors.push(format!(
+                        "{e:#}; cannot create the release in {owner}/{name}"
+                    ));
+                    continue;
+                }
+            };
             out.push(Target {
                 crate_cfg,
                 release_cfg,
                 owner,
                 repo: name,
-                token: crate::resolve_release_token(ctx, release_cfg).or_else(|| run_token.clone()),
+                token,
                 fail_on_error: fail_on_error(ctx, release_cfg),
             });
         }
     }
-    out
+    (out, errors)
 }
 
 /// `release.preflight.fail_on_error` for one crate: its own value, else the
@@ -761,5 +784,37 @@ mod tests {
             apply_fail_on_error(PreflightCheck::Blocker("denied".into()), &Ok(true)),
             PreflightCheck::Blocker("denied".into())
         );
+    }
+
+    /// A release `token` that does not render is a blocker naming the field
+    /// and the repository, with none of the template's text in it, and the
+    /// repository is not probed with the run token in its place.
+    #[test]
+    fn a_release_token_that_does_not_render_is_a_blocker() {
+        let crate_cfg = CrateConfig {
+            name: "app".into(),
+            release: Some(ReleaseConfig {
+                github: Some(ScmRepoConfig {
+                    owner: "acme".into(),
+                    name: "widget".into(),
+                    token: Some("ghp_literal{{ NoSuchVariable }}".into()),
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let ctx = anodizer_core::test_helpers::TestContextBuilder::new()
+            .sealed_env()
+            .crates(vec![crate_cfg])
+            .token(Some("ghp_run".into()))
+            .build();
+        match release_preflight(&ctx) {
+            PreflightCheck::Blocker(m) => {
+                assert!(m.contains("release.github.token does not render"), "{m}");
+                assert!(m.contains("acme/widget"), "{m}");
+                assert!(!m.contains("ghp_literal"), "{m}");
+            }
+            _ => panic!("a token that does not render must block the release"),
+        }
     }
 }

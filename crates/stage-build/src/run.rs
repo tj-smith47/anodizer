@@ -82,13 +82,9 @@ impl Stage for super::BuildStage {
         // BuildJob descriptors. No compilation happens here.
         // -----------------------------------------------------------------
 
-        let commit_timestamp = ctx
-            .template_vars()
-            .get("CommitTimestamp")
-            .cloned()
-            .unwrap_or_else(|| "0".to_string());
-
-        seed_determinism_state(ctx, &commit_timestamp, &log)?;
+        // One resolution feeds the determinism seed, the cargo child's
+        // SOURCE_DATE_EPOCH and the binary mtime, so all three agree.
+        let reproducible_epoch = seed_determinism_state(ctx)?;
 
         let inputs = PlanInputs {
             crates: &crates,
@@ -97,7 +93,7 @@ impl Stage for super::BuildStage {
             default_flags: &default_flags,
             default_ignores: &default_ignores,
             default_overrides: &default_overrides,
-            commit_timestamp: &commit_timestamp,
+            reproducible_epoch,
         };
         let (build_jobs, copy_jobs) = plan_build_jobs(ctx, &log, &inputs)?;
 
@@ -147,7 +143,7 @@ impl Stage for super::BuildStage {
             template_vars: &template_vars,
             dist_dir: &dist_dir,
             dry_run,
-            commit_timestamp: &commit_timestamp,
+            reproducible_epoch,
         };
 
         if dry_run {
@@ -175,7 +171,7 @@ pub(crate) struct PlanInputs<'a> {
     default_flags: &'a Option<Vec<String>>,
     pub(crate) default_ignores: &'a [BuildIgnore],
     default_overrides: &'a [BuildOverride],
-    commit_timestamp: &'a str,
+    reproducible_epoch: Option<i64>,
 }
 
 /// Flatten the nested (crate, build, target) tree into a list of
@@ -197,7 +193,7 @@ fn plan_build_jobs(
     let default_flags: Option<Vec<String>> = inputs.default_flags.clone();
     let default_ignores: Vec<BuildIgnore> = inputs.default_ignores.to_vec();
     let default_overrides: Vec<BuildOverride> = inputs.default_overrides.to_vec();
-    let commit_timestamp: &str = inputs.commit_timestamp;
+    let reproducible_epoch = inputs.reproducible_epoch;
     let crates = inputs.crates;
 
     // A dry-run never dispatches cargo (see `run`'s `if dry_run` short-circuit),
@@ -711,9 +707,14 @@ fn plan_build_jobs(
 
                 // Reproducible builds: inject SOURCE_DATE_EPOCH and RUSTFLAGS
                 if build.reproducible.unwrap_or(false) {
-                    target_env
-                        .entry("SOURCE_DATE_EPOCH".to_string())
-                        .or_insert_with(|| commit_timestamp.to_string());
+                    // Set explicitly so cargo gets the run's one date even
+                    // when the process environment sets none; a build
+                    // `env:` entry still wins.
+                    if let Some(epoch) = reproducible_epoch {
+                        target_env
+                            .entry("SOURCE_DATE_EPOCH".to_string())
+                            .or_insert_with(|| epoch.to_string());
+                    }
 
                     let cwd = std::env::current_dir()
                         .unwrap_or_else(|_| PathBuf::from("."))
@@ -993,7 +994,7 @@ mod env_scope_tests {
             default_flags: &None,
             default_ignores: &[],
             default_overrides: &[],
-            commit_timestamp: "0",
+            reproducible_epoch: None,
         };
         plan_build_jobs(ctx, &log, &inputs).expect("planning succeeds")
     }
@@ -1175,6 +1176,56 @@ mod env_scope_tests {
         }
     }
 
+    /// A source date set in the environment reaches the cargo child of a
+    /// reproducible build ahead of the commit time, and a build `env:` entry
+    /// still wins over both.
+    #[test]
+    fn a_reproducible_build_passes_the_ambient_source_date_to_cargo() {
+        let krate = reproducible_crate(LINUX);
+        let mut ctx = TestContextBuilder::new()
+            .project_name("myapp")
+            .env("SOURCE_DATE_EPOCH", "1600000000")
+            .sealed_env()
+            .build();
+        ctx.template_vars_mut().set("CommitTimestamp", "1700000000");
+        ctx.options.dry_run = true;
+        let log = ctx.logger("build");
+        let reproducible_epoch = crate::run_helpers::seed_determinism_state(&mut ctx).unwrap();
+        let strategy = ctx.config.default_cross_strategy();
+        let inputs = PlanInputs {
+            crates: std::slice::from_ref(&krate),
+            default_targets: &[],
+            default_strategy: &strategy,
+            default_flags: &None,
+            default_ignores: &[],
+            default_overrides: &[],
+            reproducible_epoch,
+        };
+        let (jobs, _) = plan_build_jobs(&mut ctx, &log, &inputs).unwrap();
+        let env = &jobs[0].cmd.as_ref().unwrap().env;
+        assert_eq!(
+            env.get("SOURCE_DATE_EPOCH").map(String::as_str),
+            Some("1600000000")
+        );
+
+        let mut krate = reproducible_crate(LINUX);
+        let build = &mut krate.builds.as_mut().unwrap()[0];
+        build.env = Some(HashMap::from([(
+            LINUX.to_string(),
+            HashMap::from([("SOURCE_DATE_EPOCH".to_string(), "1500000000".to_string())]),
+        )]));
+        let inputs = PlanInputs {
+            crates: std::slice::from_ref(&krate),
+            ..inputs
+        };
+        let (jobs, _) = plan_build_jobs(&mut ctx, &log, &inputs).unwrap();
+        let env = &jobs[0].cmd.as_ref().unwrap().env;
+        assert_eq!(
+            env.get("SOURCE_DATE_EPOCH").map(String::as_str),
+            Some("1500000000")
+        );
+    }
+
     /// A `reproducible: true` windows-msvc build must carry the clang-cl
     /// pin alongside RUSTFLAGS — see `anodizer_core::determinism::msvc_c_toolchain_env`.
     #[test]
@@ -1253,7 +1304,7 @@ mod env_scope_tests {
             default_flags: &None,
             default_ignores: &[],
             default_overrides: &[],
-            commit_timestamp: "0",
+            reproducible_epoch: None,
         };
         assert!(
             plan_build_jobs(&mut ctx, &log, &inputs).is_ok(),

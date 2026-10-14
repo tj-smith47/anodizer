@@ -643,7 +643,7 @@ fn populate_time_vars_uses_source_date_epoch_when_set() {
     let config = Config::default();
     let mut ctx = Context::new(config, ContextOptions::default());
     ctx.set_env_source(env);
-    ctx.populate_time_vars();
+    ctx.populate_time_vars().unwrap();
 
     let v = ctx.template_vars();
     assert_eq!(
@@ -669,7 +669,7 @@ fn test_populate_time_vars() {
     let config = Config::default();
     let mut ctx = Context::new(config, ContextOptions::default());
     ctx.set_env_source(env);
-    ctx.populate_time_vars();
+    ctx.populate_time_vars().unwrap();
 
     let v = ctx.template_vars();
 
@@ -2192,4 +2192,69 @@ fn only_the_first_claim_of_a_render_logs() {
     for level in [LogLevel::Verbose, LogLevel::Warn, LogLevel::Status] {
         assert_eq!(cap.printed_messages(level), ["a1", "b1"], "{level:?}");
     }
+}
+
+/// Setting up a context refuses a malformed source date in every mode, with
+/// the variable and the value in the message.
+#[test]
+fn populate_time_vars_refuses_a_malformed_source_date() {
+    for snapshot in [false, true] {
+        let mut ctx = Context::new(
+            Config::default(),
+            ContextOptions {
+                snapshot,
+                ..Default::default()
+            },
+        );
+        ctx.set_env_source(crate::MapEnvSource::new().with("ANODIZE_SOURCE_DATE_EPOCH", "soon"));
+        let err = ctx.populate_time_vars().unwrap_err().to_string();
+        assert!(
+            err.starts_with("ANODIZE_SOURCE_DATE_EPOCH is set to \"soon\""),
+            "{err}"
+        );
+    }
+}
+
+/// `Date`, `Timestamp` and `Now` read the older spelling too.
+#[test]
+fn populate_time_vars_reads_the_older_source_date_spelling() {
+    let mut ctx = Context::new(Config::default(), ContextOptions::default());
+    ctx.set_env_source(crate::MapEnvSource::new().with("ANODIZE_SOURCE_DATE_EPOCH", "1715000000"));
+    ctx.populate_time_vars().unwrap();
+    assert_eq!(
+        ctx.template_vars().get("Timestamp").map(String::as_str),
+        Some("1715000000")
+    );
+}
+
+/// The environment's source date wins over the commit time, and the commit
+/// time is used when the environment sets none.
+#[test]
+fn resolve_reproducible_mtime_prefers_the_environment_over_the_commit_time() {
+    let mut ctx = Context::new(Config::default(), ContextOptions::default());
+    ctx.template_vars_mut().set("CommitTimestamp", "1715000000");
+    ctx.set_env_source(crate::MapEnvSource::new().with("SOURCE_DATE_EPOCH", "1600000000"));
+    assert_eq!(
+        ctx.resolve_reproducible_mtime().unwrap(),
+        Some(1_600_000_000)
+    );
+    ctx.set_env_source(crate::MapEnvSource::new().with("SOURCE_DATE_EPOCH", ""));
+    assert_eq!(
+        ctx.resolve_reproducible_mtime().unwrap(),
+        Some(1_715_000_000)
+    );
+    ctx.set_env_source(crate::MapEnvSource::new().with("SOURCE_DATE_EPOCH", "x1"));
+    assert!(ctx.resolve_reproducible_mtime().is_err());
+}
+
+/// A seeded determinism state is the run's date; before a stage seeds it the
+/// date comes from `resolve_reproducible_mtime`.
+#[test]
+fn reproducible_epoch_reads_the_seeded_state_then_the_resolved_date() {
+    let mut ctx = Context::new(Config::default(), ContextOptions::default());
+    ctx.template_vars_mut().set("CommitTimestamp", "1715000000");
+    ctx.set_env_source(crate::MapEnvSource::new().with("SOURCE_DATE_EPOCH", "1600000000"));
+    assert_eq!(ctx.reproducible_epoch().unwrap(), Some(1_600_000_000));
+    ctx.determinism = Some(crate::DeterminismState::seed_from_commit(1_500_000_000).unwrap());
+    assert_eq!(ctx.reproducible_epoch().unwrap(), Some(1_500_000_000));
 }

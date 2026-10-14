@@ -148,7 +148,7 @@ Under `--show-skipped` the docker stage also prints the skip as it happens:
      • skipped docker manifest 'multi-arch' — manifest has no images
 ```
 
-## Skip push
+## `skip_push`
 
 Control when manifests are pushed:
 

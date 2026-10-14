@@ -122,6 +122,7 @@ $ anodizer check config
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
+| `provider` | string | detected | Forge the release goes to: `github`, `gitlab` or `gitea`. See [Choosing the forge](#choosing-the-forge). |
 | `github.owner` | string | auto-detected | GitHub owner/org |
 | `github.name` | string | auto-detected | Repository name |
 | `github.token` | string | pipeline token | Token override for this release repository (templates allowed). Useful when the release repo needs a different token than the build repo — e.g. releasing to another organization. |
@@ -144,6 +145,7 @@ $ anodizer check config
 
 ```yaml
 release:
+  provider: github            # optional; github | gitlab | gitea (detected when unset)
   github:
     owner: myorg              # auto-detected from git remote if omitted
     name: myapp
@@ -235,6 +237,35 @@ Set `GITHUB_TOKEN` as an environment variable or pass it via `--token`:
 ```bash
 export GITHUB_TOKEN="ghp_..."
 anodizer release
+```
+
+On GitHub the token is read from `--token`, then `ANODIZER_GITHUB_TOKEN`,
+`GITHUB_TOKEN` and `GH_TOKEN`, the first one set and not blank. On GitLab it
+is `GITLAB_TOKEN`, and on Gitea `GITEA_TOKEN`.
+
+### Forge selection {#choosing-the-forge}
+
+The first of these that is set decides whether the release goes to GitHub,
+GitLab or Gitea:
+
+| Order | Source | Values |
+|---|---|---|
+| 1 | `release.provider` | `github`, `gitlab`, `gitea` |
+| 2 | top-level `force_token` | `github`, `gitlab`, `gitea` |
+| 3 | `ANODIZER_FORCE_TOKEN`, else `GORELEASER_FORCE_TOKEN` | the same three, in any letter case; any other value is ignored |
+| 4 | `GITLAB_TOKEN` in the environment | GitLab |
+| 5 | `GITEA_TOKEN` in the environment | Gitea |
+| 6 | nothing set | GitHub |
+
+A project whose CI holds a `GITLAB_TOKEN` for another job and releases to
+GitHub sets `provider: github`:
+
+```yaml
+release:
+  provider: github
+  github:
+    owner: myorg
+    name: myapp
 ```
 
 ## Common gotchas

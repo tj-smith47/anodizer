@@ -1540,7 +1540,7 @@ fn oidc_mode_ignores_a_malformed_inline_token() {
         "must fail on the OIDC path, not the unused token template: {msg}"
     );
     assert!(
-        !msg.contains("render token template"),
+        !msg.contains("does not render"),
         "the unused token must never be rendered: {msg}"
     );
 }
@@ -1585,7 +1585,7 @@ fn auto_mode_routes_around_a_token_render_error_to_oidc() {
         "auto must route the token error to the OIDC mint path: {msg}"
     );
     assert!(
-        !msg.contains("render token template"),
+        !msg.contains("does not render"),
         "a token-render error must not abort auto when OIDC is available: {msg}"
     );
 }
@@ -1617,7 +1617,7 @@ fn auto_mode_surfaces_the_token_render_error_without_oidc() {
     )
     .expect_err("a malformed token template with no OIDC fallback must error");
     assert!(
-        err.to_string().contains("render token template"),
+        err.to_string().contains("pypi.token does not render"),
         "the token-render error must surface when there is no OIDC fallback: {err}"
     );
 }

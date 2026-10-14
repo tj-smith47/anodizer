@@ -86,7 +86,7 @@ pub(crate) fn resolve_token(ctx: &Context, cfg: &NpmConfig) -> Result<String> {
     crate::publisher_helpers::resolve_token_with_ladder(
         ctx,
         cfg.token.as_deref(),
-        "npm: render token template",
+        "npm.token",
         &[token_env_var(cfg)],
     )
 }

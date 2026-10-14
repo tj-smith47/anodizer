@@ -39,9 +39,10 @@ pub struct GitInfo {
     pub branch: String,
     pub dirty: bool,
     pub semver: SemVer,
-    /// ISO 8601 committer date of HEAD commit (from `git log -1 --format=%cI`)
+    /// ISO 8601 committer date of the HEAD commit, read by [`head_commit_time_in`].
     pub commit_date: String,
-    /// Unix timestamp of HEAD commit (from `git log -1 --format=%at`)
+    /// Committer time of the HEAD commit as Unix seconds, read by
+    /// [`head_commit_time_in`] in the same `git log` call as [`Self::commit_date`].
     pub commit_timestamp: String,
     /// Previous tag matching the same pattern, if any.
     /// Populated externally by the release command once the tag_template is known.
@@ -58,6 +59,52 @@ pub struct GitInfo {
     pub tag_body: String,
     /// First commit hash in the repository (for changelog range when no previous tag).
     pub first_commit: Option<String>,
+}
+
+/// The committer time of a commit, as Unix seconds and as ISO 8601.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommitTime {
+    /// Seconds since 1970-01-01 UTC (`%ct`).
+    pub timestamp: i64,
+    /// The same instant in strict ISO 8601 with the committer's offset (`%cI`).
+    pub iso8601: String,
+}
+
+/// Read the committer time of `HEAD` in the repository at `repo`.
+///
+/// Every commit-time value anodizer uses comes from this one read: the
+/// `CommitTimestamp` and `CommitDate` template variables, the snapshot
+/// source date and the determinism check's seed. The committer time is the
+/// time the commit object was last written, so it moves on a rebase or an
+/// amend together with the commit hash.
+pub fn head_commit_time_in(repo: &Path) -> Result<CommitTime> {
+    let out = git_output_in(
+        repo,
+        &[
+            "-c",
+            "log.showSignature=false",
+            "log",
+            "-1",
+            "--format=%ct%n%cI",
+            "HEAD",
+        ],
+    )?;
+    let mut lines = out.lines();
+    let (Some(secs), Some(iso)) = (lines.next(), lines.next()) else {
+        anyhow::bail!("git log -1 --format=%ct%n%cI HEAD printed {out:?}, expected two lines");
+    };
+    let timestamp = secs.trim().parse::<i64>().map_err(|_| {
+        anyhow::anyhow!("git log printed a committer time that is not a number: {secs:?}")
+    })?;
+    Ok(CommitTime {
+        timestamp,
+        iso8601: iso.trim().to_string(),
+    })
+}
+
+/// Committer time of `HEAD` in the repository at `repo`, as Unix seconds.
+pub fn head_commit_timestamp_in(repo: &Path) -> Result<i64> {
+    Ok(head_commit_time_in(repo)?.timestamp)
 }
 
 /// Detect git info for a given tag.
@@ -114,16 +161,10 @@ pub fn detect_git_info_in(cwd: &Path, tag: &str, skip_validate: bool) -> Result<
     let short_commit = git_output_in(cwd, &["rev-parse", "--short", "HEAD"])?;
     let branch = git_output_in(cwd, &["rev-parse", "--abbrev-ref", "HEAD"]).unwrap_or_default();
     let dirty = is_git_dirty_in(cwd);
-    let commit_date = git_output_in(
-        cwd,
-        &["-c", "log.showSignature=false", "log", "-1", "--format=%cI"],
-    )
-    .unwrap_or_default();
-    let commit_timestamp = git_output_in(
-        cwd,
-        &["-c", "log.showSignature=false", "log", "-1", "--format=%at"],
-    )
-    .unwrap_or_default();
+    let (commit_date, commit_timestamp) = match head_commit_time_in(cwd) {
+        Ok(time) => (time.iso8601, time.timestamp.to_string()),
+        Err(_) => (String::new(), String::new()),
+    };
     // Use ls-remote --get-url.
     // Without an explicit remote name this defaults to "origin".
     //
@@ -305,5 +346,56 @@ mod tests {
         assert_eq!(info.commit, expected_head);
         assert_eq!(info.semver.major, 1);
         assert_eq!(info.first_commit.as_deref(), Some(expected_root.as_str()));
+    }
+
+    /// A rebase or amend leaves the author time behind and moves the
+    /// committer time. `CommitTimestamp`, `CommitDate` and the snapshot
+    /// source date must all carry the committer time.
+    #[test]
+    fn commit_timestamp_commit_date_and_snapshot_sde_all_carry_the_committer_time() {
+        use anodizer_core::test_helpers::{git_test_ok, output_with_spawn_retry};
+
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        git_test_ok(dir, &["init", "-q"]);
+        std::fs::write(dir.join("a"), "1").unwrap();
+        git_test_ok(dir, &["add", "a"]);
+        let out = output_with_spawn_retry(
+            || {
+                let mut cmd = crate::git::git_command();
+                cmd.current_dir(dir)
+                    .env("GIT_AUTHOR_DATE", "1600000000 +0000")
+                    .env("GIT_COMMITTER_DATE", "1715000000 +0000")
+                    .args(["commit", "-q", "-m", "c1"]);
+                cmd
+            },
+            "git",
+        );
+        assert!(out.status.success(), "{out:?}");
+
+        let info = detect_git_info_in(dir, "v1.0.0", false).unwrap();
+        let mut ctx = crate::context::Context::new(
+            crate::config::Config::default(),
+            crate::context::ContextOptions::default(),
+        );
+        ctx.git_info = Some(info);
+        ctx.populate_git_vars();
+        let vars = ctx.template_vars();
+        assert_eq!(
+            vars.get("CommitTimestamp").map(String::as_str),
+            Some("1715000000")
+        );
+        let commit_date = vars.get("CommitDate").cloned().unwrap_or_default();
+        assert_eq!(
+            chrono::DateTime::parse_from_rfc3339(&commit_date)
+                .map(|d| d.timestamp())
+                .ok(),
+            Some(1_715_000_000),
+            "CommitDate {commit_date:?}"
+        );
+        assert_eq!(
+            crate::git::resolve_snapshot_sde_with_env(dir, &crate::MapEnvSource::new()).unwrap(),
+            1_715_000_000
+        );
     }
 }

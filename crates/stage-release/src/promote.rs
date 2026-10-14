@@ -20,7 +20,6 @@
 
 use std::sync::Arc;
 
-use anodizer_core::config::ReleaseConfig;
 use anodizer_core::context::Context;
 use anodizer_core::promote::{
     Promotable, PromoteOutcome, PromoteRequest, PromoteSelector, PromoteSkipReason,
@@ -250,7 +249,7 @@ fn resolve_github_repos(ctx: &Context) -> Result<Vec<GithubTarget>> {
         else {
             continue;
         };
-        let token = resolve_token(ctx, release_cfg, &repo);
+        let token = resolve_token(ctx, &repo)?;
         if let Some(existing) = out
             .iter_mut()
             .find(|t| t.owner == repo.owner && t.name == repo.name)
@@ -272,20 +271,24 @@ fn resolve_github_repos(ctx: &Context) -> Result<Vec<GithubTarget>> {
     Ok(out)
 }
 
-/// Resolve the GitHub token: the per-repo `release.github.token`, else the
-/// release-stage token ladder, else the pipeline-resolved `--token`.
+/// Resolve the GitHub token for a promotion: the repo's own
+/// `release.github.token` ([`crate::release_repo_token`], an error when it
+/// does not render), else the run token when the run is a GitHub run, else
+/// `ANODIZER_GITHUB_TOKEN` / `GITHUB_TOKEN` / `GH_TOKEN`. In a GitLab or Gitea
+/// run the run token is a GitLab or Gitea credential and is never sent to
+/// GitHub.
 fn resolve_token(
     ctx: &Context,
-    release_cfg: &ReleaseConfig,
     repo: &anodizer_core::config::ScmRepoConfig,
-) -> Option<String> {
-    repo.token
-        .as_deref()
-        .filter(|t| !t.is_empty())
-        .map(str::to_string)
-        .or_else(|| crate::resolve_release_token(ctx, release_cfg))
-        .or_else(|| ctx.options.token.clone())
-        .filter(|t| !t.is_empty())
+) -> Result<Option<String>> {
+    let run_token = (ctx.token_type == ScmTokenType::GitHub)
+        .then_some(ctx.options.token.as_deref())
+        .flatten();
+    Ok(
+        crate::release_repo_token(ctx, "github", repo.token.as_deref())?.or_else(|| {
+            anodizer_core::git::resolve_github_token_with_env(run_token, &|k| ctx.env_var(k))
+        }),
+    )
 }
 
 /// Locate the release to promote for one repo from the selector.
@@ -697,7 +700,9 @@ mod tests {
             token: cli_token.map(String::from),
             ..Default::default()
         };
-        Context::new(config, options)
+        let mut ctx = Context::new(config, options);
+        ctx.set_env_source(anodizer_core::MapEnvSource::new());
+        ctx
     }
 
     #[test]
@@ -742,8 +747,8 @@ mod tests {
 
     #[test]
     fn resolve_github_repos_adopts_cli_token_when_config_is_untokened() {
-        // No per-repo and no release-stage token, but a pipeline `--token` is
-        // set: resolve_token's final `.or_else(ctx.options.token)` rung adopts it.
+        // No per-repo token, but a pipeline `--token` is set on a GitHub run:
+        // resolve_token falls back to the run token.
         let ctx = ctx_from_crates(
             vec![github_crate_cfg("a", "acme", "app", None)],
             Some("ghp_cli"),
@@ -918,14 +923,59 @@ mod tests {
 
     #[test]
     fn preflight_ok_when_cli_token_backfills_untokened_config() {
-        // No per-repo token, but a pipeline `--token`: resolve_token's final
-        // `.or_else(ctx.options.token)` rung adopts it, so the target is
+        // No per-repo token, but a pipeline `--token` on a GitHub run:
+        // resolve_token falls back to the run token, so the target is
         // effectively tokened and preflight passes.
         let ctx = ctx_from_crates(
             vec![github_crate_cfg("a", "acme", "app", None)],
             Some("ghp_cli"),
         );
         preflight(&ctx).expect("a --token backfill must satisfy preflight");
+    }
+
+    /// In a GitLab or Gitea run the run token is not a GitHub credential, so
+    /// a promotion never sends it to GitHub: the target is untokened unless a
+    /// GitHub variable is set, and then that variable is used.
+    #[test]
+    fn a_gitlab_or_gitea_run_token_is_never_sent_to_github() {
+        for token_type in [ScmTokenType::GitLab, ScmTokenType::Gitea] {
+            let mut ctx = ctx_from_crates(
+                vec![github_crate_cfg("a", "acme", "app", None)],
+                Some("glpat-run"),
+            );
+            ctx.token_type = token_type;
+            let repos = resolve_github_repos(&ctx).expect("resolve");
+            assert_eq!(repos[0].token, None, "{token_type:?}");
+            ctx.set_env_source(anodizer_core::MapEnvSource::new().with("GH_TOKEN", " gh\n"));
+            let repos = resolve_github_repos(&ctx).expect("resolve");
+            assert_eq!(repos[0].token.as_deref(), Some("gh"), "{token_type:?}");
+        }
+    }
+
+    /// A `release.github.token` that does not render fails the promotion
+    /// naming the field: the literal template is never sent as the bearer,
+    /// and the run token is not used in its place.
+    #[test]
+    fn a_repo_token_that_does_not_render_fails_the_promotion() {
+        let ctx = ctx_from_crates(
+            vec![github_crate_cfg(
+                "a",
+                "acme",
+                "app",
+                Some("ghp_literal{{ NoSuchVariable }}"),
+            )],
+            Some("ghp_cli"),
+        );
+        let err = match resolve_github_repos(&ctx) {
+            Ok(_) => panic!("a token that does not render must not resolve"),
+            Err(e) => e,
+        };
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("release.github.token does not render"),
+            "{msg}"
+        );
+        assert!(!msg.contains("ghp_literal"), "{msg}");
     }
 
     // --- promote (dry-run): the plan resolves without credentials or network ---

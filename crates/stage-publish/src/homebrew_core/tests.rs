@@ -1923,9 +1923,9 @@ fn config_fully_inactive_false_with_empty_selection_and_active_entry() {
 // requirements() — the per-active-entry env-preflight declaration
 // =============================================================================
 
-/// A templated `repository.token` declares exactly the env refs it
-/// interpolates (an `EnvAllOf`), NOT the any-of token ladder — a bump whose
-/// token is pinned to `{{ .Env.X }}` must gate on `X` alone.
+/// A templated `repository.token` declares the env refs it reads ahead of
+/// the variables the chain falls through to, as one any-of: a template that
+/// renders blank falls through to the next source.
 #[test]
 fn requirements_templated_repository_token_declares_its_env_refs() {
     let mut ctx = TestContextBuilder::new().build();
@@ -1939,8 +1939,17 @@ fn requirements_templated_repository_token_declares_its_env_refs() {
 
     assert_eq!(
         HomebrewCorePublisher::new().requirements(&ctx),
-        vec![anodizer_core::EnvRequirement::EnvAllOf {
-            vars: vec!["MY_CORE_TOKEN".to_string()],
+        vec![anodizer_core::EnvRequirement::EnvAnyOf {
+            vars: [
+                "MY_CORE_TOKEN",
+                "HOMEBREW_CORE_GITHUB_TOKEN",
+                "COMMITTER_TOKEN",
+                "ANODIZER_GITHUB_TOKEN",
+                "GITHUB_TOKEN",
+                "GH_TOKEN",
+            ]
+            .map(String::from)
+            .to_vec(),
         }],
     );
 }

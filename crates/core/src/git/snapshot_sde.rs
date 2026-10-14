@@ -1,19 +1,19 @@
 //! Snapshot-mode SOURCE_DATE_EPOCH resolver.
 //!
-//! Resolves SDE in this priority order:
-//!   1. `SOURCE_DATE_EPOCH` env var (seconds since epoch), the standard
-//!      reproducibility contract a CI system or packager sets.
-//!   2. `ANODIZE_SOURCE_DATE_EPOCH` env var, the older anodizer-specific
-//!      spelling of the same override.
-//!   3. HEAD commit timestamp, whether or not the working tree is dirty.
+//! Resolves the source date in this order:
+//!   1. the environment, read by [`crate::sde::ambient_epoch_with_env`]
+//!      (`SOURCE_DATE_EPOCH`, then `ANODIZE_SOURCE_DATE_EPOCH`; an empty
+//!      value is unset and a malformed one is an error);
+//!   2. the HEAD committer time from [`super::head_commit_time_in`], whether
+//!      or not the working tree is dirty.
 //!
 //! The value is stamped into artifacts as a real date (archive entry
 //! mtimes, the OCI `created` label, SBOM timestamps), so every source is a
 //! date the operator or the commit chose. A dirty tree keeps the HEAD
-//! timestamp: successive snapshot runs against the same tree still produce
-//! byte-identical SDE.
+//! committer time: successive snapshot runs against the same tree still
+//! produce the same value.
 
-use anyhow::{Context as _, Result};
+use anyhow::Result;
 use std::path::Path;
 
 use crate::EnvSource;
@@ -29,35 +29,10 @@ pub fn resolve_snapshot_sde(repo: &Path) -> Result<i64> {
 /// `ProcessEnvSource`; tests inject a [`MapEnvSource`](crate::MapEnvSource)
 /// to drive the env-var branches without mutating the process env.
 pub fn resolve_snapshot_sde_with_env<E: EnvSource + ?Sized>(repo: &Path, env: &E) -> Result<i64> {
-    for key in ["SOURCE_DATE_EPOCH", "ANODIZE_SOURCE_DATE_EPOCH"] {
-        if let Some(v) = env.var(key) {
-            return v
-                .parse::<i64>()
-                .with_context(|| format!("{key} is set but not a valid i64: {v}"));
-        }
+    if let Some(secs) = crate::sde::ambient_epoch_with_env(env)? {
+        return Ok(secs);
     }
-    head_commit_timestamp(repo)
-}
-
-fn head_commit_timestamp(repo: &Path) -> Result<i64> {
-    let out = crate::git::git_command()
-        .arg("-C")
-        .arg(repo)
-        .args(["log", "-1", "--format=%ct"])
-        .output()
-        .context("failed to invoke git log -1 --format=%ct")?;
-    if !out.status.success() {
-        anyhow::bail!(
-            "git log -1 --format=%ct failed: {}",
-            String::from_utf8_lossy(&out.stderr)
-        );
-    }
-    let text = String::from_utf8(out.stdout)
-        .context("git log %ct produced non-utf8 output")?
-        .trim()
-        .to_string();
-    text.parse::<i64>()
-        .with_context(|| format!("git log %ct returned non-i64 timestamp: {}", text))
+    super::head_commit_timestamp_in(repo)
 }
 
 #[cfg(test)]
@@ -156,7 +131,7 @@ mod tests {
         let err = resolve_snapshot_sde_with_env(dir.path(), &env).unwrap_err();
         assert!(
             err.to_string()
-                .contains("SOURCE_DATE_EPOCH is set but not a valid i64: soon"),
+                .starts_with("SOURCE_DATE_EPOCH is set to \"soon\""),
             "{err}"
         );
     }
