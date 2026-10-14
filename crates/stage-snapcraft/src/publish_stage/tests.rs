@@ -2693,11 +2693,7 @@ fn the_hold_warnings_quoted_in_the_snapcraft_docs_are_what_the_stage_produces() 
     use std::collections::HashMap;
     use std::path::PathBuf;
 
-    let path = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../docs/site/content/docs/packages/snapcraft.md"
-    );
-    let page = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("read {path}: {e}"));
+    let page = anodizer_core::test_helpers::docs_pages::read_docs_page("packages/snapcraft.md");
     let quoted: Vec<String> = page
         .lines()
         .filter_map(|line| line.trim_start().strip_prefix("Warning "))

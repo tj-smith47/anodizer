@@ -1121,10 +1121,9 @@ mod tests {
     /// document behind and fails here.
     #[test]
     fn the_documented_summary_block_matches_the_renderer() {
-        let doc = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../docs/site/content/docs/advanced/release-resilience.md");
-        let text =
-            std::fs::read_to_string(&doc).unwrap_or_else(|e| panic!("read {}: {e}", doc.display()));
+        let text = anodizer_core::test_helpers::docs_pages::read_docs_page(
+            "advanced/release-resilience.md",
+        );
         let block = summary_section_lines(&entry_skip_summary(), PublishDisposition::Ran, 0)
             .iter()
             .map(|line| anodizer_core::log::strip_ansi(line))
@@ -1133,8 +1132,7 @@ mod tests {
         assert_eq!(
             text.matches(&block).count(),
             1,
-            "{} must quote the rendered section exactly once:\n{block}",
-            doc.display()
+            "advanced/release-resilience.md must quote the rendered section exactly once:\n{block}"
         );
     }
 
@@ -1243,16 +1241,14 @@ mod tests {
     /// the first for two rounds while a pin aimed at one of them kept passing.
     #[test]
     fn every_documented_summary_json_parses_back_into_a_run_summary() {
-        let doc = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../docs/site/content/docs/advanced/release-resilience.md");
-        let text =
-            std::fs::read_to_string(&doc).unwrap_or_else(|e| panic!("read {}: {e}", doc.display()));
+        let text = anodizer_core::test_helpers::docs_pages::read_docs_page(
+            "advanced/release-resilience.md",
+        );
         let statuses: Vec<&str> = every_outcome().iter().map(expect_status).collect();
-        let blocks: Vec<&str> = text
-            .split("```json")
-            .skip(1)
-            .filter_map(|b| b.split("```").next())
-            .filter(|b| b.contains("\"results\""))
+        let blocks: Vec<String> = anodizer_core::test_helpers::docs_pages::fenced_blocks(&text)
+            .into_iter()
+            .filter(|b| b.info == "json" && b.body.contains("\"results\""))
+            .map(|b| b.body)
             .collect();
         assert!(
             blocks.len() >= 2,
@@ -1260,7 +1256,7 @@ mod tests {
             blocks.len()
         );
         for block in blocks {
-            let parsed: RunSummary = serde_json::from_str(block)
+            let parsed: RunSummary = serde_json::from_str(&block)
                 .unwrap_or_else(|e| panic!("a documented summary.json must parse: {e}\n{block}"));
             assert_eq!(parsed.schema_version, RunSummary::CURRENT_SCHEMA_VERSION);
             for r in &parsed.results {

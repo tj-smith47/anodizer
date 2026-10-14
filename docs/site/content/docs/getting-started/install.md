@@ -24,6 +24,7 @@ cargo install --path crates/cli
 Use [`tj-smith47/anodizer-action`](https://github.com/tj-smith47/anodizer-action) instead of `cargo install` — it caches the binary, auto-installs pipeline dependencies (nfpm, cosign, zig, snapcraft, ...), and imports signing keys in a single step:
 
 ```yaml
+# not an anodizer config
 - uses: tj-smith47/anodizer-action@v1
   with:
     auto-install: true

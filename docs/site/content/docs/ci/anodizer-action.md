@@ -10,6 +10,7 @@ template = "docs.html"
 ## Basic usage
 
 ```yaml
+# not an anodizer config
 - uses: tj-smith47/anodizer-action@v1
   with:
     auto-install: true
@@ -130,6 +131,7 @@ the caller needing to know the harness CLI. See
 ### Simple tag-triggered release
 
 ```yaml
+# not an anodizer config
 name: Release
 on:
   push:
@@ -161,6 +163,7 @@ No failure-handling steps are needed: `anodizer release` runs a config-derived [
 ### Auto-tag on push to main
 
 ```yaml
+# not an anodizer config
 name: CI
 on:
   push:
@@ -194,6 +197,7 @@ jobs:
 Tag each crate in the workspace independently. `install-only: true` gives you the binary on PATH; you drive the loop yourself.
 
 ```yaml
+# not an anodizer config
       - uses: tj-smith47/anodizer-action@v1
         with:
           install-only: true
@@ -215,6 +219,7 @@ Tag each crate in the workspace independently. `install-only: true` gives you th
 ### Tag-triggered monorepo release (resolve tag → crate)
 
 ```yaml
+# not an anodizer config
 name: Release
 on:
   push:
@@ -256,6 +261,7 @@ The action's built-in `upload-dist` / `download-dist` replaces the manual `actio
 > If your release path already runs `anodizer check determinism`, the [`preserve-dist` + `release --publish-only`](@/docs/advanced/determinism.md) pattern is strictly better — it reuses the harness's byte-stable dist instead of compiling everything a second time in a separate matrix.
 
 ```yaml
+# not an anodizer config
 jobs:
   build:
     strategy:
@@ -299,6 +305,7 @@ jobs:
 When your `ci.yml` builds and uploads the anodizer binary once per commit, downstream release workflows can reuse it instead of reinstalling.
 
 ```yaml
+# not an anodizer config
 # ci.yml
 - uses: actions/checkout@v6
 - uses: dtolnay/rust-toolchain@stable
@@ -327,6 +334,7 @@ Pinning `artifact-run-id: auto` resolves the latest successful run of `ci.yml` f
 `install-only: true` produces a `split-matrix` output derived from `.anodizer.yaml`. You can feed that directly into a `strategy.matrix`.
 
 ```yaml
+# not an anodizer config
 jobs:
   setup:
     runs-on: ubuntu-latest
@@ -362,6 +370,7 @@ jobs:
 ### Install only, run anodizer yourself
 
 ```yaml
+# not an anodizer config
 - uses: tj-smith47/anodizer-action@v1
   with:
     install-only: true
@@ -375,6 +384,7 @@ jobs:
 For integration testing a downstream project against an in-flight anodizer PR — or dogfooding a feature branch before it arrives — use `from-branch`. The action shallow-clones `tj-smith47/anodizer` at the branch you name, builds it from source, and puts it on `PATH`:
 
 ```yaml
+# not an anodizer config
 - uses: actions/checkout@v6
 - uses: tj-smith47/anodizer-action@v1
   with:

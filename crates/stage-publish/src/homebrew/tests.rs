@@ -4150,11 +4150,7 @@ fn a_universal_dmg_beside_per_arch_binaries_renders_the_per_arch_blocks() {
 #[test]
 fn the_universal_skip_line_quoted_in_the_cask_docs_is_what_the_renderer_logs() {
     use anodizer_core::config::HomebrewCaskConfig;
-    let page = std::fs::read_to_string(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../docs/site/content/docs/publish/homebrew-casks.md"
-    ))
-    .expect("read the cask docs page");
+    let page = anodizer_core::test_helpers::docs_pages::read_docs_page("publish/homebrew-casks.md");
     let quoted: Vec<&str> = page
         .lines()
         .map(str::trim_start)
@@ -7958,32 +7954,6 @@ fn every_formula_layout_follows_the_homebrew_component_order() {
     }
 }
 
-/// Every fenced block on a docs page as `(language, body)`, in page order.
-/// A fence indented under a list item is read too, with that indent taken
-/// off each body line.
-pub(super) fn docs_fenced_blocks(page: &str) -> Vec<(String, String)> {
-    let mut blocks = Vec::new();
-    let mut open: Option<(String, usize, Vec<String>)> = None;
-    for line in page.lines() {
-        let text = line.trim_start();
-        let indent = line.len() - text.len();
-        match (text.strip_prefix("```"), open.take()) {
-            (Some(_), Some((language, _, body))) => {
-                let mut body = body.join("\n");
-                body.push('\n');
-                blocks.push((language, body));
-            }
-            (Some(language), None) => open = Some((language.to_string(), indent, Vec::new())),
-            (None, Some((language, fence_indent, mut body))) => {
-                body.push(line.get(fence_indent..).unwrap_or("").to_string());
-                open = Some((language, fence_indent, body));
-            }
-            (None, None) => {}
-        }
-    }
-    blocks
-}
-
 /// Every ```ruby block on the casks page is what the renderer produces for
 /// the nearest ```yaml block above it. A block opening with the generated
 /// header is a whole cask and must equal the render; any other block is a
@@ -7993,12 +7963,8 @@ pub(super) fn docs_fenced_blocks(page: &str) -> Vec<(String, String)> {
 #[test]
 fn every_ruby_example_in_the_cask_docs_is_what_the_renderer_produces() {
     use anodizer_core::config::HomebrewCaskConfig;
-    let path = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../docs/site/content/docs/publish/homebrew-casks.md"
-    );
-    let page = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("read {path}: {e}"));
-    let blocks = docs_fenced_blocks(&page);
+    let page = anodizer_core::test_helpers::docs_pages::read_docs_page("publish/homebrew-casks.md");
+    let blocks = anodizer_core::test_helpers::docs_pages::fenced_blocks(&page);
 
     let both_macs: &[&str] = &["x86_64-apple-darwin", "aarch64-apple-darwin"];
     let apple_silicon: &[&str] = &["aarch64-apple-darwin"];
@@ -8021,19 +7987,22 @@ fn every_ruby_example_in_the_cask_docs_is_what_the_renderer_produces() {
     ];
 
     let mut ruby_blocks = 0usize;
-    for (at, (language, ruby)) in blocks.iter().enumerate() {
-        if language != "ruby" {
+    for (at, block) in blocks.iter().enumerate() {
+        if block.info != "ruby" {
             continue;
         }
+        let ruby = &block.body;
         let targets = releases
             .get(ruby_blocks)
             .unwrap_or_else(|| panic!("ruby block {at} has no release listed for it in this test"));
         ruby_blocks += 1;
-        let (_, yaml) = blocks[..at]
+        let yaml = blocks[..at]
             .iter()
             .rev()
-            .find(|(language, _)| language == "yaml")
-            .unwrap_or_else(|| panic!("ruby block {at} has no yaml block above it"));
+            .find(|block| block.info == "yaml")
+            .unwrap_or_else(|| panic!("ruby block {at} has no yaml block above it"))
+            .body
+            .as_str();
         let value: serde_yaml_ng::Value =
             serde_yaml_ng::from_str(yaml).unwrap_or_else(|e| panic!("yaml above {at}: {e}"));
         let entry = match value.get("homebrew_casks") {

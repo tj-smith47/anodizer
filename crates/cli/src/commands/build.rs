@@ -352,11 +352,8 @@ mod tests {
         let produced = refuse_ambiguous_output(&ctx_for(config, &[]), true)
             .unwrap_err()
             .to_string();
-        let page = std::fs::read_to_string(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../docs/site/content/docs/builds/single-target.md"
-        ))
-        .unwrap();
+        let page =
+            anodizer_core::test_helpers::docs_pages::read_docs_page("builds/single-target.md");
         let quoted: Vec<&str> = page
             .lines()
             .filter_map(|line| line.trim_start().strip_prefix("Error "))

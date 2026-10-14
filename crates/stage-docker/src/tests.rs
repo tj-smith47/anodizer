@@ -24,6 +24,7 @@ use tempfile::TempDir;
 use anodizer_core::artifact::ArtifactKind;
 use anodizer_core::config::{SkipPushConfig, StringOrBool};
 use anodizer_core::stage::Stage;
+use anodizer_core::test_helpers::docs_pages::{FencedBlock, fenced_blocks, read_docs_page};
 
 #[test]
 fn docker_collect_crates_sees_workspace_only_crate() {
@@ -7926,11 +7927,7 @@ fn a_dry_run_marks_no_image_as_pushed() {
 /// machine the suite runs on.
 #[test]
 fn the_refusals_quoted_in_the_podman_docs_are_what_the_checks_produce() {
-    let path = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../docs/site/content/docs/packages/podman.md"
-    );
-    let page = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("read {path}: {e}"));
+    let page = read_docs_page("packages/podman.md");
     let quoted: Vec<String> = page
         .lines()
         .filter_map(|line| line.trim_start().strip_prefix("Error "))
@@ -8204,61 +8201,8 @@ fn manifest_push_flags_are_rendered_onto_the_push_command() {
 // docker pages: config blocks and quoted output
 // ---------------------------------------------------------------------------
 
-/// A docs page under `docs/site/content/docs/`.
-fn docs_page(relative: &str) -> String {
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../docs/site/content/docs")
-        .join(relative);
-    fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()))
-}
-
-/// Every fenced block on `page` as `(language, body)`, in page order.
-fn fenced_blocks(page: &str) -> Vec<(String, String)> {
-    // A fence is a run of three or more backticks or tildes, indented or
-    // not; only a run of the same character at least as long, with nothing
-    // after it, closes it, so a shorter run inside the block is body text.
-    fn fence(line: &str) -> Option<(char, usize, &str)> {
-        let line = line.trim_start();
-        let c = line.chars().next().filter(|c| *c == '`' || *c == '~')?;
-        let len = line.len() - line.trim_start_matches(c).len();
-        (len >= 3).then(|| (c, len, line[len..].trim()))
-    }
-    let mut blocks = Vec::new();
-    let mut open: Option<(char, usize, String, String)> = None;
-    for line in page.lines() {
-        match (fence(line), open.take()) {
-            (Some((c, len, "")), Some((oc, olen, language, body))) if c == oc && len >= olen => {
-                blocks.push((language, body));
-            }
-            (_, Some((oc, olen, language, mut body))) => {
-                body.push_str(line);
-                body.push('\n');
-                open = Some((oc, olen, language, body));
-            }
-            (Some((c, len, language)), None) => {
-                open = Some((c, len, language.to_string(), String::new()));
-            }
-            (None, None) => {}
-        }
-    }
-    blocks
-}
-
-#[test]
-fn fenced_blocks_reads_indented_long_and_tilde_fences() {
-    let page = "  ```yaml\n  a: 1\n  ```\n````text\n```\n````\n~~~dockerfile\nFROM x\n~~~\n";
-    assert_eq!(
-        fenced_blocks(page),
-        [
-            ("yaml".to_string(), "  a: 1\n".to_string()),
-            ("text".to_string(), "```\n".to_string()),
-            ("dockerfile".to_string(), "FROM x\n".to_string()),
-        ]
-    );
-}
-
 /// The fenced blocks of one `## ` section of `page`.
-fn section_blocks(page: &str, heading: &str) -> Vec<(String, String)> {
+fn section_blocks(page: &str, heading: &str) -> Vec<FencedBlock> {
     let start = page
         .find(&format!("\n{heading}\n"))
         .unwrap_or_else(|| panic!("no `{heading}` heading"));
@@ -8291,9 +8235,11 @@ fn every_config_block_on_the_docker_pages_loads_and_matches_the_schema() {
     let mut failures: Vec<String> = Vec::new();
     for page in ["packages/docker.md", "packages/docker-manifests.md"] {
         let mut blocks: Vec<String> = Vec::new();
-        for (language, body) in fenced_blocks(&docs_page(page)) {
-            match language.as_str() {
-                "yaml" => blocks.push(body),
+        for block in fenced_blocks(&read_docs_page(page)) {
+            // The whole info string is matched, so a tagged fence
+            // (`yaml,fragment`) is refused along with an unknown language.
+            match block.info.as_str() {
+                "yaml" => blocks.push(block.body),
                 "text" | "dockerfile" => {}
                 // A `yml` or `yaml title=…` fence would otherwise escape the
                 // config check unread.
@@ -8331,13 +8277,16 @@ fn the_push_command_quoted_in_the_docker_manifests_docs_is_what_the_stage_runs()
     use anodizer_core::context::{Context, ContextOptions};
     use anodizer_core::test_helpers::fake_tool::FakeToolDir;
 
-    let blocks = section_blocks(&docs_page("packages/docker-manifests.md"), "## Push flags");
+    let blocks = section_blocks(
+        &read_docs_page("packages/docker-manifests.md"),
+        "## Push flags",
+    );
     assert_eq!(blocks.len(), 2, "{blocks:?}");
     assert_eq!(
-        (blocks[0].0.as_str(), blocks[1].0.as_str()),
+        (blocks[0].info.as_str(), blocks[1].info.as_str()),
         ("yaml", "text")
     );
-    let krate = docs_crate(&blocks[0].1);
+    let krate = docs_crate(&blocks[0].body);
     let manifest_cfg = krate.docker_manifests.clone().unwrap().remove(0);
 
     let tools = FakeToolDir::new();
@@ -8369,7 +8318,7 @@ fn the_push_command_quoted_in_the_docker_manifests_docs_is_what_the_stage_runs()
         .filter(|argv| argv.get(1).map(String::as_str) == Some("push"))
         .map(|argv| format!("docker {}", argv.join(" ")))
         .collect();
-    let quoted: Vec<String> = blocks[1].1.lines().map(str::to_string).collect();
+    let quoted: Vec<String> = blocks[1].body.lines().map(str::to_string).collect();
     assert_eq!(pushed, quoted);
 }
 
@@ -8380,13 +8329,16 @@ fn the_annotations_quoted_in_the_docker_docs_are_what_the_build_command_carries(
     use anodizer_core::config::Config;
     use anodizer_core::context::{Context, ContextOptions};
 
-    let blocks = section_blocks(&docs_page("packages/docker.md"), "## Annotation scopes");
+    let blocks = section_blocks(
+        &read_docs_page("packages/docker.md"),
+        "## Annotation scopes",
+    );
     assert_eq!(blocks.len(), 2, "{blocks:?}");
     assert_eq!(
-        (blocks[0].0.as_str(), blocks[1].0.as_str()),
+        (blocks[0].info.as_str(), blocks[1].info.as_str()),
         ("yaml", "text")
     );
-    let mut krate = docs_crate(&blocks[0].1);
+    let mut krate = docs_crate(&blocks[0].body);
     let tmp = TempDir::new().unwrap();
     let dockerfile = tmp.path().join("Dockerfile");
     fs::write(&dockerfile, "FROM scratch\n").unwrap();
@@ -8423,7 +8375,7 @@ fn the_annotations_quoted_in_the_docker_docs_are_what_the_build_command_carries(
         .skip(1)
         .map(|rest| format!("--annotation {}", rest.split(" --").next().unwrap()))
         .collect();
-    let quoted: Vec<String> = blocks[1].1.lines().map(str::to_string).collect();
+    let quoted: Vec<String> = blocks[1].body.lines().map(str::to_string).collect();
     assert_eq!(carried, quoted);
 }
 

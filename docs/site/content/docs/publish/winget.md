@@ -315,6 +315,7 @@ The per-installer `Dependencies` block is emitted into the installer manifest
 declares only the dependencies that match its architecture:
 
 ```yaml
+# not an anodizer config
 Installers:
 - Architecture: x64
   InstallerUrl: https://.../myapp-x64.zip
@@ -357,6 +358,7 @@ crates:
 renders into `PackageId.locale.en-US.yaml`:
 
 ```yaml
+# not an anodizer config
 Documentations:
 - DocumentLabel: Documentation
   DocumentUrl: https://tj-smith47.github.io/anodizer

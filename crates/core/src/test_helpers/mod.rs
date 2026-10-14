@@ -18,6 +18,7 @@
 //! - [`create_config`] — writes `.anodizer.yaml`
 //! - [`make_git_info`] — creates a [`GitInfo`] with sensible defaults
 //! - [`create_fake_binary`] — creates a dummy binary file for archive/checksum tests
+//! - [`docs_pages`] — the docs pages and READMEs, and the fenced blocks on them
 //! - [`bool_spellings`] — the spellings and outcomes the docs list for each bool-or-template field
 //! - [`test_sources`] — what counts as a whole test source file, shared with
 //!   the `.claude/scripts/**` scanners
@@ -28,6 +29,7 @@
 
 pub mod artifact_set;
 pub mod bool_spellings;
+pub mod docs_pages;
 pub mod env;
 pub mod fake_tool;
 pub mod https_responder;

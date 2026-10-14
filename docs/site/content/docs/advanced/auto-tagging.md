@@ -449,6 +449,7 @@ pushed tag.
 ## GitHub Actions: single-crate repo
 
 ```yaml
+# not an anodizer config
 - uses: tj-smith47/anodizer-action@v1
   with:
     args: tag --push
@@ -466,6 +467,7 @@ For multi-crate workspaces, tag each crate independently so each gets its
 own `release.yml` run:
 
 ```yaml
+# not an anodizer config
 - uses: tj-smith47/anodizer-action@v1
   with:
     install-only: true

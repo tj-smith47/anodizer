@@ -959,11 +959,7 @@ mod tests {
     /// time and nothing else would catch it.
     #[test]
     fn the_docker_args_default_documented_is_the_constant() {
-        let path = concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../docs/site/content/docs/sign/docker.md"
-        );
-        let page = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("read {path}: {e}"));
+        let page = crate::test_helpers::docs_pages::read_docs_page("sign/docker.md");
         let row = page
             .lines()
             .find(|line| line.starts_with("| `args` |"))

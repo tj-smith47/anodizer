@@ -4353,11 +4353,8 @@ fn crates_to_verify_keeps_every_published_crate_when_nothing_was_skipped() {
 /// itself, read off the run's log capture.
 #[test]
 fn the_findings_quoted_in_the_verify_release_docs_are_what_the_gate_produces() {
-    let path = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../docs/site/content/docs/advanced/verify-release.md"
-    );
-    let page = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("read {path}: {e}"));
+    let page =
+        anodizer_core::test_helpers::docs_pages::read_docs_page("advanced/verify-release.md");
     let quoted = |label: &str| -> Vec<String> {
         page.lines()
             .filter_map(|line| line.trim_start().strip_prefix(label))

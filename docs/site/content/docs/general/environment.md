@@ -107,6 +107,6 @@ the suffixes above.
 
 All environment variables (both config-defined and inherited from the shell) are accessible in templates:
 
-```yaml
+```yaml,fragment
 name_template: "{{ ProjectName }}-{{ Env.BUILD_NUMBER }}"
 ```

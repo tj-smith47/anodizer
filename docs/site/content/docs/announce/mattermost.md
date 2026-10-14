@@ -33,7 +33,9 @@ The `channel`, `username`, and `icon_url` fields are all optional. An omitted `u
 Store the webhook URL in an environment variable rather than committing it to your config file. When `webhook_url` is unset, anodizer falls back to the `MATTERMOST_WEBHOOK` env var:
 
 ```yaml
-webhook_url: "{{ Env.MATTERMOST_WEBHOOK }}"
+announce:
+  mattermost:
+    webhook_url: "{{ Env.MATTERMOST_WEBHOOK }}"
 ```
 
 | Field | Type | Description |

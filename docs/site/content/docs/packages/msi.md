@@ -37,10 +37,10 @@ crates:
         extra_files: []               # optional; plain filename strings copied into the WiX build context
         extensions: []                # optional; WiX extensions to enable (template per entry)
         if: ""                        # optional; empty imposes no gate; a non-blank one skips when it renders false, 0, no or empty
-        disable: false                # optional (alias for skip)
+        skip: false                   # optional; bool or template string
         hooks:
-          before: []                  # optional; commands to run before the WiX build
-          after: []                   # optional; commands to run after the WiX build
+          pre: []                     # optional; commands to run before the WiX build
+          post: []                    # optional; commands to run after the WiX build
 ```
 
 ## Authentication
@@ -95,9 +95,9 @@ The WiX version is determined in this order:
 | `extra_files` | list | | Plain filename strings (not `{src, dst}` objects) copied into the WiX build context alongside the rendered `.wxs`. |
 | `extensions` | list | | WiX extensions to enable (e.g. `WixUIExtension`). Each entry is a template. |
 | `if` | string | | Skip this config when the rendered value is `false`, `0`, `no` or empty, in any letter case. Anodizer-additive — see note below. An absent, empty or blank `if:` imposes no gate and always runs; the falsy test applies to what a non-blank gate renders. |
-| `disable` / `skip` | bool or string | `false` | Skip this MSI config. Accepts a bool or a template string. |
-| `hooks.before` | list | | Commands to run before the WiX build. |
-| `hooks.after` | list | | Commands to run after the WiX build. Receives `ArtifactPath`, `ArtifactName`, and `ArtifactExt`. |
+| `skip` | bool or string | `false` | Skip this MSI config. Accepts a bool or a template string. The older spelling `disable` still loads, with a deprecation warning. |
+| `hooks.pre` | list | | Commands to run before the WiX build. |
+| `hooks.post` | list | | Commands to run after the WiX build. Receives `ArtifactPath`, `ArtifactName`, and `ArtifactExt`. |
 
 ## Template variables in `.wxs`
 
@@ -140,18 +140,20 @@ light  -nologo dist/windows/myapp_x64.wixobj -o dist/windows/myapp_x64.msi
 Pre- and post-build hooks let you run arbitrary commands around the WiX toolchain.
 
 ```yaml
-msis:
-  - wxs: installer/myapp.wxs
-    hooks:
-      before:
-        - make generate-resources
-      after:
-        - codesign {{ ArtifactPath }}
+crates:
+  - name: myapp
+    msis:
+      - wxs: installer/myapp.wxs
+        hooks:
+          pre:
+            - make generate-resources
+          post:
+            - codesign {{ ArtifactPath }}
 ```
 
 ### Post-hook template variables
 
-Post-hooks (`after:`) receive the following additional template variables that describe the produced artifact:
+Post-hooks (`post:`) receive the following additional template variables that describe the produced artifact:
 
 | Variable | Description |
 |----------|-------------|
@@ -159,11 +161,11 @@ Post-hooks (`after:`) receive the following additional template variables that d
 | `{{ ArtifactName }}` | Filename only (e.g. `myapp_x64.msi`). |
 | `{{ ArtifactExt }}` | Extension (`.msi`). |
 
-Pre-hooks (`before:`) do not receive these variables — no `.msi` exists yet when they run.
+Pre-hooks (`pre:`) do not receive these variables — no `.msi` exists yet when they run.
 
 ### Hook failure behavior
 
-A failing `before:` hook aborts the entire MSI stage for that crate, matching `before:` semantics in adjacent stages. A failing `after:` hook likewise aborts the stage.
+A failing `pre:` hook aborts the entire MSI stage for that crate, as a failing build `pre:` hook does. A failing `post:` hook likewise aborts the stage.
 
 ## WiX v3 extensions behavior
 
@@ -223,9 +225,9 @@ crates:
         extensions:
           - WixUIExtension
         hooks:
-          before:
+          pre:
             - make generate-wix-resources
-          after:
+          post:
             - codesign {{ ArtifactPath }}
 ```
 

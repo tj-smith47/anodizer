@@ -3025,11 +3025,7 @@ fn plan_version_files_rewrites_skips_group_with_no_old_version() {
 /// lines have to be exactly what the real code emitted.
 #[test]
 fn the_lines_quoted_in_the_version_files_docs_are_what_the_commands_produce() {
-    let path = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../docs/site/content/docs/general/version-files.md"
-    );
-    let page = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("read {path}: {e}"));
+    let page = anodizer_core::test_helpers::docs_pages::read_docs_page("general/version-files.md");
     let quoted = |label: &str| -> Vec<String> {
         page.lines()
             .filter_map(|line| line.trim_start().strip_prefix(label))
@@ -3140,11 +3136,7 @@ fn the_lines_quoted_in_the_version_files_docs_are_what_the_commands_produce() {
 /// prints.
 #[test]
 fn the_refusal_quoted_in_the_changelog_docs_is_what_the_guard_produces() {
-    let path = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../docs/site/content/docs/more/changelog.md"
-    );
-    let page = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("read {path}: {e}"));
+    let page = anodizer_core::test_helpers::docs_pages::read_docs_page("more/changelog.md");
     let quoted: Vec<String> = page
         .lines()
         .filter_map(|line| line.trim_start().strip_prefix("Error "))

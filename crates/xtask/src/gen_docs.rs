@@ -1020,11 +1020,8 @@ mod tests {
     /// description) splits a cell.
     #[test]
     fn every_configuration_reference_row_has_the_header_cell_count() {
-        let reference = std::fs::read_to_string(
-            Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("../../docs/site/content/docs/reference/configuration.md"),
-        )
-        .expect("read configuration.md");
+        let reference =
+            anodizer_core::test_helpers::docs_pages::read_docs_page("reference/configuration.md");
         let cells = |line: &str| {
             let mut count = 0;
             let mut escaped = false;
@@ -1072,11 +1069,8 @@ mod tests {
         const SHAPES: &[&str] = &[
             "any", "bool", "integer", "list", "map", "number", "object", "string",
         ];
-        let reference = std::fs::read_to_string(
-            Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("../../docs/site/content/docs/reference/configuration.md"),
-        )
-        .expect("read configuration.md");
+        let reference =
+            anodizer_core::test_helpers::docs_pages::read_docs_page("reference/configuration.md");
         let mut rows = 0;
         let mut bad = Vec::new();
         let mut in_field_table = false;

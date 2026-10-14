@@ -66,11 +66,7 @@ pub struct DocumentedRow {
 /// is trimmed and read in any letter case. Panics when the section, a
 /// column or the row is missing.
 pub fn documented_bool_row(field: &str) -> DocumentedRow {
-    let page = std::fs::read_to_string(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../docs/site/content/docs/general/templates.md"
-    ))
-    .expect("read the templates docs page");
+    let page = super::docs_pages::read_docs_page("general/templates.md");
     bool_row_in(&page, field)
 }
 

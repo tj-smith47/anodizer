@@ -187,6 +187,7 @@ When an artifact has arch `"all"`, it is expanded into separate entries for both
 ### Example generated manifest
 
 ```yaml
+# not an anodizer config
 apiVersion: krew.googlecontainertools.github.com/v1alpha2
 kind: Plugin
 metadata:

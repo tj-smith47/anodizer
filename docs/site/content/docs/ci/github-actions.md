@@ -12,6 +12,7 @@ For the complete list of inputs and outputs, see [anodizer-action reference](@/d
 ## Basic release
 
 ```yaml
+# not an anodizer config
 name: Release
 
 on:
@@ -51,6 +52,7 @@ release:
 ## With signing keys
 
 ```yaml
+# not an anodizer config
 - uses: tj-smith47/anodizer-action@v1
   with:
     auto-install: true
@@ -70,6 +72,7 @@ The preflight parses every configured key (GPG, cosign, SSH) before any stage ru
 Run `anodizer tag --push` on every push to the default branch (`--push` pushes the tag to the remote — a bare `tag` stays local). Use a PAT (not `GITHUB_TOKEN`) so the pushed tag triggers downstream tag-scoped workflows like `release.yml`:
 
 ```yaml
+# not an anodizer config
 name: CI
 
 on:
@@ -113,6 +116,7 @@ pushes the new tag. See [Auto-Tagging](@/docs/advanced/auto-tagging.md) for deta
 For multi-crate workspaces, tag each crate independently so each gets its own `release.yml` run. `install-only: true` installs the binary to `PATH` without running anodizer — you drive the loop yourself:
 
 ```yaml
+# not an anodizer config
       - uses: tj-smith47/anodizer-action@v1
         with:
           install-only: true
@@ -140,6 +144,7 @@ Each crate uses its own `tag_template` (e.g., `my-core-v{{ Version }}`) for both
 When a tag arrives, resolve it to its owning crate and release only that crate. `resolve-workspace: true` populates the `workspace`, `crate-path`, and `has-builds` outputs from the triggering tag:
 
 ```yaml
+# not an anodizer config
 name: Release
 
 on:
@@ -192,6 +197,7 @@ jobs:
 When you have a separate `ci.yml` that builds and uploads an anodizer binary per commit, downstream release jobs can reuse it without reinstalling. Set `artifact-run-id: auto` to resolve the run from the current commit SHA:
 
 ```yaml
+# not an anodizer config
 # ci.yml — builds and uploads anodizer once per commit
 - uses: actions/upload-artifact@v4
   with:
@@ -217,6 +223,7 @@ This avoids a cold `cargo install` on every release run.
 If you can't use the action (e.g., a self-hosted environment that can't pull from the Marketplace), install anodizer directly. You'll need to handle dependencies and key imports yourself.
 
 ```yaml
+# not an anodizer config
 - uses: dtolnay/rust-toolchain@stable
 - uses: Swatinem/rust-cache@v2
 - run: cargo install anodizer

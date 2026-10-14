@@ -9485,11 +9485,7 @@ fn binary_sign_collision_error(
 #[cfg(unix)]
 #[test]
 fn the_collision_errors_quoted_in_the_sign_docs_are_the_messages_the_stage_produces() {
-    let path = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../docs/site/content/docs/sign/binaries-archives.md"
-    );
-    let page = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("read {path}: {e}"));
+    let page = anodizer_core::test_helpers::docs_pages::read_docs_page("sign/binaries-archives.md");
     let quoted: Vec<&str> = page
         .lines()
         .filter_map(|line| line.trim_start().strip_prefix("Error "))

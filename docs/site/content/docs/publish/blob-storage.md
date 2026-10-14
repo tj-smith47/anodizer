@@ -22,10 +22,12 @@ Default: **`false`** — a blob storage upload failure is logged but does not fa
 Set `required: true` to make the release exit non-zero if this publisher fails:
 
 ```yaml
-blobs:
-  - provider: s3
-    bucket: my-release-bucket
-    required: true
+crates:
+  - name: myapp
+    blobs:
+      - provider: s3
+        bucket: my-release-bucket
+        required: true
 ```
 
 See [Publish overview — the `required:` field](../) for the full semantics.
@@ -43,25 +45,27 @@ crates:
 ## Full config reference
 
 ```yaml
-blobs:
-  - id: ""                                     # optional; unique identifier
-    provider: s3                               # required; s3 | gcs (gs) | azblob (azure)
-    bucket: "my-bucket"                        # required; supports templates
-    directory: "{{ ProjectName }}/{{ Tag }}"   # optional; key prefix (template)
-    region: us-east-1                          # optional; AWS region (template)
-    endpoint: ""                               # optional; custom endpoint for S3-compatible backends
-    disable_ssl: false                         # optional; disable TLS (S3 only)
-    s3_force_path_style: false                 # optional; auto-true when endpoint is set
-    acl: ""                                    # optional; e.g. public-read, private
-    cache_control: ""                          # optional; string or list
-    content_disposition: "attachment;filename={{Filename}}"  # optional; "-" to disable
-    kms_key: ""                                # optional; AWS KMS key ARN (S3 only)
-    ids: []                                    # optional; filter by artifact IDs
-    exclude: []                                # optional; drop artifacts whose name matches a glob
-    disable: false                             # optional; bool or template string
-    include_meta: false                        # optional; also upload metadata.json
-    extra_files: []                            # optional; additional files to upload
-    extra_files_only: false                    # optional; skip artifacts, upload only extra_files
+crates:
+  - name: myapp
+    blobs:
+      - id: ""                                     # optional; unique identifier
+        provider: s3                               # required; s3 | gcs (gs) | azblob (azure)
+        bucket: "my-bucket"                        # required; supports templates
+        directory: "{{ ProjectName }}/{{ Tag }}"   # optional; key prefix (template)
+        region: us-east-1                          # optional; AWS region (template)
+        endpoint: ""                               # optional; custom endpoint for S3-compatible backends
+        disable_ssl: false                         # optional; disable TLS (S3 only)
+        s3_force_path_style: false                 # optional; auto-true when endpoint is set
+        acl: ""                                    # optional; e.g. public-read, private
+        cache_control: ""                          # optional; string or list
+        content_disposition: "attachment;filename={{Filename}}"  # optional; "-" to disable
+        kms_key: ""                                # optional; AWS KMS key ARN (S3 only)
+        ids: []                                    # optional; filter by artifact IDs
+        exclude: []                                # optional; drop artifacts whose name matches a glob
+        skip: false                                # optional; bool or template string
+        include_meta: false                        # optional; also upload metadata.json
+        extra_files: []                            # optional; additional files to upload
+        extra_files_only: false                    # optional; skip artifacts, upload only extra_files
 ```
 
 ## Excluding sidecars with `exclude`
@@ -75,13 +79,15 @@ every artifact whose name matches at least one glob from **this blob target
 only** — other destinations still receive the full set.
 
 ```yaml
-blobs:
-  - provider: s3
-    bucket: my-mirror
-    exclude:
-      - "*.sha256"      # checksum sidecars
-      - "*.sig"         # cosign / GPG signatures
-      - "*.cdx.json"    # CycloneDX SBOMs
+crates:
+  - name: myapp
+    blobs:
+      - provider: s3
+        bucket: my-mirror
+        exclude:
+          - "*.sha256"      # checksum sidecars
+          - "*.sig"         # cosign / GPG signatures
+          - "*.cdx.json"    # CycloneDX SBOMs
 ```
 
 `exclude` composes with `ids:` — an artifact uploads only when it passes both
@@ -131,7 +137,7 @@ Application Default Credentials (ADC) via `gcloud auth application-default login
 ## Common gotchas
 
 - **`s3_force_path_style`** defaults to `true` when `endpoint` is set. Virtual-hosted style (`https://<bucket>.s3.amazonaws.com`) is only valid for AWS proper — S3-compatible backends (MinIO, R2, Spaces) require path style.
-- **`disable` template**: the `disable` field accepts a template string, enabling conditional skip: `"{{ if IsSnapshot }}true{{ end }}"` skips blob upload for snapshot builds. A render of `true` or `1`, in any letter case, skips (see [bool-or-template values](@/docs/general/templates.md#bool-or-template-values)).
+- **`skip` template**: the `skip` field accepts a template string, enabling conditional skip: `"{{ if IsSnapshot }}true{{ end }}"` skips blob upload for snapshot builds. A render of `true` or `1`, in any letter case, skips (see [bool-or-template values](@/docs/general/templates.md#bool-or-template-values)).
 - **`content_disposition: "-"`**: set to the literal string `"-"` to disable the `Content-Disposition` header entirely (useful for direct-browser-download use cases).
 - **Large files are streamed** in 10 MiB multipart parts, which changes the permissions an S3 identity needs and the object's ETag. See [How a file is uploaded](#how-a-file-is-uploaded).
 - **A killed run can leave multipart parts behind.** They are invisible in a bucket listing and billed until removed. See [Incomplete multipart uploads](#incomplete-multipart-uploads).
@@ -311,13 +317,15 @@ A `kms_key` written as a URL encrypts each file on the runner before upload, thr
 | `azurekeyvault://…` | `azblob` | `az` | 446 bytes with a 4096-bit RSA key (318 with 3072-bit, 190 with 2048-bit); the algorithm is `RSA-OAEP-256` |
 
 ```yaml
-blobs:
-  - provider: gcs
-    bucket: my-gcs-bucket
-    kms_key: gcpkms://projects/p/locations/global/keyRings/r/cryptoKeys/k
-    extra_files_only: true          # small files only
-    extra_files:
-      - glob: dist/checksums.txt
+crates:
+  - name: myapp
+    blobs:
+      - provider: gcs
+        bucket: my-gcs-bucket
+        kms_key: gcpkms://projects/p/locations/global/keyRings/r/cryptoKeys/k
+        extra_files_only: true          # small files only
+        extra_files:
+          - glob: dist/checksums.txt
 ```
 
 anodizer enforces the larger ceiling of each provider itself. Under a smaller Azure key or an HSM-protected Cloud KMS key the provider refuses the file, and the error names the smaller limit. An Azure key is written `azurekeyvault://<vault>/keys/<name>`, with an optional `/<version>` after the name. A plain key ARN or ID (no URL scheme) is server-side encryption on S3 and has no size limit.
@@ -343,7 +351,7 @@ Each component of the URL is handed to the provider's CLI as a command-line argu
 | `content_disposition` | string | `attachment;filename={{Filename}}` | HTTP `Content-Disposition` header. Set to `-` to disable. Supports templates (includes `{{ Filename }}`). |
 | `kms_key` | string | | A plain AWS KMS key ARN or ID: server-side encryption (S3 only). An `awskms://`, `gcpkms://` or `azurekeyvault://` URL: [client-side encryption](#client-side-encryption), with a per-provider file size limit. |
 | `ids` | list | all | Filter to artifacts with these IDs. |
-| `disable` | bool or template | `false` | Skip this blob config. Accepts a bool or a template string (e.g. `"{{ if IsSnapshot }}true{{ end }}"`). |
+| `skip` | bool or template | `false` | Skip this blob config. Accepts a bool or a template string (e.g. `"{{ if IsSnapshot }}true{{ end }}"`). |
 | `include_meta` | bool | `false` | Also upload `metadata.json`. The sibling `dist/artifacts.json` manifest is never uploaded. |
 | `extra_files` | list | | Additional files to upload. Supports glob patterns and optional name templates. |
 | `extra_files_only` | bool | `false` | Upload only `extra_files`; skip all artifact uploads. |
@@ -358,10 +366,15 @@ Each entry under `extra_files` can have:
 | `name` / `name_template` | Override the upload filename. Supports templates including `{{ Filename }}`. |
 
 ```yaml
-extra_files:
-  - glob: dist/checksums.txt
-  - glob: "release-notes/*.md"
-    name: "release-notes-{{ Version }}.md"
+crates:
+  - name: myapp
+    blobs:
+      - provider: s3
+        bucket: my-bucket
+        extra_files:
+          - glob: dist/checksums.txt
+          - glob: "release-notes/*.md"
+            name: "release-notes-{{ Version }}.md"
 ```
 
 ## S3-compatible backends
@@ -371,31 +384,37 @@ Any S3-compatible service can be used by setting `endpoint`. When `endpoint` is 
 ### MinIO
 
 ```yaml
-blobs:
-  - provider: s3
-    bucket: my-bucket
-    endpoint: http://minio.internal:9000
-    region: us-east-1
+crates:
+  - name: myapp
+    blobs:
+      - provider: s3
+        bucket: my-bucket
+        endpoint: http://minio.internal:9000
+        region: us-east-1
 ```
 
 ### Cloudflare R2
 
 ```yaml
-blobs:
-  - provider: s3
-    bucket: my-bucket
-    endpoint: https://<account-id>.r2.cloudflarestorage.com
-    region: auto
+crates:
+  - name: myapp
+    blobs:
+      - provider: s3
+        bucket: my-bucket
+        endpoint: https://<account-id>.r2.cloudflarestorage.com
+        region: auto
 ```
 
 ### DigitalOcean Spaces
 
 ```yaml
-blobs:
-  - provider: s3
-    bucket: my-space
-    endpoint: https://nyc3.digitaloceanspaces.com
-    region: nyc3
+crates:
+  - name: myapp
+    blobs:
+      - provider: s3
+        bucket: my-space
+        endpoint: https://nyc3.digitaloceanspaces.com
+        region: nyc3
 ```
 
 ## Full example

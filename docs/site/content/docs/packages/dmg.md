@@ -91,8 +91,10 @@ DMG only processes binary artifacts targeting Darwin (macOS). Binaries for other
 The volume label is set to the project name by default. Override with `volume_name:` — it supports the same template variables as `name`.
 
 ```yaml
-dmgs:
-  - volume_name: "{{ ProjectName }} Installer"
+crates:
+  - name: myapp
+    dmgs:
+      - volume_name: "{{ ProjectName }} Installer"
 ```
 
 ## `/Applications` symlink
@@ -110,9 +112,12 @@ On Windows hosts the symlink may not resolve correctly — this matches GoReleas
 When a glob pattern matches more than one file, `name_template` cannot be used (it would overwrite every matched file to the same destination). anodizer bails with an error in this case. Use a more specific glob or omit `name_template` to preserve each file's original name.
 
 ```yaml
-extra_files:
-  - glob: "dist/readme-*.md"
-    name_template: "README.md"   # error if glob matches > 1 file
+crates:
+  - name: myapp
+    dmgs:
+      - extra_files:
+          - glob: "dist/readme-*.md"
+            name_template: "README.md"   # error if glob matches > 1 file
 ```
 
 ## Background images and icon layout

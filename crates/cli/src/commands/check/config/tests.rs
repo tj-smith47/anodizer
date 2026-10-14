@@ -1,5 +1,6 @@
 use super::*;
 use anodizer_core::config::{Config, CrateConfig, WorkspaceConfig};
+use anodizer_core::test_helpers::docs_pages::{fenced_blocks, read_docs_page};
 use std::fs;
 use tempfile::tempdir;
 
@@ -3643,23 +3644,19 @@ fn signing_tools_silent_when_no_signing_configured() {
 /// check function and are pinned in `crates/stage-sign/src/tests.rs`.
 #[test]
 fn every_warning_quoted_in_the_sign_docs_is_a_message_the_checks_produce() {
-    let path = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../docs/site/content/docs/sign/binaries-archives.md"
-    );
-    let page = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("read {path}: {e}"));
+    let page = read_docs_page("sign/binaries-archives.md");
     let blocks = fenced_blocks(&page);
 
     let mut fixtures = 0usize;
     let mut refused = 0usize;
-    for (at, (language, body)) in blocks.iter().enumerate() {
-        if *language != "yaml" {
+    for (at, block) in blocks.iter().enumerate() {
+        if block.language() != "yaml" {
             continue;
         }
         // A fragment the loader refuses is not a config the page claims to
         // show output for. The count is pinned below, so one arriving is a
         // failure rather than a silent skip.
-        let Ok(mut config) = serde_yaml_ng::from_str::<Config>(body) else {
+        let Ok(mut config) = serde_yaml_ng::from_str::<Config>(&block.body) else {
             refused += 1;
             continue;
         };
@@ -3674,8 +3671,8 @@ fn every_warning_quoted_in_the_sign_docs_is_a_message_the_checks_produce() {
 
         let quoted: Vec<String> = blocks[at + 1..]
             .iter()
-            .take_while(|(language, _)| *language != "yaml")
-            .flat_map(|(_, body)| body.lines())
+            .take_while(|block| block.language() != "yaml")
+            .flat_map(|block| block.body.lines())
             .filter_map(|line| line.trim_start().strip_prefix("Warning "))
             .map(str::to_string)
             .collect();
@@ -3693,24 +3690,6 @@ fn every_warning_quoted_in_the_sign_docs_is_a_message_the_checks_produce() {
     );
 }
 
-/// Every fenced block on a docs page as `(language, body)`, in page order.
-fn fenced_blocks(page: &str) -> Vec<(&str, &str)> {
-    let mut blocks = Vec::new();
-    let mut open: Option<(&str, usize)> = None;
-    for line in page.lines() {
-        let at = line.as_ptr() as usize - page.as_ptr() as usize;
-        match (line.strip_prefix("```"), open) {
-            (Some(_), Some((language, from))) => {
-                blocks.push((language, &page[from..at]));
-                open = None;
-            }
-            (Some(language), None) => open = Some((language.trim(), at + line.len() + 1)),
-            (None, _) => {}
-        }
-    }
-    blocks
-}
-
 /// The release-resilience page quotes the announce secret-exposure warning
 /// the same way the sign page quotes its own, and the same rewording breaks
 /// it. So that page's lint section is driven as a fixture too: its `yaml`
@@ -3721,11 +3700,7 @@ fn fenced_blocks(page: &str) -> Vec<(&str, &str)> {
 /// `Warning ` quoted anywhere else on it fails until somebody pins it too.
 #[test]
 fn the_warning_quoted_in_the_resilience_docs_is_a_message_the_check_produces() {
-    let path = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../docs/site/content/docs/advanced/release-resilience.md"
-    );
-    let page = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("read {path}: {e}"));
+    let page = read_docs_page("advanced/release-resilience.md");
     let section = page
         .split_once("### Static lint — `anodizer check config`")
         .expect("the lint section is on the page")
@@ -3733,19 +3708,19 @@ fn the_warning_quoted_in_the_resilience_docs_is_a_message_the_check_produces() {
     let blocks = fenced_blocks(section);
     let yaml = blocks
         .iter()
-        .find(|(language, _)| *language == "yaml")
+        .find(|block| block.language() == "yaml")
         .expect("the section shows a config");
     let quoted: Vec<String> = blocks
         .iter()
-        .find(|(language, _)| *language == "text")
+        .find(|block| block.language() == "text")
         .expect("the section shows the output")
-        .1
+        .body
         .lines()
         .filter_map(|line| line.trim_start().strip_prefix("Warning "))
         .map(str::to_string)
         .collect();
 
-    let mut config: Config = serde_yaml_ng::from_str(yaml.1).expect("the loader accepts it");
+    let mut config: Config = serde_yaml_ng::from_str(&yaml.body).expect("the loader accepts it");
     anodizer_core::defaults_merge::apply_defaults(&mut config);
     let mut produced: Vec<String> = vec![];
     check_announce_secret_exposure(&config, &mut produced);
@@ -3781,13 +3756,6 @@ pub(crate) fn quoted_label_lines_in_section(
         .chain(lines.take_while(|line| !line.starts_with("## ")))
         .collect();
     label_lines(&section.join("\n"), label)
-}
-
-fn read_docs_page(relative: &str) -> String {
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../docs/site/content/docs")
-        .join(relative);
-    std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()))
 }
 
 fn label_lines(text: &str, label: &str) -> Vec<String> {

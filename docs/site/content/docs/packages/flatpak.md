@@ -41,7 +41,7 @@ crates:
         extra_files: []               # optional; additional files to include
         replace: false                # optional; remove archive artifacts, keep Flatpak only
         mod_timestamp: ""             # optional; reproducible build timestamp
-        disable: false                # optional
+        skip: false                   # optional
 ```
 
 ## Authentication
@@ -95,16 +95,18 @@ Not applicable — this is a local packaging stage, not a publisher.
 Use `finish_args` to grant sandbox permissions:
 
 ```yaml
-flatpaks:
-  - app_id: com.myorg.myapp
-    runtime: org.freedesktop.Platform
-    runtime_version: "24.08"
-    sdk: org.freedesktop.Sdk
-    finish_args:
-      - "--share=network"
-      - "--share=ipc"
-      - "--socket=x11"
-      - "--filesystem=home"
+crates:
+  - name: myapp
+    flatpaks:
+      - app_id: com.myorg.myapp
+        runtime: org.freedesktop.Platform
+        runtime_version: "24.08"
+        sdk: org.freedesktop.Sdk
+        finish_args:
+          - "--share=network"
+          - "--share=ipc"
+          - "--socket=x11"
+          - "--filesystem=home"
 ```
 
 ## Full example

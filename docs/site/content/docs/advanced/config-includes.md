@@ -147,7 +147,7 @@ Given these files:
 # defaults.yaml (included file)
 dist: /default/dist
 env:
-  DEPLOY_ENV: staging
+  - DEPLOY_ENV=staging
 crates:
   - name: shared-lib
     path: crates/shared
@@ -170,7 +170,7 @@ The effective config is:
 project_name: my-app
 dist: /my/custom/dist          # base wins over include
 env:
-  DEPLOY_ENV: staging           # from include (not overridden by base)
+  - DEPLOY_ENV=staging          # from include (not overridden by base)
 crates:
   - name: shared-lib            # from include (arrays concatenate)
     path: crates/shared
@@ -258,8 +258,9 @@ changelog:
     exclude:
       - "^docs(\\(.*\\))?!?:"
       - "^test(\\(.*\\))?!?:"
-checksum:
-  algorithm: sha256
+defaults:
+  checksum:
+    algorithm: sha256
 ```
 
 ```yaml

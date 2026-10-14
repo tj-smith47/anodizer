@@ -58,7 +58,7 @@ dockerhub:
       #   url: "https://..."
       #   headers:
       #     Authorization: "token {{ Env.GITHUB_TOKEN }}"
-    disable: false                   # optional; skip this entry
+    skip: false                      # optional; skip this entry
 ```
 
 ## Authentication
@@ -82,24 +82,34 @@ dockerhub:
 | `images` | list | none | Docker Hub repository names to update |
 | `description` | string | `""` | Short description (max 100 characters) |
 | `full_description` | object | none | Full description source (see below) |
-| `disable` | string/bool | none | Disable this config |
+| `skip` | string/bool | none | Skip this config (bool or template) |
 
 ### Full description sources
 
 The `full_description` field supports loading content from a file or URL:
 
-```yaml
-# From a local file
-full_description:
-  from_file:
-    path: README.md
+From a local file:
 
-# From a URL
-full_description:
-  from_url:
-    url: "https://raw.githubusercontent.com/myorg/myapp/main/README.md"
-    headers:
-      Authorization: "token {{ Env.GITHUB_TOKEN }}"
+```yaml
+dockerhub:
+  - username: myuser
+    images: [myorg/myapp]
+    full_description:
+      from_file:
+        path: README.md
+```
+
+From a URL:
+
+```yaml
+dockerhub:
+  - username: myuser
+    images: [myorg/myapp]
+    full_description:
+      from_url:
+        url: "https://raw.githubusercontent.com/myorg/myapp/main/README.md"
+        headers:
+          Authorization: "token {{ Env.GITHUB_TOKEN }}"
 ```
 
 | Source | Fields |

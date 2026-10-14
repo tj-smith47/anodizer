@@ -1651,11 +1651,7 @@ mod tests {
     /// finding leaves the page showing bytes the binary no longer prints.
     #[test]
     fn the_abort_quoted_in_the_aur_docs_is_what_the_pass_produces() {
-        let path = concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../docs/site/content/docs/publish/aur.md"
-        );
-        let page = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("read {path}: {e}"));
+        let page = anodizer_core::test_helpers::docs_pages::read_docs_page("publish/aur.md");
         let quoted: Vec<String> = page
             .lines()
             .filter_map(|line| line.trim_start().strip_prefix("Error "))

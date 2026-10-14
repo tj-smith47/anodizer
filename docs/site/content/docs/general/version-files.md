@@ -52,6 +52,7 @@ and `check version-files` reports them stale until you sync them. Pass
 Given the latest tag `v0.1.0`, a `minor` bump, and this `Chart.yaml`:
 
 ```yaml
+# not an anodizer config
 # charts/myapp/Chart.yaml — before
 version: 0.1.0
 appVersion: v0.1.0
@@ -60,6 +61,7 @@ appVersion: v0.1.0
 `anodizer tag` rewrites it in the bump commit:
 
 ```yaml
+# not an anodizer config
 # charts/myapp/Chart.yaml — after
 version: 0.2.0
 appVersion: v0.2.0
@@ -118,6 +120,7 @@ a short note (`no version_files configured`). Wire it into CI as a pre-release
 gate:
 
 ```yaml
+# not an anodizer config
 - name: Check version files
   run: anodizer check version-files
 ```
@@ -194,6 +197,7 @@ each enrollment a `match` anchor and each rewrites only its own occurrences,
 even when both crates sit at the same literal version.
 
 ```yaml
+# not an anodizer config
 # chart/cfgd/values.yaml — two crates, one literal
 operator:
   image: ghcr.io/tj-smith47/cfgd-operator:v0.7.0
@@ -219,6 +223,7 @@ A minor bump of the operator and a patch bump of the CSI driver rewrite one pin
 each:
 
 ```yaml
+# not an anodizer config
 # chart/cfgd/values.yaml — after
 operator:
   image: ghcr.io/tj-smith47/cfgd-operator:v0.8.0

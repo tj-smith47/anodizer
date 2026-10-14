@@ -329,6 +329,7 @@ unaffected (its provenance only *records* the trigger, never gates on it), but i
 the same hosted workflow so a single job owns the whole OIDC surface.
 
 ```yaml
+# not an anodizer config
 # release.yml — on: workflow_run (after CI)
 jobs:
   publish:                       # self-hosted: everything except the OIDC publishers
@@ -346,6 +347,7 @@ jobs:
 ```
 
 ```yaml
+# not an anodizer config
 # publish-oidc.yml — on: workflow_dispatch (an accepted Trusted-Publishing trigger)
 jobs:
   publish-oidc:                  # github-hosted: npm provenance + PyPI + crates.io TP

@@ -11373,11 +11373,7 @@ mcp:
 /// tests, so a newly quoted line fails until a test holds it.
 #[test]
 fn the_rollback_policy_error_quoted_in_the_resilience_docs_is_what_validation_produces() {
-    let path = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../docs/site/content/docs/advanced/release-resilience.md"
-    );
-    let page = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("read {path}: {e}"));
+    let page = crate::test_helpers::docs_pages::read_docs_page("advanced/release-resilience.md");
     let quoted: Vec<String> = page
         .lines()
         .filter_map(|line| line.trim_start().strip_prefix("Error "))
@@ -11985,18 +11981,11 @@ fn the_bool_or_template_spellings_on_the_templates_page_are_what_the_readers_tak
         assert_eq!(enabled("anything", templated), plain(row.other));
     }
 
-    let page = std::fs::read_to_string(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../docs/site/content/docs/general/templates.md"
-    ))
-    .unwrap();
+    let page = crate::test_helpers::docs_pages::read_docs_page("general/templates.md");
     let section = page.split("\n## Bool-or-template values\n").nth(1).unwrap();
-    let example = section
-        .split("```yaml\n")
-        .nth(1)
-        .unwrap()
-        .split("```")
-        .next()
-        .unwrap();
-    serde_yaml_ng::from_str::<Config>(example).expect("the section's example loads");
+    let example = crate::test_helpers::docs_pages::fenced_blocks(section)
+        .into_iter()
+        .find(|block| block.info == "yaml")
+        .expect("the section shows a yaml example");
+    serde_yaml_ng::from_str::<Config>(&example.body).expect("the section's example loads");
 }

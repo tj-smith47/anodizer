@@ -304,7 +304,7 @@ fn the_recorded_podman_digestfile_equals_what_the_registry_served() {
 
     // The docs page reproduces this transcript, and a retyped request there
     // would document a measurement nobody made. Only the indentation differs.
-    const DOCS: &str = include_str!("../../../docs/site/content/docs/packages/podman.md");
+    let docs = anodizer_core::test_helpers::docs_pages::read_docs_page("packages/podman.md");
     let mut requests = 0;
     let mut lines = RECORDING.lines().map(str::trim).peekable();
     while let Some(line) = lines.next() {
@@ -315,7 +315,7 @@ fn the_recorded_podman_digestfile_equals_what_the_registry_served() {
         let url = lines.peek().copied().unwrap_or_default();
         for recorded in [line, url] {
             assert!(
-                DOCS.contains(recorded),
+                docs.contains(recorded),
                 "the docs page lost the measured request: {recorded}"
             );
         }
@@ -326,7 +326,7 @@ fn the_recorded_podman_digestfile_equals_what_the_registry_served() {
     // measurement that never matched.
     for digest in &digests {
         assert!(
-            DOCS.contains(digest),
+            docs.contains(digest),
             "the docs page lost the measured digest: {digest}"
         );
     }

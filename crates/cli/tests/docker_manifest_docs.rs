@@ -8,48 +8,24 @@ use std::path::Path;
 use std::process::Command;
 use tempfile::TempDir;
 
-const PAGE: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../docs/site/content/docs/packages/docker-manifests.md"
-);
+use anodizer_core::test_helpers::docs_pages::{fenced_blocks, read_docs_page};
+
+const PAGE: &str = "packages/docker-manifests.md";
 
 /// The fenced blocks of the page's "Manifests with no images" section, as
 /// `(language, body lines)`.
 fn no_images_blocks() -> Vec<(String, Vec<String>)> {
-    let page = std::fs::read_to_string(PAGE).unwrap();
+    let page = read_docs_page(PAGE);
     let section: Vec<&str> = page
         .lines()
         .skip_while(|line| *line != "## Manifests with no images")
         .skip(1)
         .take_while(|line| !line.starts_with("## "))
         .collect();
-    // A fence is a run of three or more backticks or tildes, indented or
-    // not; only a run of the same character at least as long, with nothing
-    // after it, closes it.
-    fn fence(line: &str) -> Option<(char, usize, &str)> {
-        let line = line.trim_start();
-        let c = line.chars().next().filter(|c| *c == '`' || *c == '~')?;
-        let len = line.len() - line.trim_start_matches(c).len();
-        (len >= 3).then(|| (c, len, line[len..].trim()))
-    }
-    let mut blocks = Vec::new();
-    let mut open: Option<(char, usize, String, Vec<String>)> = None;
-    for line in section {
-        match (fence(line), open.take()) {
-            (Some((c, len, "")), Some((oc, olen, language, body))) if c == oc && len >= olen => {
-                blocks.push((language, body));
-            }
-            (_, Some((oc, olen, language, mut body))) => {
-                body.push(line.to_string());
-                open = Some((oc, olen, language, body));
-            }
-            (Some((c, len, language)), None) => {
-                open = Some((c, len, language.to_string(), Vec::new()));
-            }
-            (None, None) => {}
-        }
-    }
-    blocks
+    fenced_blocks(&section.join("\n"))
+        .into_iter()
+        .map(|block| (block.info, block.body.lines().map(str::to_string).collect()))
+        .collect()
 }
 
 /// Run a dry-run release in `dir` and return its non-blank output lines, at
@@ -119,7 +95,7 @@ fn the_lines_quoted_in_the_docker_manifests_docs_are_what_a_release_prints() {
     // The section's blocks are matched above; this count reads the whole
     // page, so a `Warning ` line quoted in another section fails here until
     // it is held by a test too.
-    let page = std::fs::read_to_string(PAGE).unwrap();
+    let page = read_docs_page(PAGE);
     let warnings = page
         .lines()
         .filter(|line| line.trim_start().starts_with("Warning "))

@@ -8,6 +8,7 @@ template = "docs.html"
 ## Basic pipeline
 
 ```yaml
+# not an anodizer config
 # .gitlab-ci.yml
 release:
   stage: deploy

@@ -878,11 +878,7 @@ async fn a_multipart_upload_that_cannot_be_completed_warns_that_parts_may_remain
 /// timeout is the only thing swapped for the production one.
 #[tokio::test]
 async fn the_warning_quoted_in_the_blob_docs_is_what_an_unanswered_abort_produces() {
-    let page = std::fs::read_to_string(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../docs/site/content/docs/publish/blob-storage.md"
-    ))
-    .unwrap();
+    let page = anodizer_core::test_helpers::docs_pages::read_docs_page("publish/blob-storage.md");
     let quoted: Vec<&str> = page
         .lines()
         .filter_map(|line| line.trim_start().strip_prefix("Warning "))

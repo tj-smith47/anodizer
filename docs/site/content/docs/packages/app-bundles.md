@@ -36,7 +36,7 @@ crates:
         templated_extra_files: []     # optional; template-rendered extra files
         mod_timestamp: ""             # optional; override mtime for reproducible builds
         replace: false                # optional; remove source archives, keep app bundle
-        disable: false                # optional; bool or template string
+        skip: false                   # optional; bool or template string
 ```
 
 ## Authentication
@@ -66,22 +66,21 @@ Wire it up like this:
 ```yaml
 notarize:
   macos_native:
-    sign:
-      certificate_name: "Developer ID Application: My Org (TEAMID)"
-      entitlements: "macos/entitlements.plist"
-      options: ["runtime"]   # enables hardened runtime
-    notarize:
-      apple_id: "you@example.com"
-      team_id: "TEAMID"
-      key: "{{ Env.AC_API_KEY }}"
-      key_id: "{{ Env.AC_API_KEY_ID }}"
-      issuer: "{{ Env.AC_API_ISSUER }}"
+    - use: dmg
+      sign:
+        identity: "Developer ID Application: My Org (TEAMID)"
+        entitlements: "macos/entitlements.plist"
+        options: ["runtime"]   # enables hardened runtime
+      notarize:
+        profile_name: my-notarytool-profile
+        wait: true
 ```
 
 `entitlements` and `options: [runtime]` (hardened runtime) are not knobs on
-`app_bundles:` itself — they live on the notarize stage, which signs the
-generated `.app` and then notarizes it through Apple. See the
-[notarize docs](../general/sign/) for the full set of options.
+`app_bundles:` itself — they live on the notarize stage. Its `use: dmg` entry
+signs each generated `.app` with `codesign`, then submits the DMG built from
+it to Apple for notarization. See the
+[notarize docs](@/docs/sign/notarize.md) for the full set of options.
 
 ## App bundle config fields
 
@@ -97,20 +96,24 @@ generated `.app` and then notarizes it through Apple. See the
 | `templated_extra_files` | list | none | Template-rendered extra files |
 | `mod_timestamp` | string | none | Override mtime for reproducible builds (template) |
 | `replace` | bool | `false` | Remove source archives, keeping only the app bundle |
-| `disable` | string/bool | none | Disable this config (bool or template) |
+| `skip` | string/bool | none | Skip this config (bool or template) |
 
 ### `extra_files` shape
 
 Each entry is either a glob string or a detailed object:
 
 ```yaml
-extra_files:
-  - LICENSE                          # glob, copies into Contents/Resources/
-  - src: "docs/*.txt"                # glob with explicit destination
-    dst: "Contents/SharedSupport"
-  - src: "assets/manual.pdf"         # per-file mtime for reproducibility
-    info:
-      mtime: "{{ CommitDate }}"
+crates:
+  - name: myapp
+    app_bundles:
+      - bundle: com.example.myapp
+        extra_files:
+          - LICENSE                          # glob, copies into Contents/Resources/
+          - src: "docs/*.txt"                # glob with explicit destination
+            dst: "Contents/SharedSupport"
+          - src: "assets/manual.pdf"         # per-file mtime for reproducibility
+            info:
+              mtime: "{{ CommitDate }}"
 ```
 
 The `info` block supports `mtime` (RFC3339 or `SOURCE_DATE_EPOCH` integer

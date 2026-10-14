@@ -124,18 +124,18 @@ it is set, else with `CommitTimestamp`. A `reproducible: true` build stamps its 
 the same two values in the same order, so the binary and the archive that holds it carry one
 date. PyPI wheels and sdists use the same timestamp.
 
-You can also control archive entry metadata explicitly with `builds_info`. The
-fragments below show the `archives:` block on its own; it sits under
-`crates[].archives:` (or `defaults.archives:`), as the examples above spell out.
+You can also control archive entry metadata explicitly with `builds_info`:
 
 ```yaml
-archives:
-  - formats: [tar.gz]
-    builds_info:
-      owner: root
-      group: root
-      mode: "0755"
-      mtime: "2024-01-01T00:00:00Z"
+crates:
+  - name: myapp
+    archives:
+      - formats: [tar.gz]
+        builds_info:
+          owner: root
+          group: root
+          mode: "0755"
+          mtime: "2024-01-01T00:00:00Z"
 ```
 
 The `builds_info` fields are:
@@ -150,13 +150,15 @@ The `builds_info` fields are:
 Per-file info can also be set on individual `files` entries:
 
 ```yaml
-archives:
-  - formats: [tar.gz]
-    files:
-      - src: LICENSE
-        dst: LICENSE
-        info:
-          mode: "0644"
+crates:
+  - name: myapp
+    archives:
+      - formats: [tar.gz]
+        files:
+          - src: LICENSE
+            dst: LICENSE
+            info:
+              mode: "0644"
 ```
 
 ## Source archives

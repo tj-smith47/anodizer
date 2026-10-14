@@ -71,6 +71,7 @@ so each can carry its own secrets and retry independently. It uses
 upload-artifact/download-artifact plumbing.
 
 ```yaml
+# not an anodizer config
 name: Release
 
 on:
@@ -168,6 +169,7 @@ If you only need to separate publish from announce (without fan-out builds),
 you can skip the split/merge jobs:
 
 ```yaml
+# not an anodizer config
 jobs:
   publish:
     runs-on: ubuntu-latest
@@ -207,5 +209,6 @@ Both `anodizer publish` and `anodizer announce` support `--dry-run`. Use it in
 pull request workflows to verify configuration without sending real requests:
 
 ```yaml
+# not an anodizer config
 - run: anodizer announce --dry-run
 ```

@@ -54,6 +54,7 @@ crate — and with it the union of build targets, so any shard whose targets all
 belonged to the dropped crates fails with *no matching targets*.
 
 ```yaml
+# not an anodizer config
 args: release --nightly --split --all --force
 ```
 
@@ -171,6 +172,7 @@ To override skip behavior for a specific publisher, set `skips_on_nightly: false
 Run nightly builds on a schedule:
 
 ```yaml
+# not an anodizer config
 # GitHub Actions
 on:
   schedule:

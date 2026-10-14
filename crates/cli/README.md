@@ -257,6 +257,7 @@ Every cell of [What works (with proof)](https://tj-smith47.github.io/anodizer/do
 Anodizer ships a first-party action, [`tj-smith47/anodizer-action`](https://github.com/tj-smith47/anodizer-action), which is what this repo dogfoods in its own `release.yml`:
 
 ```yaml
+# not an anodizer config
 name: Release
 
 on:

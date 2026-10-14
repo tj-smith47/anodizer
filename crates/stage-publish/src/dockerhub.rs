@@ -2714,7 +2714,7 @@ mod live_http_tests {
     }
 
     /// `DockerhubPublisher::rollback` counts a failed restore (missing env
-    /// var) as a failure and continues — the tally reports `1 failure(s)`
+    /// var) as a failure and continues — the tally reports `1 failure`
     /// and a per-target warn names the env var. Pins the warn-don't-abort
     /// rollback contract.
     #[test]

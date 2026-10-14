@@ -229,11 +229,7 @@ fn dry_run_dispatch_emits_would_promote_and_spawns_nothing() {
 /// its channel name — is built here and the message compared with the page.
 #[test]
 fn the_abort_quoted_in_the_promote_docs_is_what_a_failed_run_produces() {
-    let path = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../docs/site/content/docs/publish/promote.md"
-    );
-    let page = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("read {path}: {e}"));
+    let page = anodizer_core::test_helpers::docs_pages::read_docs_page("publish/promote.md");
     let quoted: Vec<String> = page
         .lines()
         .filter_map(|line| line.trim_start().strip_prefix("Error "))

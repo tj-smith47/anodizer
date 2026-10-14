@@ -1517,23 +1517,22 @@ fn an_unrenderable_pull_request_token_skips_the_entry_before_any_push() {
 /// soon as it is added.
 #[test]
 fn every_ruby_example_in_the_formula_docs_is_part_of_the_render() {
-    let path = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../docs/site/content/docs/publish/homebrew.md"
-    );
-    let page = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("read {path}: {e}"));
-    let blocks = super::super::tests::docs_fenced_blocks(&page);
+    let page = anodizer_core::test_helpers::docs_pages::read_docs_page("publish/homebrew.md");
+    let blocks = anodizer_core::test_helpers::docs_pages::fenced_blocks(&page);
     let mut ruby_blocks = 0usize;
-    for (at, (language, ruby)) in blocks.iter().enumerate() {
-        if language != "ruby" {
+    for (at, block) in blocks.iter().enumerate() {
+        if block.info != "ruby" {
             continue;
         }
+        let ruby = &block.body;
         ruby_blocks += 1;
-        let (_, yaml) = blocks[..at]
+        let yaml = blocks[..at]
             .iter()
             .rev()
-            .find(|(language, _)| language == "yaml")
-            .unwrap_or_else(|| panic!("ruby block {at} has no yaml block above it"));
+            .find(|block| block.info == "yaml")
+            .unwrap_or_else(|| panic!("ruby block {at} has no yaml block above it"))
+            .body
+            .as_str();
         let value: serde_yaml_ng::Value =
             serde_yaml_ng::from_str(yaml).unwrap_or_else(|e| panic!("yaml above {at}: {e}"));
         let name = value["crates"][0]["name"]

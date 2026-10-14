@@ -563,11 +563,7 @@ mod tests {
             string("--key=cosign.key --password=hunter2hunter2", &env),
             "--key=$COSIGN_KEY --password=hunter2hunter2"
         );
-        let page = std::fs::read_to_string(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../docs/site/content/docs/general/environment.md"
-        ))
-        .expect("read docs/site/content/docs/general/environment.md");
+        let page = crate::test_helpers::docs_pages::read_docs_page("general/environment.md");
         for row in [
             "| `--key=cosign.key` | `--key=$COSIGN_KEY` |",
             "| `--password=hunter2hunter2` | `--password=hunter2hunter2` |",

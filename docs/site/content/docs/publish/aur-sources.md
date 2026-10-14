@@ -95,7 +95,7 @@ aur_sources:
       email: "bot@example.com"
     commit_msg_template: ""          # optional
     arches: []                       # optional; pacman arch=() list (default: from the Linux build targets)
-    disable: false                   # optional
+    skip: false                      # optional
 ```
 
 ## Authentication

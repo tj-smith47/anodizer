@@ -86,7 +86,7 @@ crates:
           email: ""
         commit_msg_template: ""      # optional
         skip_upload: false           # optional; true | false | "auto"
-        disable: false               # optional
+        skip: false                  # optional
 ```
 
 ### Source package (`publish.aur_source`)
@@ -123,7 +123,7 @@ crates:
           email: ""
         commit_msg_template: ""      # optional
         arches: []                   # optional; architecture filter
-        disable: false               # optional
+        skip: false                  # optional
 ```
 
 ## Authentication
@@ -397,6 +397,7 @@ AUR publishing requires SSH access. To configure this:
 
 4. **In CI**, store the private key as a secret and expose it as an environment variable:
    ```yaml
+   # not an anodizer config
    # GitHub Actions example
    env:
      AUR_SSH_KEY: ${{ secrets.AUR_SSH_KEY }}

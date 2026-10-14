@@ -104,6 +104,7 @@ entries and fans each out to the stock action via `subject-name` +
 `subject-digest` (one subject per `{ name, digest.sha256 }` pair):
 
 ```yaml
+# not an anodizer config
 # anodizer-action reads dist/attestation-subjects.json and, per entry, calls:
 - uses: actions/attest-build-provenance@v1
   with:
@@ -123,6 +124,7 @@ anodizer-action), the recommended path is `subject-checksums` pointed at the
 checksum file anodizer's `checksum` stage already writes:
 
 ```yaml
+# not an anodizer config
 # Recommended: subject-checksums reads the existing checksums.txt
 # (sha256sum format `<hex>  <name>`); no extra file is generated.
 - uses: actions/attest-build-provenance@v1
@@ -134,6 +136,7 @@ Alternatively, point `subject-path` at the real artifact globs (NOT the
 manifest) so the action hashes the files itself:
 
 ```yaml
+# not an anodizer config
 - uses: actions/attest-build-provenance@v1
   with:
     subject-path: "dist/*.tar.gz,dist/checksums.txt"

@@ -44,7 +44,7 @@ crates:
   - name: myapp
     docker_digest:
       name_template: ""              # optional; template for digest artifact filename
-      disable: false                 # optional; bool or template string
+      skip: false                    # optional; bool or template string
 ```
 
 ## Disabling digests

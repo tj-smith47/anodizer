@@ -352,10 +352,7 @@ mod tests {
 
     #[test]
     fn the_architecture_names_documented_are_what_map_target_produces() {
-        let page = include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../docs/site/content/docs/general/templates.md"
-        ));
+        let page = crate::test_helpers::docs_pages::read_docs_page("general/templates.md");
         let section = page
             .split("### Architecture names")
             .nth(1)

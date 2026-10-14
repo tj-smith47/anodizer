@@ -515,11 +515,7 @@ mod tests {
     #[test]
     fn every_srpm_field_has_a_row_in_its_docs_page() {
         let schema = serde_json::to_value(schemars::schema_for!(super::SrpmConfig)).unwrap();
-        let page = std::fs::read_to_string(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../docs/site/content/docs/packages/srpm.md"
-        ))
-        .unwrap();
+        let page = crate::test_helpers::docs_pages::read_docs_page("packages/srpm.md");
         let fields = schema["properties"].as_object().unwrap();
         let missing: Vec<&String> = fields
             .keys()

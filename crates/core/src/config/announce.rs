@@ -547,10 +547,6 @@ mod tests {
     fn every_announcer_field_has_a_row_in_its_docs_page() {
         let schema = serde_json::to_value(schemars::schema_for!(AnnounceConfig)).unwrap();
         let defs = &schema["$defs"];
-        let docs_dir = concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../docs/site/content/docs/announce/"
-        );
         // The `webhook:` block is documented on `webhooks.md`.
         let page_of = |announcer: &str| match announcer {
             "webhook" => "webhooks".to_string(),
@@ -572,8 +568,10 @@ mod tests {
                 continue;
             };
             announcers += 1;
-            let page = std::fs::read_to_string(format!("{docs_dir}{}.md", page_of(announcer)))
-                .unwrap_or_else(|e| panic!("{announcer}: no docs page: {e}"));
+            let page = crate::test_helpers::docs_pages::read_docs_page(&format!(
+                "announce/{}.md",
+                page_of(announcer)
+            ));
             for field in defs[def]["properties"].as_object().unwrap().keys() {
                 checked += 1;
                 if !page.contains(&format!("| `{field}` |")) {
@@ -667,17 +665,15 @@ announce:
     /// the reader a template there is a config error.
     #[test]
     fn every_announce_page_types_enabled_as_a_template() {
-        let dir = concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../docs/site/content/docs/announce"
-        );
+        use crate::test_helpers::docs_pages::{docs_pages, read_docs_page};
         let mut pages = 0;
-        for entry in std::fs::read_dir(dir).unwrap() {
-            let path = entry.unwrap().path();
-            if path.file_name().is_some_and(|n| n == "_index.md") {
+        for path in docs_pages() {
+            if path.parent() != Some(std::path::Path::new("announce"))
+                || path.file_name().is_some_and(|n| n == "_index.md")
+            {
                 continue;
             }
-            let text = std::fs::read_to_string(&path).unwrap();
+            let text = read_docs_page(path.to_str().expect("a UTF-8 page path"));
             let row = text
                 .lines()
                 .find(|l| l.starts_with("| `enabled` |"))

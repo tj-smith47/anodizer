@@ -141,11 +141,21 @@ defaults:
     on_error:
       - cmd: 'printf ''%s\n'' "$ANODIZER_PUBLISHER failed on $ANODIZER_TAG: $ANODIZER_ERROR"'
 
-publish:
-  cargo:
-    retain_on_rollback: true   # crates.io is permanent — skip rollback here
-  schemastore:
-    retain_on_rollback: true
+crates:
+  - name: myapp
+    publish:
+      cargo:
+        retain_on_rollback: true   # crates.io is permanent — skip rollback here
+
+schemastore:
+  repository:
+    owner: myorg
+    name: schemastore
+  schemas:
+    - name: myapp-config
+      file_match: ["myapp.yaml"]
+      url: "https://myorg.github.io/myapp/schema.json"
+  retain_on_rollback: true
 ```
 
 `retain_on_rollback` is intentional for publishers that are not reversible: once a crate is on
@@ -232,6 +242,7 @@ nightly:
 ```
 
 ```yaml
+# not an anodizer config
 # .github/workflows/nightly.yml
 - uses: tj-smith47/anodizer-action@v1
   with:

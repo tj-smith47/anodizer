@@ -856,11 +856,8 @@ mod publisher_tests {
         assert_eq!(requests.len(), 1, "{requests:?}");
         assert!(requests[0].contains("app.tar.gz"), "{}", requests[0]);
         assert!(!requests[0].contains("checksums.txt"), "{}", requests[0]);
-        let page = std::fs::read_to_string(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../docs/site/content/docs/publish/blob-storage.md"
-        ))
-        .unwrap();
+        let page =
+            anodizer_core::test_helpers::docs_pages::read_docs_page("publish/blob-storage.md");
         let quoted: Vec<&str> = page
             .lines()
             .filter_map(|line| line.trim_start().strip_prefix("Warning "))

@@ -88,6 +88,7 @@ mcp:
 The release-workflow permissions must cover both:
 
 ```yaml
+# not an anodizer config
 permissions:
   contents: write
   packages: write    # dockers_v2 push to ghcr.io
@@ -181,6 +182,7 @@ mcp:
 In a workflow, give the job permission to create the id-token:
 
 ```yaml
+# not an anodizer config
 permissions:
   contents: write
   id-token: write    # required for github-oidc
@@ -226,11 +228,12 @@ The top-level `retry:` config applies: `POST /v0/publish` calls inherit anodizer
 ### Repository
 
 ```yaml
-repository:
-  url: https://github.com/myorg/myapp
-  source: github          # github | gitlab | gitea
-  id: ""                  # optional, source-specific repo ID
-  subfolder: ""           # optional, e.g. "servers/myapp" inside a monorepo
+mcp:
+  repository:
+    url: https://github.com/myorg/myapp
+    source: github          # github | gitlab | gitea
+    id: ""                  # optional, source-specific repo ID
+    subfolder: ""           # optional, e.g. "servers/myapp" inside a monorepo
 ```
 
 All fields support Tera templates. The whole `repository` block is optional:
@@ -244,19 +247,20 @@ for you to supply rather than forced to a wrong `source`. A user-set
 Each entry describes one downloadable form of the server. List all the ones you publish; clients pick the best match for their host.
 
 ```yaml
-packages:
-  - registry_type: oci            # oci | npm | pypi | nuget
-    identifier: ghcr.io/myorg/myapp
-    transport:
-      type: stdio                 # stdio | streamable-http | sse
-  - registry_type: npm
-    identifier: "@myorg/myapp-mcp"
-    transport:
-      type: streamable-http
-      url: "https://mcp.myorg.dev/{{ .Version }}"
-      headers:
-        - name: Authorization
-          value: "Bearer {{ .Env.MCP_TOKEN }}"
+mcp:
+  packages:
+    - registry_type: oci            # oci | npm | pypi | nuget
+      identifier: ghcr.io/myorg/myapp
+      transport:
+        type: stdio                 # stdio | streamable-http | sse
+    - registry_type: npm
+      identifier: "@myorg/myapp-mcp"
+      transport:
+        type: streamable-http
+        url: "https://mcp.myorg.dev/{{ .Version }}"
+        headers:
+          - name: Authorization
+            value: "Bearer {{ .Env.MCP_TOKEN }}"
 ```
 
 | Field | Type | Description |
@@ -278,9 +282,10 @@ ignores) — see [Wiring the OCI image](#wiring-the-oci-image).
 ### Top-level transports
 
 ```yaml
-transports:
-  - type: stdio
-  - type: streamable-http
+mcp:
+  transports:
+    - type: stdio
+    - type: streamable-http
 ```
 
 Optional. The `transports:` list is accepted for GoReleaser config-portability (so a migrated `.goreleaser.yaml` doesn't error on `deny_unknown_fields`); the current MCP server schema derives transports per-package via `packages[].transport`, so this list is not emitted to the registry.

@@ -2180,11 +2180,9 @@ mod tests {
     /// list instead of claiming an exact output, so it stays out.
     #[test]
     fn the_refusals_quoted_in_the_publisher_selection_docs_are_what_the_checks_produce() {
-        let path = concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../docs/site/content/docs/publish/selecting-publishers.md"
+        let page = anodizer_core::test_helpers::docs_pages::read_docs_page(
+            "publish/selecting-publishers.md",
         );
-        let page = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("read {path}: {e}"));
         let quoted: Vec<String> = page
             .lines()
             .filter_map(|line| line.trim_start().strip_prefix("Error "))

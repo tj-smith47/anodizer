@@ -2438,11 +2438,7 @@ fn the_abort_quoted_in_the_preflight_docs_is_what_a_failed_preflight_produces() 
     };
     use std::collections::HashMap;
 
-    let path = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../docs/site/content/docs/general/preflight.md"
-    );
-    let page = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("read {path}: {e}"));
+    let page = anodizer_core::test_helpers::docs_pages::read_docs_page("general/preflight.md");
     let quoted: Vec<String> = page
         .lines()
         .filter_map(|line| line.trim_start().strip_prefix("Error "))
@@ -2537,12 +2533,8 @@ fn the_abort_quoted_in_the_preflight_docs_is_what_a_failed_preflight_produces() 
 /// character is an abbreviation of real output rather than a claim about it,
 /// so it is left out.
 fn quoted_error_lines(relative: &str) -> Vec<String> {
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../docs/site/content/docs")
-        .join(relative);
-    let page =
-        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
-    page.lines()
+    anodizer_core::test_helpers::docs_pages::read_docs_page(relative)
+        .lines()
         .filter_map(|line| line.trim_start().strip_prefix("Error "))
         .filter(|line| !line.contains('\u{2026}'))
         .map(str::to_string)

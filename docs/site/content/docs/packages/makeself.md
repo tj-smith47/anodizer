@@ -37,7 +37,7 @@ makeselfs:
     files: []                        # optional; additional files to include
     os: ["linux", "darwin"]          # optional; target OS filter
     arch: []                         # optional; target architecture filter
-    disable: false                   # optional
+    skip: false                      # optional
 ```
 
 ## Authentication

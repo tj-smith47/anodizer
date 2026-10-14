@@ -34,7 +34,7 @@ crates:
         templated_extra_files: []     # optional; template-rendered extra files
         replace: false                # optional; remove archive artifacts, keep installer only
         mod_timestamp: ""             # optional; reproducible build timestamp
-        disable: false                # optional
+        skip: false                   # optional
 ```
 
 ## Authentication
@@ -122,7 +122,7 @@ Custom scripts are rendered through the template engine, so all template variabl
 
 When an `extra_files` entry uses the `{glob, name_template}` form, `name_template` is only valid when the glob matches **exactly one file**. A multi-match glob paired with a constant `name_template` would silently overwrite every match to the same destination name, so anodizer bails up-front in that case. Use a bare glob string (or one entry per file) when copying multiple matches.
 
-```yaml
+```yaml,fragment
 # Valid — single-match glob renamed
 extra_files:
   - glob: "vendor/single.dll"
@@ -140,17 +140,14 @@ extra_files:
 
 ## Signing
 
-NSIS installers should be Authenticode-signed before distribution so Windows SmartScreen does not flag them. Anodizer does not run `signtool` automatically; sign after the NSIS stage via an `after:` hook:
+NSIS installers should be Authenticode-signed before distribution so Windows SmartScreen does not flag them. A `signs:` entry with an `authenticode:` block signs every Windows `.exe`, `.msi` and `.dll` in place, the NSIS installer included. It runs `signtool` on Windows and [`osslsigncode`](https://github.com/mtrojnar/osslsigncode) elsewhere, and reads the certificate path from `WINDOWS_CERT_FILE` and its password from `WINDOWS_CERT_PASSWORD`:
 
 ```yaml
-hooks:
-  after:
-    - cmd: signtool sign /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 /f cert.pfx /p $CERT_PASSWORD dist/windows/*.exe
-      env:
-        - CERT_PASSWORD={{ Env.WINDOWS_CERT_PASSWORD }}
+signs:
+  - authenticode: {}
 ```
 
-On Linux/macOS hosts, [`osslsigncode`](https://github.com/mtrojnar/osslsigncode) is the standard `signtool` replacement.
+The certificate, timestamp server, signing tool and embedded name can each be set on the block; see [`signs`](@/docs/reference/configuration.md#signs) in the configuration reference.
 
 ## Behavior
 

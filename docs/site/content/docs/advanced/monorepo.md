@@ -385,6 +385,7 @@ When `release` (or `release --publish-only`) runs without `--crate` or `--all`, 
 Loop `anodizer tag --crate <name>` for each crate so each workspace gets its own release:
 
 ```yaml
+# not an anodizer config
 - uses: tj-smith47/anodizer-action@v1
   with:
     install-only: true

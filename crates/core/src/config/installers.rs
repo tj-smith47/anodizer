@@ -104,9 +104,8 @@ pub struct MsiConfig {
     /// falsy test applies to what a non-blank gate renders.
     #[serde(rename = "if")]
     pub if_condition: Option<String>,
-    /// Pre/post MSI-build hooks. Accepts `pre`/`post`
-    /// or `before`/`after` via BuildHooksConfig's serde aliases. Runs before
-    /// / after candle+light for each matched artifact.
+    /// Pre/post MSI-build hooks, under the keys `pre` and `post`. Runs
+    /// before / after candle+light for each matched artifact.
     pub hooks: Option<BuildHooksConfig>,
 }
 

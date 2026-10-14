@@ -14,7 +14,7 @@ Anodizer accepts **both** template dialects and renders them on the same Tera en
 - **Tera-native, no-dot** — the canonical, recommended form. Reference fields by bare name (`{{ Version }}`), use Tera operators (`==`, `!=`, `and`, `or`, `not`), pipe through filters (`{{ Tag | trimprefix(prefix="v") }}`), and write control flow with `{% %}`.
 - **GoReleaser / Go `text/template`** — paste a snippet straight out of a `.goreleaser.yaml` and it runs unchanged. Anodizer auto-translates Go idioms before rendering, so migrating costs nothing.
 
-```yaml
+```yaml,fragment
 # Both forms are equivalent — pick either, mix freely:
 name_template: "{{ ProjectName }}-{{ Version }}"     # Tera-native (recommended)
 name_template: "{{ .ProjectName }}-{{ .Version }}"   # GoReleaser/Go (auto-translated)
@@ -26,7 +26,7 @@ The docs throughout this site use the Tera-native no-dot form as the canonical i
 
 Templates use `{{ }}` for variable interpolation and `{% %}` for control flow:
 
-```yaml
+```yaml,fragment
 name_template: "{{ ProjectName }}-{{ Version }}-{{ Os }}-{{ Arch }}"
 ```
 
@@ -73,7 +73,7 @@ Parenthesised groups in one block may nest at most **64** deep. Every group is
 rewritten by descending into it, so an unbounded nest exhausts the stack before
 the engine sees the block at all; the limit turns that into a named error.
 
-```yaml
+```yaml,fragment
 # Rejected — 65 nested groups
 name_template: "{{ tolower (tolower (tolower (… 62 more …))) }}"
 
@@ -98,7 +98,7 @@ before a blank can be baked into a release artifact.
 
 - **Top-level access errors**, naming the missing variable:
 
-  ```yaml
+  ```yaml,fragment
   name_template: "{{ Typo }}"
   ```
 
@@ -125,7 +125,7 @@ before a blank can be baked into a release artifact.
   error. This is Tera's own coercion rule for the `~` operator, and anodizer
   does not change it:
 
-  ```yaml
+  ```yaml,fragment
   name_template: "{{ Typo ~ '-rc1' }}"
   # -> "-rc1"
   ```
@@ -134,7 +134,7 @@ before a blank can be baked into a release artifact.
   references always resolve, defaulting to `""` with no error, since
   most templates only reference an env var conditionally:
 
-  ```yaml
+  ```yaml,fragment
   name_template: "{{ .Env.MISSING }}"
   # -> ""
   ```
@@ -142,7 +142,7 @@ before a blank can be baked into a release artifact.
 For an *intentional* default in place of an accidental empty string, reach
 for one of these idioms:
 
-```yaml
+```yaml,fragment
 # Top-level fallback
 name_template: "{{ Typo or \"default\" }}"
 
@@ -256,7 +256,7 @@ Anodizer auto-translates Go `text/template` syntax to its Tera equivalent before
   ```
 - **tera 1.x numeric indexing** — `list.0` / `a.0.b` / `a?.0` rewrite to the native `list[0]` / `a[0].b` / `a?[0]`. Numeric segments index arrays: a map key that is the string `"0"` needs `["0"]`; `.0` indexes an array. Write `[N]` in new templates.
 
-```yaml
+```yaml,fragment
 # Both forms are equivalent:
 name_template: "{{ .ProjectName }}-{{ .Version }}"   # Go-style (compat)
 name_template: "{{ ProjectName }}-{{ Version }}"       # Tera-style (native)
@@ -390,7 +390,7 @@ The `Is*` flags (`IsSnapshot`, `IsNightly`, `IsHarness`, `IsDraft`,
 `IsPrepare`) are real booleans, and `NightlyBuild` is a real number — use
 them directly:
 
-```yaml
+```yaml,fragment
 if: "{{ not IsSnapshot }}"            # skip on snapshots
 if: "{{ IsHarness }}"                 # only inside the determinism harness
 if: "{% if NightlyBuild > 0 %}true{% endif %}"
@@ -416,7 +416,7 @@ conditions with a hard error; the stage is not silently skipped.
 | `RuntimeGoarch` | Host architecture in anodizer's arch vocabulary — Go names except the mips family, which keeps the Rust spellings (`mipsel`/`mips64el`, where Go writes `mipsle`/`mips64le`). GoReleaser's `{{ .Runtime.Goarch }}` also works | `amd64` |
 | `RustcVersion` | Host rustc release version; empty when rustc is unavailable | `1.96.0` |
 
-```yaml
+```yaml,fragment
 # Skip a config on non-amd64 build hosts:
 if: '{{ RuntimeGoarch == "amd64" }}'
 ```
@@ -425,7 +425,7 @@ if: '{{ RuntimeGoarch == "amd64" }}'
 
 Access environment variables via `Env`:
 
-```yaml
+```yaml,fragment
 name_template: "{{ ProjectName }}-{{ Env.CUSTOM_SUFFIX }}"
 ```
 
@@ -433,15 +433,15 @@ You can define custom environment variables in the config:
 
 ```yaml
 env:
-  CUSTOM_SUFFIX: "special"
-  BUILD_MODE: "production"
+  - CUSTOM_SUFFIX=special
+  - BUILD_MODE=production
 ```
 
 ### Pipeline outputs
 
 Stages can write values to the `Outputs` map, and templates can read them:
 
-```yaml
+```yaml,fragment
 # Tera-style
 body_template: "Build ID: {{ Outputs.build_id }}"
 # Go-style (also supported)
@@ -545,10 +545,12 @@ Tera's built-in `join` **filter**, which concatenates a list with a separator �
 both keep working:
 
 ```yaml
-checksum:
-  name_template: '{{/* join(elems=["sub", "..", "checksums"]) */}}.txt'   # → checksums.txt
-archives:
-  - name_template: '{{ list(items=[Os, Arch]) | join(sep="-") }}'      # → linux-amd64
+crates:
+  - name: myapp
+    checksum:
+      name_template: '{{/* join(elems=["sub", "..", "checksums"]) */}}.txt'   # → checksums.txt
+    archives:
+      - name_template: '{{ list(items=[Os, Arch]) | join(sep="-") }}'      # → linux-amd64
 ```
 
 The GoReleaser positional form auto-translates:
@@ -593,7 +595,7 @@ text (a changelog entry, a release note, an announcement body). The Go
 positional form of the constructor works here too, so a config copied from a
 `.goreleaser.yaml` needs no rewrite:
 
-```yaml
+```yaml,fragment
 message_template: "built for {{ list Os Arch | join(sep=\" \") }}"             # a b
 message_template: "built for {{ list(items=[Os, Arch]) | join(sep=\" \") }}"   # a b
 message_template: "built for {{ englishJoin(items=[Os, Arch]) }}"              # a and b
@@ -716,7 +718,7 @@ Fourteen hash functions take a file path argument (`s=`) and return the lowercas
 
 `md5` · `crc32` · `sha1` · `sha224` · `sha256` · `sha384` · `sha512` · `sha3_224` · `sha3_256` · `sha3_384` · `sha3_512` · `blake2b` · `blake2s` · `blake3`
 
-```yaml
+```yaml,fragment
 body_template: "checksum: {{ sha256(s=ArtifactPath) }}"
 ```
 
@@ -726,7 +728,7 @@ body_template: "checksum: {{ sha256(s=ArtifactPath) }}"
 
 Tera supports conditionals and loops:
 
-```yaml
+```yaml,fragment
 header: |
   {% if IsSnapshot %}
   **This is a snapshot build — not for production use.**
@@ -735,7 +737,7 @@ header: |
   {% endif %}
 ```
 
-```yaml
+```yaml,fragment
 # Loops (less common in config, but available)
 message_template: |
   New release: {{ Tag }}

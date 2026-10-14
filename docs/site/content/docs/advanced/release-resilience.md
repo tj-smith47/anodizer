@@ -310,7 +310,7 @@ text (HTTP error bodies, registry responses, git stderr). Interpolating it
 into `cmd` lets crafted error content break your quoting and execute as
 shell code:
 
-```yaml
+```yaml,fragment
 # UNSAFE: a single quote in the error body breaks out of the quoting,
 # and the `{{ .Error }}` template form splices the untrusted text into
 # the `sh -c` cmd string — a shell-injection surface.
@@ -563,6 +563,7 @@ For workflows that add their own destructive recovery steps anyway, the
 anodizer-action exposes the flag as a step output to gate on:
 
 ```yaml
+# not an anodizer config
 # Advanced — custom workflow-level recovery (not needed by default).
 # The id: on the release step is what makes steps.release.* resolvable.
 - uses: tj-smith47/anodizer-action@v1

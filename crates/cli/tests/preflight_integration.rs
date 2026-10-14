@@ -1964,25 +1964,16 @@ fn release_preflight_failure_only_warns_when_fail_on_error_is_false() {
 /// The `text` blocks of the "Release preflight" section of the GitHub
 /// release docs, one `Vec` of lines per block.
 fn release_preflight_docs_blocks() -> Vec<Vec<String>> {
-    let page = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../docs/site/content/docs/publish/github.md"),
-    )
-    .expect("read publish/github.md");
+    let page = anodizer_core::test_helpers::docs_pages::read_docs_page("publish/github.md");
     let start = page
         .find("## Release preflight")
         .expect("Release preflight section");
     let rest = &page[start..];
     let section = &rest[..rest[3..].find("\n## ").map_or(rest.len(), |i| i + 3)];
-    section
-        .split("```text\n")
-        .skip(1)
-        .map(|b| {
-            b[..b.find("```").expect("closed block")]
-                .lines()
-                .map(str::to_string)
-                .collect()
-        })
+    anodizer_core::test_helpers::docs_pages::fenced_blocks(section)
+        .into_iter()
+        .filter(|block| block.info == "text")
+        .map(|block| block.body.lines().map(str::to_string).collect())
         .collect()
 }
 

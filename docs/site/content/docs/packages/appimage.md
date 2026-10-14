@@ -76,9 +76,13 @@ binary (helix runs a loader to fetch tree-sitter grammars / themes / queries).
 The `runtime_harvest` hook models this:
 
 ```yaml
-runtime_harvest:
-  command: "{{ ArtifactPath }} --populate-runtime {{ HarvestDir }}"
-  dir: usr/lib/helix/runtime
+appimages:
+  - id: helix
+    desktop: contrib/Helix.desktop
+    icon: contrib/helix.png
+    runtime_harvest:
+      command: "{{ ArtifactPath }} --populate-runtime {{ HarvestDir }}"
+      dir: usr/lib/helix/runtime
 ```
 
 - `{{ ArtifactPath }}` resolves to the **host-native** binary's path and
@@ -92,9 +96,11 @@ runtime_harvest:
   archive `extra_files` glob can ship the same `runtime/` in tarballs:
 
   ```yaml
-  archives:
-    - files:
-        - "dist/.appimage-runtime/helix/**"
+  crates:
+    - name: helix
+      archives:
+        - files:
+            - "dist/.appimage-runtime/helix/**"
   ```
 
 ## Config fields

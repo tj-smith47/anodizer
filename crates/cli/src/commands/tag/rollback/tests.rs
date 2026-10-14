@@ -2940,11 +2940,8 @@ fn run_dry_run_previews_the_unwind_without_withdrawing() {
 fn the_rollback_refusal_quoted_in_the_resilience_docs_is_what_the_guard_produces() {
     use anodizer_core::publish_report::PublisherGroup;
 
-    let path = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../docs/site/content/docs/advanced/release-resilience.md"
-    );
-    let page = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("read {path}: {e}"));
+    let page =
+        anodizer_core::test_helpers::docs_pages::read_docs_page("advanced/release-resilience.md");
     let quoted: Vec<String> = page
         .lines()
         .filter_map(|line| line.trim_start().strip_prefix("Error "))

@@ -9737,7 +9737,7 @@
           }
         },
         "hooks": {
-          "description": "Pre/post MSI-build hooks. Accepts `pre`/`post` or `before`/`after` via BuildHooksConfig's serde aliases. Runs before / after candle+light for each matched artifact.",
+          "description": "Pre/post MSI-build hooks, under the keys `pre` and `post`. Runs before / after candle+light for each matched artifact.",
           "default": null,
           "anyOf": [
             {

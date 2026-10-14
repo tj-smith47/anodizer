@@ -456,6 +456,7 @@ proceeds only when every shard passes. Anodizer's own release workflow
 uses this shape:
 
 ```yaml
+# not an anodizer config
 jobs:
   determinism-check:
     name: Determinism Harness (${{ matrix.shard }})

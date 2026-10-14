@@ -3110,33 +3110,26 @@ mod docs_quoted_skip_lines {
     use anodizer_core::log::LogLevel;
     use anodizer_core::test_helpers::TestContextBuilder;
 
-    const PAGE: &str = include_str!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../docs/site/content/docs/publish/winget.md"
-    ));
-
     /// Every ```text block under the "## Additional locales" heading, each as
     /// its lines, in page order.
     fn quoted_text_blocks() -> Vec<Vec<String>> {
-        let section = PAGE
+        let page = anodizer_core::test_helpers::docs_pages::read_docs_page("publish/winget.md");
+        let section = page
             .split("\n## Additional locales\n")
             .nth(1)
             .expect("the winget page has an Additional locales section");
         let section = section.split("\n## ").next().unwrap_or(section);
-        let mut blocks = Vec::new();
-        let mut current: Option<Vec<String>> = None;
-        for line in section.lines() {
-            match (&mut current, line.trim_end()) {
-                (None, "```text") => current = Some(Vec::new()),
-                (Some(block), "```") => blocks.push(std::mem::take(block)),
-                (Some(block), text) => block.push(text.to_string()),
-                (None, _) => {}
-            }
-            if current.as_ref().is_some_and(Vec::is_empty) && line.trim_end() == "```" {
-                current = None;
-            }
-        }
-        blocks
+        anodizer_core::test_helpers::docs_pages::fenced_blocks(section)
+            .into_iter()
+            .filter(|block| block.info == "text")
+            .map(|block| {
+                block
+                    .body
+                    .lines()
+                    .map(|l| l.trim_end().to_string())
+                    .collect()
+            })
+            .collect()
     }
 
     /// The documented config: `myapp` whose second additional locale repeats

@@ -25,6 +25,9 @@
 //!   [`workspace_production_sources`] is the population a repo-wide pin walks:
 //!   the production half of every one of them. A pin asks for the crate list
 //!   rather than listing `crates/` for itself.
+//! - [`workspace_sources`] is every `.rs` file the workspace ships, production
+//!   and test halves and integration tests alike, for a pin that must see all
+//!   of them.
 
 use std::path::{Path, PathBuf};
 
@@ -671,47 +674,47 @@ pub fn workspace_production_sources() -> Vec<PathBuf> {
     sources
 }
 
+/// Every `.rs` file the workspace ships, production and test alike,
+/// reached through the shared walk itself. An integration-test directory
+/// is only expanded: its files are declared by cargo's target layout, not
+/// by a parent module, so the declaration check does not apply to them.
+pub fn workspace_sources() -> Vec<PathBuf> {
+    fn expand(dir: &Path, out: &mut Vec<PathBuf>) {
+        for path in test_sources(dir) {
+            if path.is_dir() {
+                expand(&path, out);
+            } else {
+                out.push(path);
+            }
+        }
+    }
+    let mut out = Vec::new();
+    for krate in workspace_crate_dirs() {
+        let src = krate.join("src");
+        if src.is_dir() {
+            out.extend(rust_sources(&src));
+            expand(&src, &mut out);
+        }
+        let tests = krate.join("tests");
+        if tests.is_dir() {
+            // An integration-test file is named for what it tests
+            // (`integration.rs`), not `tests.rs`, so the name rules put it
+            // in the production half of its own directory. Both halves are
+            // sources a structural guard must see. Split directly rather
+            // than asked for through `rust_sources`, whose parent-module
+            // check has no answer here: an integration test root is
+            // declared by cargo, not by a `mod` item.
+            out.extend(partition_sources(&tests).0);
+            expand(&tests, &mut out);
+        }
+    }
+    assert!(!out.is_empty(), "the workspace ships no source");
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// Every `.rs` file the workspace ships, production and test alike,
-    /// reached through the shared walk itself. An integration-test directory
-    /// is only expanded: its files are declared by cargo's target layout, not
-    /// by a parent module, so the declaration check does not apply to them.
-    fn workspace_sources() -> Vec<std::path::PathBuf> {
-        fn expand(dir: &Path, out: &mut Vec<PathBuf>) {
-            for path in test_sources(dir) {
-                if path.is_dir() {
-                    expand(&path, out);
-                } else {
-                    out.push(path);
-                }
-            }
-        }
-        let mut out = Vec::new();
-        for krate in workspace_crate_dirs() {
-            let src = krate.join("src");
-            if src.is_dir() {
-                out.extend(rust_sources(&src));
-                expand(&src, &mut out);
-            }
-            let tests = krate.join("tests");
-            if tests.is_dir() {
-                // An integration-test file is named for what it tests
-                // (`integration.rs`), not `tests.rs`, so the name rules put it
-                // in the production half of its own directory. Both halves are
-                // sources a structural guard must see. Split directly rather
-                // than asked for through `rust_sources`, whose parent-module
-                // check has no answer here: an integration test root is
-                // declared by cargo, not by a `mod` item.
-                out.extend(partition_sources(&tests).0);
-                expand(&tests, &mut out);
-            }
-        }
-        assert!(!out.is_empty(), "the workspace ships no source");
-        out
-    }
 
     /// [`partition_sources`] is the only directory walk that picks Rust files
     /// out of a tree. A second one drifts from it silently — a rule taught to

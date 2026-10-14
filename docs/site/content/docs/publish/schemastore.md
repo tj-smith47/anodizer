@@ -156,13 +156,17 @@ Resolution order (most-specific wins): **per-entry field → block `schemastore.
 Lists the well-known config filenames the schema validates. Used verbatim in the SchemaStore catalog entry. Folder globs must start with `**/`:
 
 ```yaml
-schemas:
-  - name: MyTool
-    file_match:
-      - ".mytool.yaml"
-      - ".mytool.yml"
-      - "**/modules/*.yaml"    # folder glob — requires **/ prefix
-    url: "https://myorg.github.io/mytool/schema.json"
+schemastore:
+  repository:
+    owner: myorg
+    name: schemastore
+  schemas:
+    - name: MyTool
+      file_match:
+        - ".mytool.yaml"
+        - ".mytool.yml"
+        - "**/modules/*.yaml"    # folder glob — requires **/ prefix
+      url: "https://myorg.github.io/mytool/schema.json"
 ```
 
 `file_match` is always required — there is no default.
@@ -195,12 +199,16 @@ In single-crate and workspace-lockstep modes, `crate:` is optional and defaults 
 Vendor-only. When `true`, anodizer writes a version-suffixed file (`<slug>-<VER>.json`) and merges the new version into the catalog entry's `versions` map — carrying prior versions forward so editors that locked to an older version still resolve:
 
 ```yaml
-schemas:
-  - name: MyTool
-    slug: mytool
-    file_match: [".mytool.yaml"]
-    schema_file: "schemas/mytool.schema.json"
-    versioned: true
+schemastore:
+  repository:
+    owner: myorg
+    name: schemastore
+  schemas:
+    - name: MyTool
+      slug: mytool
+      file_match: [".mytool.yaml"]
+      schema_file: "schemas/mytool.schema.json"
+      versioned: true
 ```
 
 This writes `src/schemas/json/mytool-1.2.3.json` and adds `"1.2.3"` to the `versions` map in the catalog entry. Prior version keys are preserved — the PR merges into whatever was already in the upstream entry.
@@ -210,11 +218,15 @@ This writes `src/schemas/json/mytool-1.2.3.json` and adds `"1.2.3"` to the `vers
 Vendor-only. Controls the filename in `src/schemas/json/<slug>.json` and the `url` basename in the catalog (`https://www.schemastore.org/<slug>.json`). Defaults to the `name` slugified (lowercased, spaces replaced with `-`):
 
 ```yaml
-schemas:
-  - name: My Tool Config      # would slug to "my-tool-config"
-    slug: mytool               # override: src/schemas/json/mytool.json
-    file_match: [".mytool.yaml"]
-    schema_file: "schemas/mytool.schema.json"
+schemastore:
+  repository:
+    owner: myorg
+    name: schemastore
+  schemas:
+    - name: My Tool Config      # would slug to "my-tool-config"
+      slug: mytool               # override: src/schemas/json/mytool.json
+      file_match: [".mytool.yaml"]
+      schema_file: "schemas/mytool.schema.json"
 ```
 
 ## SchemaStore content rules

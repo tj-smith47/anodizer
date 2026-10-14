@@ -80,7 +80,7 @@ globals like `{{ Version }}` and `{{ ProjectName }}`):
 
 Examples:
 
-```yaml
+```yaml,fragment
 # Mirror cargo's per-target directory layout
 prebuilt:
   path: "target/{{ Target }}/release/myapp"
@@ -106,23 +106,31 @@ When `builder: prebuilt` is set, the build entry MUST declare its own
 
 ```yaml
 # OK
-builds:
-  - binary: myapp
-    builder: prebuilt
-    prebuilt:
-      path: "output/myapp_{{ Target }}"
-    targets:
-      - x86_64-unknown-linux-gnu
+crates:
+  - name: myapp
+    path: .
+    builds:
+      - binary: myapp
+        builder: prebuilt
+        prebuilt:
+          path: "output/myapp_{{ Target }}"
+        targets:
+          - x86_64-unknown-linux-gnu
+```
 
+```yaml,fragment
 # REJECTED at config-load
 defaults:
   targets: [x86_64-unknown-linux-gnu]
-builds:
-  - binary: myapp
-    builder: prebuilt
-    prebuilt:
-      path: "output/myapp_{{ Target }}"
-    # targets: missing — `defaults.targets` does not propagate to prebuilt builds
+crates:
+  - name: myapp
+    path: .
+    builds:
+      - binary: myapp
+        builder: prebuilt
+        prebuilt:
+          path: "output/myapp_{{ Target }}"
+        # targets: missing — `defaults.targets` does not propagate to prebuilt builds
 ```
 
 Rationale: a prebuilt import has no concept of a "default target matrix" —
@@ -203,8 +211,7 @@ crates:
           - x86_64-apple-darwin
           - aarch64-apple-darwin
           - x86_64-pc-windows-msvc
-    archives: [...]
-    publish: {...}
+    # archives:, publish: and the rest of the crate's release config follow here
 ```
 
 ```bash

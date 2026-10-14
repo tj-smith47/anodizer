@@ -56,6 +56,7 @@ Tagging is a half-irreversible act: once `vX.Y.Z` is pushed, a downstream releas
 The job runs on the runner the release job will use — anodizer's own runs on `arc-anodizer`, the self-hosted runner that can reach the in-cluster blob store and holds its ambient credentials — so endpoints and secrets are checked in one job, in the same environment that will publish.
 
 ```yaml
+# not an anodizer config
   preflight:
     name: Preflight
     if: ${{ github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch' }}
@@ -89,6 +90,7 @@ HEAD carries no tag yet, so the publisher probes use the version `anodizer tag` 
 The tag job runs `anodizer tag --push --changelog`: it scans the commit range since the last tag, resolves a bump from commit-message directives and conventional markers, writes the new version back into `Cargo.toml` (+ enrolled `version_files`), refreshes `CHANGELOG.md`, then pushes the bump commit and the tag atomically.
 
 ```yaml
+# not an anodizer config
   tag:
     name: Auto-tag
     needs: [preflight]
@@ -123,6 +125,7 @@ The `tagged` output gates everything downstream: `'false'` (a chore/docs/ci-only
 A reusable workflow fans the determinism harness across four shards (one per host/target family). Each shard builds the release N times, asserts every produced byte is identical across runs, and uploads its hermetic `dist-<shard>` artifact for the publish job to consume. Manifests carry a `-<shard-label>` suffix so the four uploads merge without collision.
 
 ```yaml
+# not an anodizer config
   determinism-check:
     name: Determinism
     needs: tag
@@ -157,6 +160,7 @@ A reusable workflow fans the determinism harness across four shards (one per hos
 The publish job downloads and merges all four shards' preserved dist, asserts every shard arrived, then runs `release --publish-only`. **It does not rebuild** — it publishes the byte-stable artifacts the shards already proved. `--skip=npm,pypi,cargo` peels the OIDC publishers onto the standalone workflow dispatched below.
 
 ```yaml
+# not an anodizer config
   release:
     name: Publish Release
     needs: [tag, determinism-check]
@@ -202,6 +206,7 @@ the run reports success.
 These do **not** run as a job inside `release.yml`. crates.io and PyPI Trusted Publishing accept only `push`, `release`, and `workflow_dispatch` — they **reject the `workflow_run` event** `release.yml` fires on (`400 "does not support the workflow_run event trigger"`), and the OIDC `event_name` claim is fixed per workflow-run, so no job inside `release.yml` can present an accepted trigger. So the OIDC publishers live in a standalone **`publish-oidc.yml`** (`on: workflow_dispatch`), and a small `dispatch-oidc` job triggers it via the Actions API and waits on its verdict — the release run still reflects the OIDC leg's pass/fail. A reusable `workflow_call` workflow would not work either: it inherits the caller's `workflow_run` event.
 
 ```yaml
+# not an anodizer config
   # In release.yml: dispatch the standalone workflow and block on its result.
   dispatch-oidc:
     name: Dispatch OIDC publish
@@ -225,6 +230,7 @@ These do **not** run as a job inside `release.yml`. crates.io and PyPI Trusted P
 ```
 
 ```yaml
+# not an anodizer config
   # In publish-oidc.yml: on: workflow_dispatch — an accepted Trusted-Publishing trigger.
   publish-oidc:
     name: Publish OIDC (npm, PyPI, crates.io)

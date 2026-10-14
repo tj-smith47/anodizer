@@ -369,6 +369,7 @@ stage's credential is genuinely absent on the preflight runner, `--skip`
 that stage there and let the publish job carry it:
 
 ```yaml
+# not an anodizer config
 jobs:
   preflight:
     runs-on: arc-anodizer          # the runner the release job will use

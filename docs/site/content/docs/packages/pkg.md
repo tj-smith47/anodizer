@@ -48,7 +48,7 @@ Not applicable — PKG creation is a local build step using the native `pkgbuild
 ## Common gotchas
 
 - **Linux build path**: when `pkgbuild` is absent (e.g. on Linux CI), anodizer assembles the same flat XAR package from `xar` + `mkbom` (bomutils) + `cpio` (gzip is done in-process). Install all three to build `.pkg` installers without a Mac. Note: signing/notarization still requires macOS.
-- **Signing**: `pkgbuild` does not sign packages. For distribution outside the Mac App Store, pipe the output through the [notarize stage](../notarize/) using `use: pkg`. The notarize stage handles `productsign` and `xcrun notarytool` automatically.
+- **Signing**: `pkgbuild` does not sign packages. For distribution outside the Mac App Store, pipe the output through the [notarize stage](@/docs/sign/notarize.md) using `use: pkg`. The notarize stage handles `productsign` and `xcrun notarytool` automatically.
 - **`install_location`**: the default `/usr/local/bin` requires admin privileges. Use `/usr/local/bin` for CLI tools; use a user-writable path only for user-space tools.
 - **Multi-arch identifier collisions**: pkg produces one package per binary. If `identifier:` is a literal string (no template vars), two builds for different architectures will share the same identifier. Disambiguate with a template (e.g. `com.example.myapp.{{ Arch }}`).
 
@@ -134,4 +134,4 @@ crates:
 
 ## Signing
 
-`pkgbuild` itself does not sign packages. To notarize for distribution outside the Mac App Store, pipe the output through the [notarize stage](../notarize/) with `use: pkg`. The notarize stage handles `productsign` (signing with a Developer ID Installer certificate) and `xcrun notarytool` submission automatically.
+`pkgbuild` itself does not sign packages. To notarize for distribution outside the Mac App Store, pipe the output through the [notarize stage](@/docs/sign/notarize.md) with `use: pkg`. The notarize stage handles `productsign` (signing with a Developer ID Installer certificate) and `xcrun notarytool` submission automatically.

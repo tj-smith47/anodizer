@@ -2153,11 +2153,7 @@ fn populate_runtime_vars_sets_rustc_version() {
 /// page showing a line the binary no longer prints.
 #[test]
 fn the_skip_error_quoted_in_the_hooks_docs_is_what_the_validator_produces() {
-    let path = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../docs/site/content/docs/general/hooks.md"
-    );
-    let page = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("read {path}: {e}"));
+    let page = crate::test_helpers::docs_pages::read_docs_page("general/hooks.md");
     let quoted: Vec<String> = page
         .lines()
         .filter_map(|line| line.trim_start().strip_prefix("Error "))

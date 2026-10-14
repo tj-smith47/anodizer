@@ -133,6 +133,7 @@ Uses [`tj-smith47/anodizer-action`](@/docs/ci/anodizer-action.md) with built-in
 `upload-dist` / `download-dist` to handle artifact handoff:
 
 ```yaml
+# not an anodizer config
 name: Release
 
 on:

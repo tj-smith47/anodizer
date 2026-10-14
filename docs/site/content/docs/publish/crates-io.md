@@ -43,33 +43,37 @@ crates:
 To opt out without removing the block, use `skip:` (peer-publisher convention):
 
 ```yaml
-publish:
-  cargo:
-    skip: true
+crates:
+  - name: myapp
+    publish:
+      cargo:
+        skip: true
 ```
 
 ## Full config reference
 
 ```yaml
-publish:
-  cargo:
-    index_timeout: 300        # seconds to wait for crates.io index update
-    registry: ""              # alternative registry name from ~/.cargo/config.toml
-    index: ""                 # alternative registry index URL
-    no_verify: false          # skip local cargo build verification
-    allow_dirty: true         # default true (anodizer tag dirties the tree)
-    features: []              # features to enable
-    all_features: false
-    no_default_features: false
-    target: ""                # target triple override
-    target_dir: ""            # cargo target directory override
-    jobs: 0                   # parallelism (0 = cargo default)
-    keep_going: false
-    manifest_path: ""         # Cargo.toml path override
-    locked: false
-    offline: false
-    frozen: false
-    skip: false               # bool, "true"/"false", or "auto"
+crates:
+  - name: myapp
+    publish:
+      cargo:
+        index_timeout: 300        # seconds to wait for crates.io index update
+        registry: ""              # alternative registry name from ~/.cargo/config.toml
+        index: ""                 # alternative registry index URL
+        no_verify: false          # skip local cargo build verification
+        allow_dirty: true         # default true (anodizer tag dirties the tree)
+        features: []              # features to enable
+        all_features: false
+        no_default_features: false
+        target: ""                # target triple override
+        target_dir: ""            # cargo target directory override
+        jobs: 0                   # parallelism (0 = cargo default)
+        keep_going: false
+        manifest_path: ""         # Cargo.toml path override
+        locked: false
+        offline: false
+        frozen: false
+        skip: false               # bool, "true"/"false", or "auto"
 ```
 
 ## Authentication
@@ -96,12 +100,15 @@ anodizer release
 anodizer publishes to crates.io without a stored `CARGO_REGISTRY_TOKEN` by exchanging a GitHub Actions OIDC identity for a short-lived crates.io token — the same Trusted Publishing model anodizer offers for PyPI. Register a Trusted Publisher for each crate on crates.io (Settings → Trusted Publishing) with this repository and the **workflow file that actually runs the publish**, grant the job `id-token: write`, and set `auth: oidc`:
 
 ```yaml
-publish:
-  cargo:
-    auth: oidc
+crates:
+  - name: myapp
+    publish:
+      cargo:
+        auth: oidc
 ```
 
 ```yaml
+# not an anodizer config
 # publish-oidc.yml — the workflow named in the crates.io Trusted-Publisher config
 permissions:
   id-token: write   # required — lets the runner request the OIDC id-token
@@ -132,41 +139,43 @@ anodizer creates **one** token before the dependency-order publish loop, injects
 ## Config options
 
 ```yaml
-publish:
-  cargo:
-    # ----- crates.io–specific (anodizer-original) -----
-    index_timeout: 300        # seconds to wait for crates.io index update
+crates:
+  - name: myapp
+    publish:
+      cargo:
+        # ----- crates.io–specific (anodizer-original) -----
+        index_timeout: 300        # seconds to wait for crates.io index update
 
-    # ----- registry selection -----
-    registry: my-alt-registry # name from ~/.cargo/config.toml
-    index: https://...        # registry index URL
+        # ----- registry selection -----
+        registry: my-alt-registry # name from ~/.cargo/config.toml
+        index: https://...        # registry index URL
 
-    # ----- verify / dirty -----
-    no_verify: false          # skip the local cargo build verification
-    allow_dirty: true         # default: true (anodizer tag dirties the tree)
+        # ----- verify / dirty -----
+        no_verify: false          # skip the local cargo build verification
+        allow_dirty: true         # default: true (anodizer tag dirties the tree)
 
-    # ----- features -----
-    features: ["telemetry"]
-    all_features: false
-    no_default_features: false
+        # ----- features -----
+        features: ["telemetry"]
+        all_features: false
+        no_default_features: false
 
-    # ----- compilation -----
-    target: x86_64-unknown-linux-gnu
-    target_dir: ./target
-    jobs: 4
-    keep_going: false
+        # ----- compilation -----
+        target: x86_64-unknown-linux-gnu
+        target_dir: ./target
+        jobs: 4
+        keep_going: false
 
-    # ----- manifest -----
-    manifest_path: ./Cargo.toml
-    locked: true
-    offline: false
-    frozen: false
+        # ----- manifest -----
+        manifest_path: ./Cargo.toml
+        locked: true
+        offline: false
+        frozen: false
 
-    # ----- authentication -----
-    auth: auto                # auto | token | oidc (Trusted Publishing)
+        # ----- authentication -----
+        auth: auto                # auto | token | oidc (Trusted Publishing)
 
-    # ----- peer-publisher pattern -----
-    skip: false               # bool or template; skips when it renders true or 1, any case
+        # ----- peer-publisher pattern -----
+        skip: false               # bool or template; skips when it renders true or 1, any case
 ```
 
 ## Workspace ordering

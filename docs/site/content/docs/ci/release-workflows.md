@@ -48,6 +48,7 @@ release:
 **Use when:** one `Cargo.toml` at the root, no workspace.
 
 ```yaml
+# not an anodizer config
 name: Release
 
 on:
@@ -144,6 +145,7 @@ jobs:
 `anodizer tag` bumps the shared version, creates one workspace tag, and `anodizer release` publishes every crate in topo order.
 
 ```yaml
+# not an anodizer config
 name: Release
 
 on:
@@ -241,6 +243,7 @@ jobs:
 **Use when:** crates have independent versions but always release together. The determinism harness runs per-crate in a matrix (so shards build only the targets relevant to each crate); a single `release --publish-only` job consumes the preserved-dist subdirs and publishes in topo order.
 
 ```yaml
+# not an anodizer config
 name: Release
 
 on:
@@ -381,6 +384,7 @@ Produce one inline on the publish runner — the build-less harness is cheap
 (two hermetic source-package runs, compared byte-for-byte):
 
 ```yaml
+# not an anodizer config
       - name: Preserve dist (library-only determinism)
         uses: tj-smith47/anodizer-action@v1
         with:
@@ -410,6 +414,7 @@ makes its dependent resolve `skipped`, and a naive
 `result == 'success' || result == 'skipped'` check treats that as passing.
 
 ```yaml
+# not an anodizer config
     # publish-bins must not run when publish-lib FAILED (rollback racing),
     # but must run when it was SKIPPED (lib not in this release's tag set).
     needs: [tag, determinism-check, publish-lib, publish-core]
@@ -426,17 +431,28 @@ makes its dependent resolve `skipped`, and a naive
 **Use when:** `.anodizer.yaml` has a `workspaces:` block defining named groups. Each group behaves like a mini-lockstep workspace; `anodizer tag --push` handles all groups in one invocation and one atomic push. The `crates` output lists every crate that received a new tag, regardless of which group it belongs to.
 
 ```yaml
-# .anodizer.yaml (excerpt)
+# .anodizer.yaml
 workspaces:
-  core-group:
-    crates: [myproj-core, myproj-macros]
-  bin-group:
-    crates: [myproj-bin-a, myproj-bin-b]
-  standalone:
-    crates: [myproj-cli]
+  - name: core-group
+    crates:
+      - name: myproj-core
+        path: crates/myproj-core
+      - name: myproj-macros
+        path: crates/myproj-macros
+  - name: bin-group
+    crates:
+      - name: myproj-bin-a
+        path: crates/myproj-bin-a
+      - name: myproj-bin-b
+        path: crates/myproj-bin-b
+  - name: standalone
+    crates:
+      - name: myproj-cli
+        path: crates/myproj-cli
 ```
 
 ```yaml
+# not an anodizer config
 name: Release
 
 on:
@@ -563,6 +579,7 @@ jobs:
 The workspace-level concurrency group serializes concurrent runs so a simultaneous `core-v1.1.0` and `cli-v2.3.0` push does not race at the runner level.
 
 ```yaml
+# not an anodizer config
 name: Release
 
 on:
@@ -639,6 +656,7 @@ jobs:
 The CI workflow triggers the release workflow via `workflow_run` and passes the `crates` output through a job output. The release workflow validates that CI succeeded before tagging.
 
 ```yaml
+# not an anodizer config
 # ci.yml
 name: CI
 
@@ -675,6 +693,7 @@ jobs:
 ```
 
 ```yaml
+# not an anodizer config
 # release.yml
 name: Release
 
@@ -807,6 +826,7 @@ tag mutation). Add the others as your strategy uses them:
 | `id-token: write` | `mcp.auth.type: github-oidc`, cosign keyless, any OIDC-anchored publisher |
 
 ```yaml
+# not an anodizer config
 permissions:
   contents: write
   actions: read          # for cross-workflow artifact downloads
@@ -852,6 +872,7 @@ The old pattern triggered one workflow run per tag and resolved the crate inside
 **Before:**
 
 ```yaml
+# not an anodizer config
 # release.yml (old)
 on:
   push:
@@ -895,6 +916,7 @@ jobs:
 ```
 
 ```yaml
+# not an anodizer config
 # ci.yml (old) — drove a bash loop
       - name: Auto-tag all workspaces
         env:
@@ -909,6 +931,7 @@ jobs:
 **After:**
 
 ```yaml
+# not an anodizer config
 # ci.yml — one step, no loop
       - uses: tj-smith47/anodizer-action@v1
         id: t
@@ -919,6 +942,7 @@ jobs:
 ```
 
 ```yaml
+# not an anodizer config
 # release.yml — workflow_run trigger, crates gate, topo publish
 on:
   workflow_run:

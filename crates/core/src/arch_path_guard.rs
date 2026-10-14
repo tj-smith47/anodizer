@@ -333,28 +333,12 @@ mod tests {
     /// Every fenced `text` block on a page that quotes one of this guard's
     /// diagnostics, in page order.
     fn documented_messages(doc: &str) -> Vec<String> {
-        let mut blocks = Vec::new();
-        let mut fence: Option<String> = None;
-        for line in doc.lines() {
-            let line = line.trim_end();
-            if fence.is_none() {
-                if line == "```text" {
-                    fence = Some(String::new());
-                }
-                continue;
-            }
-            if line == "```" {
-                let body = collapse(&fence.take().expect("inside a fence"));
-                if body.starts_with("archives: name template") {
-                    blocks.push(body);
-                }
-            } else {
-                let open = fence.as_mut().expect("inside a fence");
-                open.push_str(line);
-                open.push(' ');
-            }
-        }
-        blocks
+        crate::test_helpers::docs_pages::fenced_blocks(doc)
+            .into_iter()
+            .filter(|block| block.info == "text")
+            .map(|block| collapse(&block.body))
+            .filter(|body| body.starts_with("archives: name template"))
+            .collect()
     }
 
     /// One `archives` entry shipping two binaries on one build target.
@@ -399,11 +383,7 @@ mod tests {
     /// against a live render for the inputs the block documents.
     #[test]
     fn the_archives_page_quotes_messages_the_guard_renders() {
-        let doc = std::fs::read_to_string(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../docs/site/content/docs/packages/archives.md"
-        ))
-        .expect("read docs/site/content/docs/packages/archives.md");
+        let doc = crate::test_helpers::docs_pages::read_docs_page("packages/archives.md");
 
         let documented = documented_messages(&doc);
         let rendered = [two_binaries_of_one_entry(), two_targets_of_one_entry()];
