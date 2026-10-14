@@ -224,7 +224,7 @@ attestations:
 | `depends` | list of string | — | Runtime dependencies. |
 | `description` | string | — | Short description of the package. |
 | `directory` | string | — | Subdirectory in the git repo for committed files. |
-| `git_ssh_command` | string | — | Custom SSH command for git operations. |
+| `git_ssh_command` | string | — | Custom SSH command for git operations. Takes precedence over `private_key` when both are set. |
 | `git_url` | string | — | AUR SSH git URL override. Defaults to `ssh://aur@aur.archlinux.org/<package>.git`, derived from the resolved package name; set this only for a non-standard endpoint. |
 | `homepage` | string | — | Project homepage URL. |
 | `ids` | list of string | — | Has no effect on a source package: the PKGBUILD builds from the one source archive the release carries, not from build artifacts. |
@@ -237,7 +237,7 @@ attestations:
 | `optdepends` | list of string | — | Optional dependencies. |
 | `package` | string | — | Custom `package()` function body for PKGBUILD. |
 | `prepare` | string | — | Custom `prepare()` function body for PKGBUILD. |
-| `private_key` | string | — | Path to SSH private key file. |
+| `private_key` | string | — | The SSH private key itself, as its PEM or OpenSSH text. Supports templates, so a key is usually read from the environment: `private_key: "{{ .Env.AUR_SSH_KEY }}"`. Written to a temporary file with mode 0600 for the push. |
 | `provides` | list of string | — | Packages this PKGBUILD provides. |
 | `rel` | string | — | Package release number (default: "1"). |
 | `required` | bool | — | Override whether this publisher failing should fail the overall release.<br><br>Default: `false` — a failure here is logged but does not abort the release. Set to `true` to fail the release on any error. |
@@ -1401,7 +1401,7 @@ Every key is optional in both places.
 | `depends` | list of string | — | Runtime dependencies required by this package. |
 | `description` | string | — | Short description of the package for PKGBUILD. |
 | `directory` | string | — | Subdirectory in the git repo for committed files. |
-| `git_ssh_command` | string | — | Custom SSH command for git operations. |
+| `git_ssh_command` | string | — | Custom SSH command for git operations. Takes precedence over `private_key` when both are set. |
 | `git_url` | string | — | AUR SSH git URL override. Defaults to `ssh://aur@aur.archlinux.org/<package>.git`, derived from the resolved package name; set this only for a non-standard endpoint. |
 | `homepage` | string | — | Project homepage URL. |
 | `ids` | list of string | — | Build IDs filter: only include artifacts whose `id` is in this list. |
@@ -1412,7 +1412,7 @@ Every key is optional in both places.
 | `name` | string | — | Override the package name (default: crate name + "-bin"). |
 | `optdepends` | list of string | — | Optional dependencies with descriptions (e.g., "fzf: fuzzy finder support"). |
 | `package` | string | — | Custom PKGBUILD `package()` function body. |
-| `private_key` | string | — | Path to SSH private key file. |
+| `private_key` | string | — | The SSH private key itself, as its PEM or OpenSSH text. Supports templates, so a key is usually read from the environment: `private_key: "{{ .Env.AUR_SSH_KEY }}"`. Written to a temporary file with mode 0600 for the push. |
 | `provides` | list of string | — | Packages this PKGBUILD provides (virtual package names). |
 | `rel` | string | — | Package release number (default: "1"). |
 | `replaces` | list of string | — | Packages this PKGBUILD replaces (for upgrade paths from old package names). |
@@ -1436,7 +1436,7 @@ Every key is optional in both places.
 | `depends` | list of string | — | Runtime dependencies. |
 | `description` | string | — | Short description of the package. |
 | `directory` | string | — | Subdirectory in the git repo for committed files. |
-| `git_ssh_command` | string | — | Custom SSH command for git operations. |
+| `git_ssh_command` | string | — | Custom SSH command for git operations. Takes precedence over `private_key` when both are set. |
 | `git_url` | string | — | AUR SSH git URL override. Defaults to `ssh://aur@aur.archlinux.org/<package>.git`, derived from the resolved package name; set this only for a non-standard endpoint. |
 | `homepage` | string | — | Project homepage URL. |
 | `ids` | list of string | — | Has no effect on a source package: the PKGBUILD builds from the one source archive the release carries, not from build artifacts. |
@@ -1449,7 +1449,7 @@ Every key is optional in both places.
 | `optdepends` | list of string | — | Optional dependencies. |
 | `package` | string | — | Custom `package()` function body for PKGBUILD. |
 | `prepare` | string | — | Custom `prepare()` function body for PKGBUILD. |
-| `private_key` | string | — | Path to SSH private key file. |
+| `private_key` | string | — | The SSH private key itself, as its PEM or OpenSSH text. Supports templates, so a key is usually read from the environment: `private_key: "{{ .Env.AUR_SSH_KEY }}"`. Written to a temporary file with mode 0600 for the push. |
 | `provides` | list of string | — | Packages this PKGBUILD provides. |
 | `rel` | string | — | Package release number (default: "1"). |
 | `required` | bool | — | Override whether this publisher failing should fail the overall release.<br><br>Default: `false` — a failure here is logged but does not abort the release. Set to `true` to fail the release on any error. |

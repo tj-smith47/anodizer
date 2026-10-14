@@ -46,15 +46,9 @@ fn format_for_target(target: &str, default_format: &str, overrides: &[FormatOver
     )
 }
 
-#[test]
-fn archive_mtime_pins_commit_timestamp_for_workspace_only_reproducible_build() {
-    // A crate declared only under `workspaces[].crates` with
-    // `builds[].reproducible: true` must pin the archive mtime to the
-    // commit timestamp: the reproducibility scan resolves through the
-    // crate universe. The decoy SOURCE_DATE_EPOCH proves the reproducible
-    // branch was taken (the non-reproducible fallback would prefer it).
-    let mut ctx = anodizer_core::test_helpers::TestContextBuilder::new()
-        .workspaces(vec![anodizer_core::config::WorkspaceConfig {
+fn reproducible_workspace_ctx(sde: Option<&str>) -> anodizer_core::context::Context {
+    let mut builder = anodizer_core::test_helpers::TestContextBuilder::new().workspaces(vec![
+        anodizer_core::config::WorkspaceConfig {
             name: "ws".to_string(),
             crates: vec![anodizer_core::config::CrateConfig {
                 name: "ws-only".to_string(),
@@ -66,14 +60,30 @@ fn archive_mtime_pins_commit_timestamp_for_workspace_only_reproducible_build() {
                 ..Default::default()
             }],
             ..Default::default()
-        }])
-        .env("SOURCE_DATE_EPOCH", "1111111111")
-        .build();
-    assert!(
-        ctx.config.crates.is_empty(),
-        "fixture must be a pure-workspace config"
-    );
+        },
+    ]);
+    if let Some(sde) = sde {
+        builder = builder.env("SOURCE_DATE_EPOCH", sde);
+    }
+    let mut ctx = builder.build();
     ctx.template_vars_mut().set("CommitTimestamp", "1700000000");
+    ctx
+}
+
+#[test]
+fn archive_mtime_is_source_date_epoch_when_set_even_for_a_reproducible_build() {
+    // A reproducible build stamps its binary from SOURCE_DATE_EPOCH first,
+    // so the archive holding it must carry the same date.
+    let ctx = reproducible_workspace_ctx(Some("1767225600"));
+    assert_eq!(
+        crate::run_helpers::resolve_archive_mtime(&ctx),
+        Some(1_767_225_600)
+    );
+}
+
+#[test]
+fn archive_mtime_falls_back_to_the_commit_timestamp() {
+    let ctx = reproducible_workspace_ctx(None);
     assert_eq!(
         crate::run_helpers::resolve_archive_mtime(&ctx),
         Some(1_700_000_000)

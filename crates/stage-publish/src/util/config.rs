@@ -89,8 +89,18 @@ pub(crate) fn resolve_artifact_kind(use_value: Option<&str>) -> ArtifactKind {
 // Token resolution
 // ---------------------------------------------------------------------------
 
-/// Resolve an auth token from the context, then a publisher-specific env var,
-/// then `ANODIZER_GITHUB_TOKEN`, then the generic `GITHUB_TOKEN` env var.
+/// Resolve a GitHub token for a publisher's repository: the
+/// publisher-specific env var, then the run's GitHub token (`--token`, or the
+/// value the CLI resolved from `ANODIZER_GITHUB_TOKEN` / `GITHUB_TOKEN` /
+/// `GH_TOKEN` at startup), then `ANODIZER_GITHUB_TOKEN`, `GITHUB_TOKEN` and
+/// `GH_TOKEN`.
+///
+/// The publisher variable comes first because it names a token issued for
+/// that one repository; the run token is filled from the generic GitHub
+/// variables before any publisher runs, so reading it first would leave the
+/// publisher variable unreachable whenever a GitHub token is set. In a
+/// GitLab or Gitea run the run token is a GitLab or Gitea credential and is
+/// never sent to a GitHub repository.
 ///
 /// Env reads route through the [`Context`]'s injected env source so unit
 /// tests can drive the fallback ladder via a
@@ -101,14 +111,21 @@ pub(crate) fn resolve_token(ctx: &Context, env_var: Option<&str>) -> Option<Stri
     // secrets to "", which would short-circuit the fallback chain and prevent
     // GITHUB_TOKEN from being used.
     let non_empty = |s: String| if s.is_empty() { None } else { Some(s) };
-    ctx.options
-        .token
-        .clone()
+    env_var
+        .and_then(|v| ctx.env_var(v))
         .and_then(non_empty)
-        .or_else(|| env_var.and_then(|v| ctx.env_var(v)).and_then(non_empty))
+        .or_else(|| run_github_token(ctx))
         .or_else(|| {
             anodizer_core::git::resolve_github_token_with_env(None, &|key| ctx.env_var(key))
         })
+}
+
+/// The run's SCM token when it is a GitHub credential, else `None`.
+pub(crate) fn run_github_token(ctx: &Context) -> Option<String> {
+    if ctx.token_type != anodizer_core::scm::ScmTokenType::GitHub {
+        return None;
+    }
+    ctx.options.token.clone().filter(|t| !t.is_empty())
 }
 
 // ---------------------------------------------------------------------------
@@ -236,7 +253,8 @@ pub(crate) fn should_skip_publisher_with_if(
 // Repository token resolution
 // ---------------------------------------------------------------------------
 
-/// Resolve the repository token from: RepositoryConfig.token -> env_var -> ANODIZER_GITHUB_TOKEN -> GITHUB_TOKEN.
+/// Resolve the repository token: `repository.token` (rendered; a blank or
+/// failed render falls through), then [`resolve_token`].
 pub(crate) fn resolve_repo_token(
     ctx: &Context,
     repo: Option<&anodizer_core::config::RepositoryConfig>,
@@ -250,8 +268,11 @@ pub(crate) fn resolve_repo_token(
         && let Some(ref tok) = r.token
         && !tok.is_empty()
     {
-        let rendered = ctx.render_template(tok).unwrap_or_else(|_| tok.clone());
-        if !rendered.is_empty() {
+        // A render that fails falls through like a blank one: the literal
+        // template text must never be sent as a credential.
+        if let Ok(rendered) = ctx.render_template(tok)
+            && !rendered.is_empty()
+        {
             return Some(rendered);
         }
     }
@@ -500,6 +521,67 @@ mod tests {
         assert!(
             err.to_string().contains("not found in config"),
             "missing crate must still bail: {err}"
+        );
+    }
+    /// A publisher's own token variable wins over the run token the CLI
+    /// filled from `GITHUB_TOKEN` at startup.
+    #[test]
+    fn the_publisher_variable_wins_over_the_run_token() {
+        let ctx = TestContextBuilder::new()
+            .sealed_env()
+            .env("GITHUB_TOKEN", "run")
+            .env("SCOOP_BUCKET_TOKEN", "bucket")
+            .token(Some("run".into()))
+            .build();
+        assert_eq!(
+            resolve_token(&ctx, Some("SCOOP_BUCKET_TOKEN")).as_deref(),
+            Some("bucket")
+        );
+        assert_eq!(resolve_token(&ctx, None).as_deref(), Some("run"));
+    }
+
+    /// In a GitLab or Gitea run the run token is not a GitHub credential, so
+    /// it is never sent to a GitHub repository.
+    #[test]
+    fn a_gitlab_run_token_is_not_used_for_a_github_repository() {
+        for token_type in [
+            anodizer_core::scm::ScmTokenType::GitLab,
+            anodizer_core::scm::ScmTokenType::Gitea,
+        ] {
+            let mut ctx = TestContextBuilder::new()
+                .sealed_env()
+                .token(Some("glpat".into()))
+                .build();
+            ctx.token_type = token_type;
+            assert_eq!(resolve_token(&ctx, None), None);
+            let ctx_with_gh = {
+                let mut c = TestContextBuilder::new()
+                    .sealed_env()
+                    .env("GH_TOKEN", "gh")
+                    .token(Some("glpat".into()))
+                    .build();
+                c.token_type = token_type;
+                c
+            };
+            assert_eq!(resolve_token(&ctx_with_gh, None).as_deref(), Some("gh"));
+        }
+    }
+
+    /// A `repository.token` that does not render falls through to the
+    /// publisher variable; the template text is never the credential.
+    #[test]
+    fn a_repository_token_that_does_not_render_falls_through() {
+        let ctx = TestContextBuilder::new()
+            .sealed_env()
+            .env("KREW_INDEX_TOKEN", "krew")
+            .build();
+        let repo = RepositoryConfig {
+            token: Some("{{ .Env.NOT_SET_ANYWHERE }}".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            resolve_repo_token(&ctx, Some(&repo), Some("KREW_INDEX_TOKEN")).as_deref(),
+            Some("krew")
         );
     }
 }

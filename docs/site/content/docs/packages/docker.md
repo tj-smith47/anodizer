@@ -184,7 +184,7 @@ label is emitted only when its source value resolves:
 
 | Label | Source |
 |-------|--------|
-| `org.opencontainers.image.created` | RFC-3339 date from the resolved `SOURCE_DATE_EPOCH` — **never** wall-clock, so the image stays byte-reproducible |
+| `org.opencontainers.image.created` | RFC 3339 UTC date: `SOURCE_DATE_EPOCH` when set, else the commit timestamp (in a `--snapshot` run, the HEAD commit timestamp, also on a dirty tree). It is never the wall clock, so the image stays byte-reproducible |
 | `org.opencontainers.image.source` | release repo URL (SSH remotes normalized to their `https://` web base) |
 | `org.opencontainers.image.revision` | released commit SHA |
 | `org.opencontainers.image.version` | released version (matches the image tag) |

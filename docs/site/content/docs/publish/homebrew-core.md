@@ -24,7 +24,7 @@ Most projects use a tap. Reach for `homebrew_cores` only once your tool is popul
 
 | Group | Required (default) | Rollback | One-way door | Token |
 |-------|--------------------|----------|--------------|-------|
-| Submitter | `false` | close the opened PR | **NEVER** | `HOMEBREW_CORE_GITHUB_TOKEN` / `COMMITTER_TOKEN` / `ANODIZER_GITHUB_TOKEN` / `GITHUB_TOKEN` |
+| Submitter | `false` | close the opened PR | **NEVER** | `HOMEBREW_CORE_GITHUB_TOKEN` / `COMMITTER_TOKEN` / `ANODIZER_GITHUB_TOKEN` / `GITHUB_TOKEN` / `GH_TOKEN` |
 
 The bump is **fully reversible** — it opens a pull request, which `anodizer tag rollback`'s publisher-unwind step closes when you deliberately withdraw the release. Nothing about it consumes a version or crosses a one-way door, so `required` defaults to `false`: a failed bump PR is fixed by hand and must never abort the release. A re-run of the same release also reconciles cleanly — it finds the already-open PR and skips rather than opening a duplicate.
 
@@ -151,7 +151,7 @@ The bump needs a GitHub token that can fork the formula repository and open pull
 1. `homebrew_cores[].repository.token` (templated) when set;
 2. `$HOMEBREW_CORE_GITHUB_TOKEN`;
 3. `$COMMITTER_TOKEN` — the name [`mislav/bump-homebrew-formula-action`](https://github.com/mislav/bump-homebrew-formula-action) consumes, so a project migrating from that action keeps its existing secret;
-4. the standard GitHub ladder (`$ANODIZER_GITHUB_TOKEN`, then `$GITHUB_TOKEN`).
+4. the standard GitHub ladder (`$ANODIZER_GITHUB_TOKEN`, then `$GITHUB_TOKEN`, then `$GH_TOKEN`).
 
 Empty values are skipped at every link, so a blank `GITHUB_TOKEN` (GitHub Actions' shape for a missing secret) never masquerades as a real token.
 

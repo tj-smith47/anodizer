@@ -143,15 +143,15 @@ You can configure the target repository with either the legacy `manifests_repo` 
 |-------|------|-------------|
 | `repository.owner` | string | Repository owner |
 | `repository.name` | string | Repository name |
-| `repository.token` | string | Auth token (falls back to env-based resolution) |
+| `repository.token` | string | Push token (templated); default: `WINGET_PKGS_TOKEN`, then the GitHub token chain (see [Authentication](#authentication)) |
 | `repository.branch` | string | Branch to push to (default: auto-generated as `PackageIdentifier-Version`) |
 | `repository.git.url` | string | Git URL for SSH-based publishing |
 | `repository.git.ssh_command` | string | Custom SSH command |
-| `repository.git.private_key` | string | Path to SSH private key |
+| `repository.git.private_key` | string | SSH private key content (PEM / OpenSSH text, templated, such as `"{{ .Env.WINGET_SSH_KEY }}"`), written to a temporary file with mode 0600; `git.ssh_command` takes precedence when both are set |
 | `repository.pull_request.enabled` | bool | Enable PR creation |
 | `repository.pull_request.draft` | bool | Create PR as draft |
 | `repository.pull_request.body` | string | Body text for the PR |
-| `repository.pull_request.token` | string | Token used to open the PR (templates allowed); falls back to `repository.token`, then `GITHUB_TOKEN`. Set it when the fork token cannot open PRs against `microsoft/winget-pkgs`. |
+| `repository.pull_request.token` | string | Token used to open the PR (templates allowed); falls back to `repository.token`, then `ANODIZER_GITHUB_TOKEN`, `GITHUB_TOKEN` and `GH_TOKEN`. Set it when the fork token cannot open PRs against `microsoft/winget-pkgs`. |
 | `repository.pull_request.base.owner` | string | Upstream repo owner to PR against |
 | `repository.pull_request.base.name` | string | Upstream repo name to PR against |
 | `repository.pull_request.base.branch` | string | Upstream base branch to target |
@@ -205,11 +205,11 @@ crates:
         repository:
           owner: myorg
           name: winget-pkgs
-          token: ""                      # falls back to GITHUB_TOKEN
+          token: ""                      # default: WINGET_PKGS_TOKEN, then the GitHub token chain
           branch: ""
           pull_request:
             enabled: true
-            token: ""                    # token used to open the PR (default: repository.token, then GITHUB_TOKEN)
+            token: ""                    # token used to open the PR (default: repository.token, then ANODIZER_GITHUB_TOKEN / GITHUB_TOKEN / GH_TOKEN)
             base:
               owner: microsoft
               name: winget-pkgs
@@ -221,13 +221,25 @@ crates:
 
 ## Authentication
 
-| Variable | Description |
-|----------|-------------|
-| `GITHUB_TOKEN` | Token with push access to your winget-pkgs fork and `pull_request:write` scope for the upstream PR |
+The push to your winget-pkgs fork uses the first token that is set:
 
-Anodizer resolves the token from the first source that is set, in this order: `repository.token` in the config, then the `ANODIZER_GITHUB_TOKEN` env var, then the `GITHUB_TOKEN` env var.
+1. `repository.token`
+2. `WINGET_PKGS_TOKEN`
+3. the run's GitHub token (`--token`, or the `ANODIZER_GITHUB_TOKEN` / `GITHUB_TOKEN` / `GH_TOKEN` value read at startup); a GitLab or Gitea token is never sent to GitHub
+4. `ANODIZER_GITHUB_TOKEN`, `GITHUB_TOKEN`, `GH_TOKEN`
 
-The pull request is opened with `repository.pull_request.token`, falling back to `repository.token`, then `ANODIZER_GITHUB_TOKEN`, `GITHUB_TOKEN` and `GH_TOKEN`, on both the `gh` and the REST API transports.
+The pull request is opened with `repository.pull_request.token`, then `repository.token`, then `ANODIZER_GITHUB_TOKEN`, `GITHUB_TOKEN` and `GH_TOKEN`. With none of these set, the `gh` CLI's own login opens it; with neither a token nor `gh`, the publish fails. Both the `gh` and the REST API transports use this order. The pull request needs `pull_request:write` on `microsoft/winget-pkgs`.
+
+```yaml
+winget:
+  repository:
+    owner: myorg
+    name: winget-pkgs
+    token: "{{ .Env.WINGET_PKGS_TOKEN }}"
+    pull_request:
+      enabled: true
+      token: "{{ .Env.PR_TOKEN }}"
+```
 
 `repository.pull_request.token` and `repository.token` are rendered before anything is cloned or pushed. A blank render, such as an unset `{{ .Env.X }}`, falls through to the next token in the chain. A template that fails to render skips this crate's winget entry with nothing pushed, and the next crate still publishes. The skip reason names the field and the render error (`pull_request.token does not render: …`), with the template's own text replaced by `<template>` so a token literal in it is never printed.
 

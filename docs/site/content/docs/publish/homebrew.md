@@ -95,12 +95,12 @@ crates:
         repository:
           owner: myorg          # required
           name: homebrew-tap    # required
-          token: ""             # falls back to GITHUB_TOKEN
+          token: ""             # default: HOMEBREW_TAP_TOKEN, then the GitHub token chain
           branch: ""            # default: repo default branch (versioned <formula>-<version> when pull_request.enabled)
           pull_request:
             enabled: false
             draft: false
-            token: ""           # token used to open the PR (default: repository.token, then GITHUB_TOKEN)
+            token: ""           # token used to open the PR (default: repository.token, then ANODIZER_GITHUB_TOKEN / GITHUB_TOKEN / GH_TOKEN)
             base:
               owner: ""
               name: ""
@@ -254,11 +254,25 @@ in <tap URL>`, or `Opened pull request to <owner/repo> (homebrew <name>):
 
 ## Authentication
 
-| Variable | Description |
-|----------|-------------|
-| `GITHUB_TOKEN` | Token with push access to your tap repository (and `pull_request:write` for cask PR mode) |
+The push to your tap repository uses the first token that is set:
 
-The token can also be set via `repository.token` in the config.
+1. `repository.token`
+2. `HOMEBREW_TAP_TOKEN`
+3. the run's GitHub token (`--token`, or the `ANODIZER_GITHUB_TOKEN` / `GITHUB_TOKEN` / `GH_TOKEN` value read at startup); a GitLab or Gitea token is never sent to GitHub
+4. `ANODIZER_GITHUB_TOKEN`, `GITHUB_TOKEN`, `GH_TOKEN`
+
+The pull request is opened with `repository.pull_request.token`, then `repository.token`, then `ANODIZER_GITHUB_TOKEN`, `GITHUB_TOKEN` and `GH_TOKEN`. With none of these set, the `gh` CLI's own login opens it; with neither a token nor `gh`, the publish fails. The token needs push access to the tap, and `pull_request:write` when `pull_request.enabled` is set.
+
+```yaml
+homebrew:
+  repository:
+    owner: myorg
+    name: homebrew-tap
+    token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+    pull_request:
+      enabled: true
+      token: "{{ .Env.PR_TOKEN }}"
+```
 
 ## Common gotchas
 

@@ -639,9 +639,9 @@ pub(super) fn stage_package(
     })
 }
 
-/// Resolves the NuGet API key from `choco.api_key` (template-rendered)
-/// with `CHOCOLATEY_API_KEY` env-var fallback. An empty result signals
-/// "skip push" at the call site.
+/// Resolves the NuGet API key from `choco.api_key` (template-rendered; a
+/// value that renders blank falls through) with `CHOCOLATEY_API_KEY`
+/// env-var fallback. An empty result signals "skip push" at the call site.
 pub(super) fn resolve_api_key(
     ctx: &Context,
     choco_cfg: &anodizer_core::config::ChocolateyConfig,
@@ -657,6 +657,7 @@ pub(super) fn resolve_api_key(
         .map(|k| util::render_or_warn(ctx, log, "chocolatey.api_key", k))
         .transpose()?;
     Ok(rendered
+        .filter(|k| !k.is_empty())
         .or_else(|| ctx.env_var("CHOCOLATEY_API_KEY"))
         .unwrap_or_default())
 }

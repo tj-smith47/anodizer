@@ -328,14 +328,18 @@ unknown fields per JSON convention.
 runs of the same commit at the same anodizer version. SDE source for snapshot
 mode (first match wins):
 
-1. `ANODIZE_SOURCE_DATE_EPOCH` env var, if set.
-2. `HEAD` commit timestamp, if the working tree is clean. "Clean" is
-   defined as `git status --porcelain --untracked-files=normal --ignore-submodules=none`
-   producing empty output.
-3. Hash of `git status --porcelain=v2 -z` output (truncated to a 32-bit
-   value) added to the `HEAD` commit timestamp, when the tree is dirty.
-   Deterministic per tree state; does not require a writable index, so
-   read-only worktrees produce the same value.
+1. `SOURCE_DATE_EPOCH` env var, if set.
+2. `ANODIZE_SOURCE_DATE_EPOCH` env var, if set (an older spelling of the
+   same override).
+3. `HEAD` commit timestamp. A dirty working tree keeps the same value, so
+   successive runs against an unchanged dirty tree are byte-identical.
+
+A set variable that is not a whole number of seconds fails the lookup, and
+the build prints a `snapshot SDE resolution failed; falling back to commit
+timestamp` line and uses the commit timestamp.
+
+The resolved value is a real date: it becomes archive entry mtimes, the
+`org.opencontainers.image.created` docker label and SBOM timestamps.
 
 This is what makes the harness useful pre-release: an operator can run
 `anodizer check determinism --snapshot` against a dirty tree and catch drift

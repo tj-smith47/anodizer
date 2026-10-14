@@ -93,7 +93,7 @@ krew:
     pull_request:
       enabled: true
       draft: false
-      token: ""                      # token used to open the PR (default: repository.token, then GITHUB_TOKEN)
+      token: ""                      # token used to open the PR (default: repository.token, then ANODIZER_GITHUB_TOKEN / GITHUB_TOKEN / GH_TOKEN)
       base:
         owner: kubernetes-sigs
         name: krew-index
@@ -121,12 +121,12 @@ crates:
         repository:
           owner: myorg                   # required
           name: krew-index               # required
-          token: ""                      # falls back to GITHUB_TOKEN
+          token: ""                      # default: KREW_INDEX_TOKEN, then the GitHub token chain
           branch: ""
           pull_request:
             enabled: true
             draft: false
-            token: ""                    # token used to open the PR (default: repository.token, then GITHUB_TOKEN)
+            token: ""                    # token used to open the PR (default: repository.token, then ANODIZER_GITHUB_TOKEN / GITHUB_TOKEN / GH_TOKEN)
             base:
               owner: kubernetes-sigs
               name: krew-index
@@ -142,7 +142,25 @@ crates:
 
 ## Authentication
 
-Anodizer resolves a GitHub token from the first source that is set, in this order: `repository.token` in the config, then the `ANODIZER_GITHUB_TOKEN` env var, then the `GITHUB_TOKEN` env var. The token must have push access to your krew-index fork. The pull request itself is opened with `repository.pull_request.token` when that is set, falling back to the same chain; set it when the fork token cannot open PRs against the upstream index.
+The push to your krew-index fork uses the first token that is set:
+
+1. `repository.token`
+2. `KREW_INDEX_TOKEN`
+3. the run's GitHub token (`--token`, or the `ANODIZER_GITHUB_TOKEN` / `GITHUB_TOKEN` / `GH_TOKEN` value read at startup); a GitLab or Gitea token is never sent to GitHub
+4. `ANODIZER_GITHUB_TOKEN`, `GITHUB_TOKEN`, `GH_TOKEN`
+
+The pull request is opened with `repository.pull_request.token`, then `repository.token`, then `ANODIZER_GITHUB_TOKEN`, `GITHUB_TOKEN` and `GH_TOKEN`. With none of these set, the `gh` CLI's own login opens it; with neither a token nor `gh`, the publish fails. Set `pull_request.token` when the fork token cannot open pull requests against the upstream index.
+
+```yaml
+krew:
+  repository:
+    owner: myorg
+    name: krew-index
+    token: "{{ .Env.KREW_FORK_TOKEN }}"
+    pull_request:
+      enabled: true
+      token: "{{ .Env.KREW_PR_TOKEN }}"
+```
 
 `repository.pull_request.token` and `repository.token` are rendered before anything is cloned or pushed. A blank render, such as an unset `{{ .Env.X }}`, falls through to the next token in the chain. A template that fails to render skips this crate's krew entry with nothing pushed, and the next crate still publishes. The skip reason names the field and the render error (`pull_request.token does not render: …`), with the template's own text replaced by `<template>` so a token literal in it is never printed.
 
@@ -291,8 +309,8 @@ In `auto`, anodizer makes one probe — a GET against
 | Yes (200) | `bot-webhook` | POST the fully-rendered manifest + the release tag to the krew-release-bot webhook, which opens the version-bump PR on your behalf. |
 
 The probe is **authenticated** whenever a GitHub token is available
-(`ANODIZER_GITHUB_TOKEN` / `GITHUB_TOKEN`, or `repository.token`) — the same
-token the GitHub release uses — which raises the API rate limit from 60/hr
+(the same token the push uses, in the order listed under
+[Authentication](#authentication)), which raises the API rate limit from 60/hr
 (anonymous) to 5,000/hr.
 
 **Indeterminate probe → loud failure, not a guess.** If the probe can't reach a

@@ -66,8 +66,8 @@ pub(crate) use commit::{
 };
 pub(crate) use config::{
     find_crate_in_universe, get_publish_config, resolve_artifact_kind, resolve_repo_owner_name,
-    resolve_repo_token, resolve_rollback_token, resolve_secret_name, should_skip_publisher_with_if,
-    should_skip_upload, skip_upload_line,
+    resolve_repo_token, resolve_rollback_token, resolve_secret_name, run_github_token,
+    should_skip_publisher_with_if, should_skip_upload, skip_upload_line,
 };
 pub(crate) use disambiguate::{DisambiguateConfig, disambiguate_by_format};
 #[cfg(test)]

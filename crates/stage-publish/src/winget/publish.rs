@@ -217,8 +217,8 @@ pub(crate) fn submit_winget_manifests(
 //
 // CREDENTIAL HANDLING: [`WingetTarget`] stores no auth material. The
 // GitHub token feeding the publish path (resolved through
-// `repository.git.access_token` / `ANODIZER_GITHUB_TOKEN` /
-// `GITHUB_TOKEN`) is irrelevant to a warn-only rollback — only the env
+// `repository.token` / `WINGET_PKGS_TOKEN` / the run token /
+// `ANODIZER_GITHUB_TOKEN` / `GITHUB_TOKEN` / `GH_TOKEN`) is irrelevant to a warn-only rollback — only the env
 // var operators are expected to have set to re-run publish is named,
 // not the resolved value.
 

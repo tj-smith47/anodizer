@@ -106,7 +106,7 @@ pub fn validate_no_docker_v1(raw_yaml: &serde_yaml_ng::Value) -> Result<(), Stri
         return Err(
             "config: legacy GoReleaser `dockers:` block is not supported — anodizer ships \
              dockers_v2: only (multi-arch buildx flow). Port the config to `dockers_v2:` per \
-             https://anodizer.dev/docs/migration/docker.html."
+             https://tj-smith47.github.io/anodizer/docs/packages/docker/."
                 .to_string(),
         );
     }
@@ -145,7 +145,7 @@ pub(crate) fn legacy_homebrew_formula_warnings(config: &Config) -> Vec<String> {
             "DEPRECATION: {location}: publish.homebrew (Homebrew Formula) is deprecated upstream \
              in GoReleaser v2.16; migrate to homebrew_casks. Cask is now the canonical Homebrew \
              distribution channel for pre-compiled binaries. See \
-             https://anodizer.dev/docs/publish/homebrew-casks/ for migration."
+             https://tj-smith47.github.io/anodizer/migration/goreleaser/#brews-homebrew_casks for migration."
         )
     }
 

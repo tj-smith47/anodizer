@@ -704,7 +704,11 @@ fn run_preflight_inner(
             let winget_cfg =
                 crate::winget::derive_winget_config(ctx, log, winget_cfg, &krate.name)?;
             let pkg_id = crate::winget::package_identifier_of(&winget_cfg);
-            let token = util::resolve_repo_token(ctx, winget_cfg.repository.as_ref(), None);
+            let token = util::resolve_repo_token(
+                ctx,
+                winget_cfg.repository.as_ref(),
+                Some("WINGET_PKGS_TOKEN"),
+            );
             log.verbose(&format!("checking winget for '{}@{}'", pkg_id, version));
             let checker = factory.winget(token, policy, deadline);
             let state = checker.check(&pkg_id, &version, log);

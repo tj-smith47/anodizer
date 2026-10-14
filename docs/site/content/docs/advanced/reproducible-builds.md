@@ -119,10 +119,10 @@ enumeration order.
 
 ### Fixed timestamps via `builds_info`
 
-When any crate has `reproducible: true`, the archive stage automatically uses
-`CommitTimestamp` as the mtime for every entry in tar and zip archives. If `reproducible` is
-not set, the archive stage falls back to the `SOURCE_DATE_EPOCH` environment variable if
-present.
+The archive stage stamps every entry in tar and zip archives with `SOURCE_DATE_EPOCH` when
+it is set, else with `CommitTimestamp`. A `reproducible: true` build stamps its binary from
+the same two values in the same order, so the binary and the archive that holds it carry one
+date. PyPI wheels and sdists use the same timestamp.
 
 You can also control archive entry metadata explicitly with `builds_info`. The
 fragments below show the `archives:` block on its own; it sits under

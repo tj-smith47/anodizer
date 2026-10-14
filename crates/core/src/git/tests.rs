@@ -3376,7 +3376,7 @@ mod git_command_one_home {
         use crate::test_helpers::test_sources::{
             function_bodies, production_half, workspace_production_sources,
         };
-        const CALL_SITES: usize = 49;
+        const CALL_SITES: usize = 48;
         const RUNNER_CALL_SITES: usize = 17;
         const RUNNERS: [&str; 4] = [
             "run_git_in(",

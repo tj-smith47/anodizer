@@ -351,6 +351,35 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_architecture_names_documented_are_what_map_target_produces() {
+        let page = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../docs/site/content/docs/general/templates.md"
+        ));
+        let section = page
+            .split("### Architecture names")
+            .nth(1)
+            .and_then(|rest| rest.split("\n### ").next())
+            .expect("templates.md has an Architecture names section");
+        let rows: Vec<(&str, &str)> = section
+            .lines()
+            .filter_map(|line| {
+                let cells: Vec<&str> = line.split('|').map(str::trim).collect();
+                match cells.as_slice() {
+                    ["", target, arch, ""] if target.starts_with('`') && arch.starts_with('`') => {
+                        Some((target.trim_matches('`'), arch.trim_matches('`')))
+                    }
+                    _ => None,
+                }
+            })
+            .collect();
+        assert_eq!(rows.len(), 19, "documented rows: {rows:?}");
+        for (target, arch) in rows {
+            assert_eq!(map_target(target).1, arch, "{target}");
+        }
+    }
+
+    #[test]
     fn test_target_to_os_arch() {
         let (os, arch) = map_target("x86_64-unknown-linux-gnu");
         assert_eq!(os, "linux");

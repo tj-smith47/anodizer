@@ -5,13 +5,17 @@
 //! Actions workflows, shell sessions, or CLI references. The validator
 //! silently skips blocks that look like GitHub Actions (`on:`, `jobs:`,
 //! `name:` without any anodizer-specific keys) and only hard-fails on blocks
-//! that contain at least one anodizer-shaped key but fail Config deserialization.
+//! that contain at least one anodizer-shaped key but fail Config deserialization,
+//! or that load with a deprecation warning: a README example is copied as
+//! written, so it must use the current form of every field.
 //!
 //! Run via `cargo xtask validate-readme` or `task docs:validate-readme`.
 
 use anodizer_core::config::Config;
 use anodizer_core::text::count_noun;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
+use tracing_subscriber::layer::SubscriberExt as _;
 
 /// READMEs that ship with the workspace and may contain anodizer YAML
 /// config examples. Each entry is a path relative to the workspace root.
@@ -173,13 +177,21 @@ fn validate_readme(readme_path: &Path) -> ReadmeResult {
             continue;
         }
 
-        match serde_yaml_ng::from_str::<Config>(block) {
-            Ok(_) => {
+        match load_with_warnings(block, &value) {
+            Ok(warnings) if warnings.is_empty() => {
                 result.validated += 1;
                 println!(
                     "validate-readme: {} block #{idx} — OK",
                     readme_path.display()
                 );
+            }
+            Ok(warnings) => {
+                result.errors.push(format!(
+                    "YAML block #{idx} in {}: loads with a deprecation warning; \
+                     rewrite it in the current form:\n{}\nBlock content:\n{block}",
+                    readme_path.display(),
+                    warnings.join("\n")
+                ));
             }
             Err(e) => {
                 result.errors.push(format!(
@@ -192,6 +204,56 @@ fn validate_readme(readme_path: &Path) -> ReadmeResult {
     }
 
     result
+}
+
+/// Collects the message of every WARN event emitted while it is installed.
+struct WarnCollector(Arc<Mutex<Vec<String>>>);
+
+impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for WarnCollector {
+    fn on_event(
+        &self,
+        event: &tracing::Event<'_>,
+        _ctx: tracing_subscriber::layer::Context<'_, S>,
+    ) {
+        struct Message(String);
+        impl tracing::field::Visit for Message {
+            fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+                if field.name() == "message" {
+                    self.0 = format!("{value:?}");
+                }
+            }
+        }
+        if *event.metadata().level() != tracing::Level::WARN {
+            return;
+        }
+        let mut msg = Message(String::new());
+        event.record(&mut msg);
+        self.0.lock().expect("warning sink").push(msg.0);
+    }
+}
+
+/// Parse `block` as a [`Config`] and run every load-time legacy check the
+/// config loader runs, returning the deprecation warnings they print.
+fn load_with_warnings(
+    block: &str,
+    raw: &serde_yaml_ng::Value,
+) -> Result<Vec<String>, serde_yaml_ng::Error> {
+    use anodizer_core::config as cfg;
+    let sink = Arc::new(Mutex::new(Vec::new()));
+    let subscriber = tracing_subscriber::registry().with(WarnCollector(Arc::clone(&sink)));
+    let cask_warnings = tracing::subscriber::with_default(subscriber, || {
+        cfg::warn_on_legacy_snapshot_name_template(raw);
+        cfg::warn_on_legacy_furies_alias(raw);
+        cfg::warn_on_legacy_nfpm_builds(raw);
+        cfg::warn_on_legacy_disable_alias(raw);
+        let mut config = serde_yaml_ng::from_str::<Config>(block)?;
+        cfg::warn_on_legacy_homebrew_formula(&config);
+        cfg::warn_on_legacy_docker_retry(&config);
+        Ok::<_, serde_yaml_ng::Error>(cfg::homebrew_cask_legacy_warnings(&mut config))
+    })?;
+    let mut warnings = std::mem::take(&mut *sink.lock().expect("warning sink"));
+    warnings.extend(cask_warnings);
+    Ok(warnings)
 }
 
 pub fn run(readme: Option<&Path>) -> Result<(), String> {
@@ -239,4 +301,37 @@ pub fn run(readme: Option<&Path>) -> Result<(), String> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn warnings_of(block: &str) -> Vec<String> {
+        let raw: serde_yaml_ng::Value = serde_yaml_ng::from_str(block).unwrap();
+        load_with_warnings(block, &raw).unwrap()
+    }
+
+    #[test]
+    fn a_publish_homebrew_formula_block_is_reported() {
+        let warnings = warnings_of(
+            "crates:\n  - name: a\n    path: .\n    tag_template: v1\n    publish:\n      homebrew:\n        repository:\n          owner: o\n          name: t\n",
+        );
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(warnings[0].contains("publish.homebrew (Homebrew Formula) is deprecated"));
+    }
+
+    #[test]
+    fn a_publish_homebrew_cask_block_loads_clean() {
+        let warnings = warnings_of(
+            "crates:\n  - name: a\n    path: .\n    tag_template: v1\n    publish:\n      homebrew_cask:\n        repository:\n          owner: o\n          name: t\n        binaries: [a]\n",
+        );
+        assert!(warnings.is_empty(), "{warnings:?}");
+    }
+
+    #[test]
+    fn a_raw_yaml_legacy_alias_is_reported() {
+        let warnings = warnings_of("snapshot:\n  name_template: x\n");
+        assert!(!warnings.is_empty());
+    }
 }

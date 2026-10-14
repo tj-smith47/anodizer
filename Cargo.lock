@@ -4751,6 +4751,8 @@ dependencies = [
  "serde_yaml_ng",
  "tera",
  "toml",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

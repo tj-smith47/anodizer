@@ -86,7 +86,7 @@ aur_sources:
     url_template: ""                 # optional; source archive URL (template; default: the uploaded source archive)
     git_url: "ssh://aur@aur.archlinux.org/myapp.git"  # optional; AUR repo URL
     git_ssh_command: ""              # optional; custom GIT_SSH_COMMAND
-    private_key: ""                  # optional; SSH private key path
+    private_key: ""                  # optional; SSH key content (template, e.g. "{{ Env.AUR_SSH_KEY }}")
     directory: ""                    # optional; subdirectory in the git repo
     skip_upload: false               # optional; "auto" skips prereleases
     commit_author:
@@ -101,9 +101,8 @@ aur_sources:
 
 | Config field | Env var | Description |
 |---|---|---|
-| `private_key` | — | Path to SSH private key file |
-| `git_ssh_command` | — | Override the full SSH invocation |
-| — | `AUR_SSH_KEY` | SSH key content (used via `private_key: "{{ Env.AUR_SSH_KEY }}"`) |
+| `private_key` | — | SSH private key content (the PEM / OpenSSH text itself), templated, usually `"{{ Env.AUR_SSH_KEY }}"`; written to a temporary file with mode 0600. `git_ssh_command` takes precedence when both are set |
+| `git_ssh_command` | — | Override the full SSH invocation; takes precedence over `private_key` |
 
 ## Common gotchas
 
@@ -137,7 +136,7 @@ aur_sources:
 | `url_template` | string | the uploaded source archive's URL | Source archive download URL (template); `{{ .ArtifactName }}` is the archive's file name. In the rendered URL the version is replaced by `${pkgver}` where it appears verbatim |
 | `git_url` | string | none | AUR git repository URL (for pushing) |
 | `git_ssh_command` | string | none | Custom `GIT_SSH_COMMAND` |
-| `private_key` | string | none | SSH private key path |
+| `private_key` | string | none | SSH private key content (the PEM / OpenSSH text itself), templated, usually `"{{ Env.AUR_SSH_KEY }}"`; written to a temporary file with mode 0600. `git_ssh_command` takes precedence when both are set |
 | `directory` | string | repo root | Subdirectory in the git repo |
 | `skip_upload` | string/bool | none | Skip git push: `true` or `1` always skips, `auto` skips for prereleases, `false`, `0` or empty publishes; a template is rendered and read the same way, in any letter case (see [bool-or-template values](@/docs/general/templates.md#bool-or-template-values)) |
 | `commit_author` | object | none | Git commit author (`name`, `email`) |

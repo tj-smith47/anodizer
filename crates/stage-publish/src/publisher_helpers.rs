@@ -650,19 +650,20 @@ macro_rules! simple_publisher {
 // ---------------------------------------------------------------------------
 
 /// Derive the env requirement for a git/GitHub-repo-backed publisher's
-/// token, mirroring `util::resolve_repo_token`'s ladder: explicit
-/// `--token` option → `repo.token` (templated) → preferred env var →
-/// `ANODIZER_GITHUB_TOKEN` → `GITHUB_TOKEN`.
+/// token, mirroring `util::resolve_repo_token`'s ladder: `repo.token`
+/// (templated) → preferred env var → the run's GitHub token →
+/// `ANODIZER_GITHUB_TOKEN` → `GITHUB_TOKEN` → `GH_TOKEN`.
 ///
-/// Returns `None` when no env var is needed (explicit `--token`, or a
-/// literal non-templated `repo.token` in config).
+/// Returns `None` when no env var is needed (a run GitHub token, or a
+/// literal non-templated `repo.token` in config). A GitLab or Gitea run
+/// token does not count: it is never sent to a GitHub repository.
 pub(crate) fn repo_token_requirement(
     ctx: &anodizer_core::context::Context,
     repo: Option<&anodizer_core::config::RepositoryConfig>,
     preferred_env: Option<&str>,
 ) -> Option<anodizer_core::EnvRequirement> {
     use anodizer_core::env_preflight::template_env_refs;
-    if ctx.options.token.as_deref().is_some_and(|t| !t.is_empty()) {
+    if crate::util::run_github_token(ctx).is_some() {
         return None;
     }
     if let Some(r) = repo

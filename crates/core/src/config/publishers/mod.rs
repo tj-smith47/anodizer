@@ -42,7 +42,18 @@ pub struct RepositoryConfig {
     pub owner: Option<String>,
     /// Repository name.
     pub name: Option<String>,
-    /// Auth token for the repository. Falls back to env-based resolution.
+    /// Auth token for the push to this repository. Supports templates; a
+    /// value that renders blank falls through to the publisher's own
+    /// variable (`HOMEBREW_TAP_TOKEN`, `SCOOP_BUCKET_TOKEN`,
+    /// `KREW_INDEX_TOKEN`, …), then the run's GitHub token (`--token`), then
+    /// `ANODIZER_GITHUB_TOKEN`, `GITHUB_TOKEN` and `GH_TOKEN`.
+    ///
+    /// ```yaml
+    /// repository:
+    ///   owner: my-org
+    ///   name: homebrew-tap
+    ///   token: "{{ .Env.TAP_PUSH_TOKEN }}"
+    /// ```
     pub token: Option<String>,
     /// Token type: "github" (default), "gitlab", "gitea".
     pub token_type: Option<String>,
@@ -82,9 +93,13 @@ impl PartialEq for RepositoryConfig {
 pub struct GitRepoConfig {
     /// Git URL (e.g. `ssh://git@github.com/owner/repo.git`).
     pub url: Option<String>,
-    /// Custom SSH command (e.g. `ssh -i /path/to/key`).
+    /// Custom SSH command (e.g. `ssh -i /path/to/key`). Takes precedence
+    /// over `private_key` when both are set.
     pub ssh_command: Option<String>,
-    /// Path to SSH private key file.
+    /// The SSH private key itself, as its PEM or OpenSSH text.
+    /// Supports templates, so a key is usually read from the environment:
+    /// `private_key: "{{ .Env.AUR_SSH_KEY }}"`. Written to a temporary
+    /// file with mode 0600 for the push.
     pub private_key: Option<String>,
 }
 
@@ -101,8 +116,8 @@ pub struct PullRequestConfig {
     /// Target base repository/branch for the PR.
     pub base: Option<PullRequestBaseConfig>,
     /// Token used to open the pull request. Supports templates. Falls back
-    /// to `repository.token`, then to the `ANODIZER_GITHUB_TOKEN` /
-    /// `GITHUB_TOKEN` environment chain. Set it when the token that pushes
+    /// to `repository.token`, then to `ANODIZER_GITHUB_TOKEN`,
+    /// `GITHUB_TOKEN` and `GH_TOKEN`. Set it when the token that pushes
     /// to the fork may not open pull requests against the upstream
     /// repository (a fine-grained token scoped to the fork beside a classic
     /// token for `microsoft/winget-pkgs`, for example).

@@ -255,14 +255,25 @@ For a `versioned` entry, every other option in the previous version's block (`un
 
 ## Authentication
 
-Anodizer resolves a GitHub token from the first source that is set, in this order:
+The push to your fork uses the first token that is set:
 
-1. `repository.token` in the config
-2. `SCHEMASTORE_TOKEN` environment variable
-3. `ANODIZER_GITHUB_TOKEN` environment variable
-4. `GITHUB_TOKEN` environment variable
+1. `repository.token`
+2. `SCHEMASTORE_TOKEN`
+3. the run's GitHub token (`--token`, or the `ANODIZER_GITHUB_TOKEN` / `GITHUB_TOKEN` / `GH_TOKEN` value read at startup); a GitLab or Gitea token is never sent to GitHub
+4. `ANODIZER_GITHUB_TOKEN`, `GITHUB_TOKEN`, `GH_TOKEN`
 
-The pull request itself is opened with `repository.pull_request.token` when that is set, falling back to the same chain; set it when the fork token cannot open PRs against `SchemaStore/schemastore`.
+The pull request is opened with `repository.pull_request.token`, then `repository.token`, then `ANODIZER_GITHUB_TOKEN`, `GITHUB_TOKEN` and `GH_TOKEN`. With none of these set, the `gh` CLI's own login opens it; with neither a token nor `gh`, the publish fails. Set `pull_request.token` when the fork token cannot open pull requests against `SchemaStore/schemastore`.
+
+```yaml
+schemastore:
+  repository:
+    owner: myorg
+    name: schemastore
+    token: "{{ .Env.SCHEMASTORE_FORK_TOKEN }}"
+    pull_request:
+      enabled: true
+      token: "{{ .Env.SCHEMASTORE_PR_TOKEN }}"
+```
 
 Both tokens are rendered before the fork is cloned. A blank render falls through to the next token in the chain. A template that fails to render fails the publisher before anything is cloned or pushed, with an error naming the field and the render error and the template's own text replaced by `<template>` (`pull_request.token does not render: …`).
 
@@ -322,7 +333,7 @@ schemastore:
     name: schemastore
     pull_request:
       enabled: true
-      token: ""                      # token used to open the PR (default: repository.token, then GITHUB_TOKEN)
+      token: ""                      # token used to open the PR (default: repository.token, then ANODIZER_GITHUB_TOKEN / GITHUB_TOKEN / GH_TOKEN)
       base:
         owner: SchemaStore
         name: schemastore

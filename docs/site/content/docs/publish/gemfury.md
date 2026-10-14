@@ -11,7 +11,7 @@ Anodizer can push deb, rpm, and apk packages to [Gemfury](https://fury.io/) repo
 
 | Group | Required (default) | Rollback | Token scope |
 |---|---|---|---|
-| Manager | true | per-version `DELETE` via the Fury API | `FURY_TOKEN` push + `FURY_API_TOKEN` delete |
+| Manager | true | per-version `DELETE` via the Fury API | `FURY_PUSH_TOKEN` push + `FURY_API_TOKEN` delete |
 
 See [Release resilience](../advanced/release-resilience.md) for the full classification table and the Submitter gate semantics.
 
@@ -84,6 +84,20 @@ raises a warning so a typo'd glob is never a silent empty upload.
 |----------|-------------|
 | `FURY_PUSH_TOKEN` | Push token, sent as HTTP Basic auth username. Override the env-var name via `secret_name`. |
 | `FURY_API_TOKEN` | API token for the rollback `DELETE` endpoint. Override the env-var name via `api_secret_name`. |
+
+The push token is `token` when it renders to a non-empty value, then the
+env var named by `secret_name` (default `FURY_PUSH_TOKEN`). The API token
+is `api_token` when it renders to a non-empty value, then the env var
+named by `api_secret_name` (default `FURY_API_TOKEN`).
+
+```yaml
+gemfury:
+  - account: myorg
+    token: "{{ Env.MY_FURY_PUSH }}"      # wins over the secret_name env var
+    secret_name: FURY_PUSH_TOKEN         # read when token is unset or renders blank
+    api_token: "{{ Env.MY_FURY_API }}"   # wins over the api_secret_name env var
+    api_secret_name: FURY_API_TOKEN      # read when api_token is unset or renders blank
+```
 
 The push and API tokens are usually different on Fury (push tokens are
 repo-scoped; API tokens have account-wide privileges). Anodizer keeps

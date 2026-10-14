@@ -214,7 +214,7 @@ crates:
         image_templates: ["ghcr.io/myorg/myapp:{{ Version }}-amd64"]
         skip_push: "{{ if IsSnapshot }}1{{ end }}"   # skips the push on a snapshot
     publish:
-      homebrew:
+      homebrew_cask:
         skip_upload: auto                            # skips a prerelease
         if: "{{ not IsNightly }}"                    # renders false on a nightly, which skips
 ```
@@ -319,7 +319,7 @@ If you hit a construct not covered here, open an issue with the failing template
 | Variable | Description | Example |
 |----------|-------------|---------|
 | `Os` | Mapped OS name | `linux`, `darwin`, `windows` |
-| `Arch` | Mapped architecture | `amd64`, `arm64` |
+| `Arch` | Mapped architecture; see [Architecture names](#architecture-names) | `amd64`, `arm64` |
 | `Arm` | 32-bit ARM version, set only where `Arch` is the bare `arm` (archive asset names split `armv7` into `Arch="arm"` + `Arm="7"`); empty everywhere `Arch` carries the composite `armv7`/`armv6` token (build, makeself, AppImage, sign) | `7` |
 | `Arm64` | 64-bit ARM feature level (build, makeself, AppImage, sign) | `v8` |
 | `Amd64` | x86-64 micro-architecture level from the binary's build metadata; untagged binaries carry the `v1` baseline in every context. Default name templates suppress `v1` (`{% if Amd64 and Amd64 != "v1" %}`), so only tuned `v2`/`v3` builds get a suffix | `v1`, `v3` |
@@ -335,6 +335,46 @@ If you hit a construct not covered here, open an issue with the failing template
 | `ArtifactExt` | Artifact extension (compound-aware) | `.tar.gz`, `.exe`, `.deb`, `.pkg.tar.zst` |
 | `Checksums` | Combined checksum file contents | `abc123  myapp.tar.gz\n...` |
 | `SourcePrefix` | Top-level directory inside the source archive (from a `source.prefix_template` ending in `/`); empty for a flat archive. Set by the source stage; useful for an SRPM `%autosetup -n {{ SourcePrefix }}`. | `myapp-1.2.3` |
+
+### Architecture names
+
+`Arch` is read from the first part of the target triple and spelled the way
+Go names the architecture, except for 32-bit ARM, which keeps the version
+(`armv7`, `armv6`), and the mips family, which keeps the Rust spelling
+(`mipsel`, `mips64el`). Every Rust spelling of one architecture gets the same
+name, so `riscv64gc` and `riscv64` both render `riscv64`. A first part not in
+this table is used as written. In archive names,
+32-bit ARM is split in two: `Arch` is `arm` and `Arm` holds the version
+(`7`, `6`), so `{{ Arch }}v{{ Arm }}` renders `armv7`.
+
+| Target | `Arch` |
+|---|---|
+| `x86_64-unknown-linux-gnu` | `amd64` |
+| `aarch64-apple-darwin` | `arm64` |
+| `armv7-unknown-linux-gnueabihf` | `armv7` |
+| `armv6l-unknown-linux-gnueabihf` | `armv6` |
+| `arm-unknown-linux-gnueabi` | `armv6` |
+| `i686-pc-windows-msvc` | `386` |
+| `i586-unknown-linux-gnu` | `386` |
+| `riscv64gc-unknown-linux-gnu` | `riscv64` |
+| `loongarch64-unknown-linux-gnu` | `loong64` |
+| `powerpc-unknown-linux-gnu` | `ppc` |
+| `powerpc64-unknown-linux-gnu` | `ppc64` |
+| `powerpc64le-unknown-linux-gnu` | `ppc64le` |
+| `s390x-unknown-linux-gnu` | `s390x` |
+| `sparcv9-sun-solaris` | `sparc64` |
+| `mips-unknown-linux-gnu` | `mips` |
+| `mipsel-unknown-linux-gnu` | `mipsel` |
+| `mips64-unknown-linux-gnuabi64` | `mips64` |
+| `mips64el-unknown-linux-gnuabi64` | `mips64el` |
+| `wasm32-unknown-unknown` | `wasm` |
+
+```yaml
+crates:
+  - name: myapp
+    archives:
+      - name_template: "{{ ProjectName }}-{{ Version }}-{{ Os }}-{{ Arch }}"   # myapp-1.2.3-linux-riscv64 for riscv64gc-unknown-linux-gnu
+```
 
 ### Release state
 

@@ -214,10 +214,11 @@ crates:
         name: myapp
     publish:
       cargo: {}
-      homebrew:
+      homebrew_cask:
         repository:
           owner: myorg
           name: homebrew-tap
+        binaries: [myapp]
 ```
 
 See the [full configuration reference](https://tj-smith47.github.io/anodizer/docs/reference/configuration/) and the [template reference](https://tj-smith47.github.io/anodizer/docs/general/templates/) for all available fields, variables, and filters.

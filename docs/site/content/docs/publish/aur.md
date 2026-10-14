@@ -79,7 +79,7 @@ crates:
         package: ""                  # optional; custom package() body
         install: ""                  # optional; .install file content
         directory: ""                # optional; subdirectory in AUR repo
-        private_key: ""              # optional; SSH key path (template)
+        private_key: ""              # optional; SSH key content (template, e.g. "{{ Env.AUR_SSH_KEY }}")
         git_ssh_command: ""          # optional; custom SSH invocation
         commit_author:
           name: ""
@@ -132,9 +132,8 @@ AUR publishing requires SSH access to the AUR git server. See [SSH key setup](#s
 
 | Config field | Env var | Description |
 |---|---|---|
-| `private_key` | — | Path to SSH private key file |
-| `git_ssh_command` | — | Override the full SSH invocation |
-| — | `AUR_SSH_KEY` | SSH key content (used via `private_key: "{{ Env.AUR_SSH_KEY }}"`) |
+| `private_key` | — | SSH private key content (the PEM / OpenSSH text itself), templated, usually `"{{ Env.AUR_SSH_KEY }}"`; written to a temporary file with mode 0600. `git_ssh_command` takes precedence when both are set |
+| `git_ssh_command` | — | Override the full SSH invocation; takes precedence over `private_key` |
 
 ## Common gotchas
 
@@ -181,7 +180,7 @@ crates:
 | `package` | string | auto | Custom `package()` function body for PKGBUILD |
 | `install` | string | none | Content for a `.install` file (post-install/pre-remove hooks) |
 | `directory` | string | repo root | Subdirectory in the AUR git repo for committed files. Supports templates |
-| `private_key` | string | none | Path to SSH private key file |
+| `private_key` | string | none | SSH private key content (the PEM / OpenSSH text itself), templated, usually `"{{ Env.AUR_SSH_KEY }}"`; written to a temporary file with mode 0600. `git_ssh_command` takes precedence when both are set |
 | `git_ssh_command` | string | none | Custom SSH command for git operations |
 | `commit_author` | object | none | Override commit author (`name`, `email`) |
 | `commit_msg_template` | string | `Update to <version>` | Custom commit message template |
@@ -283,7 +282,7 @@ crates:
 | `build` | string | `cargo build --release --locked` | Custom `build()` function body |
 | `package` | string | `install -Dm755 ...` | Custom `package()` function body |
 | `directory` | string | repo root | Subdirectory in the AUR git repo. Supports templates |
-| `private_key` | string | none | Path to SSH private key file |
+| `private_key` | string | none | SSH private key content (the PEM / OpenSSH text itself), templated, usually `"{{ Env.AUR_SSH_KEY }}"`; written to a temporary file with mode 0600. `git_ssh_command` takes precedence when both are set |
 | `git_ssh_command` | string | none | Custom SSH command |
 | `commit_author` | object | none | Override commit author |
 | `commit_msg_template` | string | `Update to <version>` | Custom commit message template |

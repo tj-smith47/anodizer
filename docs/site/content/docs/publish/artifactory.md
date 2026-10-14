@@ -119,9 +119,9 @@ Credentials are resolved in this order:
 | Variable | Fallback |
 |----------|----------|
 | Username | config value, then `ARTIFACTORY_{NAME}_USERNAME` |
-| Password | `ARTIFACTORY_{NAME}_SECRET`, then `ARTIFACTORY_SECRET`, then config value |
+| Password | config value, then `ARTIFACTORY_{NAME}_SECRET` |
 
-Where `{NAME}` is the uppercased `name` field.
+Where `{NAME}` is the `name` field uppercased, with each `-` turned into `_` (`prod-eu` reads `ARTIFACTORY_PROD_EU_SECRET`). A config value that renders blank falls through to the env var.
 
 ## Common gotchas
 

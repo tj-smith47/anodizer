@@ -70,7 +70,7 @@ pub use semver::{SemVer, parse_semver, parse_semver_tag, split_tag_family, versi
 pub use slug::{
     RepoSlug, resolve_github_slug, resolve_github_slug_in, resolve_repo_slug, resolve_repo_slug_in,
 };
-pub use snapshot_sde::resolve_snapshot_sde;
+pub use snapshot_sde::{resolve_snapshot_sde, resolve_snapshot_sde_with_env};
 pub use status::{
     check_git_available, git_status_porcelain, git_status_porcelain_in,
     git_status_porcelain_result_in, is_git_dirty, is_git_dirty_in, is_git_repo, is_git_repo_in,

@@ -1897,7 +1897,7 @@
           ]
         },
         "git_ssh_command": {
-          "description": "Custom SSH command for git operations.",
+          "description": "Custom SSH command for git operations. Takes precedence over `private_key` when both are set.",
           "default": null,
           "type": [
             "string",
@@ -1994,7 +1994,7 @@
           ]
         },
         "private_key": {
-          "description": "Path to SSH private key file.",
+          "description": "The SSH private key itself, as its PEM or OpenSSH text. Supports templates, so a key is usually read from the environment: `private_key: \"{{ .Env.AUR_SSH_KEY }}\"`. Written to a temporary file with mode 0600 for the push.",
           "default": null,
           "type": [
             "string",
@@ -2196,7 +2196,7 @@
           ]
         },
         "git_ssh_command": {
-          "description": "Custom SSH command for git operations.",
+          "description": "Custom SSH command for git operations. Takes precedence over `private_key` when both are set.",
           "default": null,
           "type": [
             "string",
@@ -2312,7 +2312,7 @@
           ]
         },
         "private_key": {
-          "description": "Path to SSH private key file.",
+          "description": "The SSH private key itself, as its PEM or OpenSSH text. Supports templates, so a key is usually read from the environment: `private_key: \"{{ .Env.AUR_SSH_KEY }}\"`. Written to a temporary file with mode 0600 for the push.",
           "default": null,
           "type": [
             "string",
@@ -6738,7 +6738,7 @@
       "type": "object",
       "properties": {
         "private_key": {
-          "description": "Path to SSH private key file.",
+          "description": "The SSH private key itself, as its PEM or OpenSSH text. Supports templates, so a key is usually read from the environment: `private_key: \"{{ .Env.AUR_SSH_KEY }}\"`. Written to a temporary file with mode 0600 for the push.",
           "default": null,
           "type": [
             "string",
@@ -6746,7 +6746,7 @@
           ]
         },
         "ssh_command": {
-          "description": "Custom SSH command (e.g. `ssh -i /path/to/key`).",
+          "description": "Custom SSH command (e.g. `ssh -i /path/to/key`). Takes precedence over `private_key` when both are set.",
           "default": null,
           "type": [
             "string",
@@ -12981,7 +12981,7 @@
           ]
         },
         "token": {
-          "description": "Token used to open the pull request. Supports templates. Falls back to `repository.token`, then to the `ANODIZER_GITHUB_TOKEN` / `GITHUB_TOKEN` environment chain. Set it when the token that pushes to the fork may not open pull requests against the upstream repository (a fine-grained token scoped to the fork beside a classic token for `microsoft/winget-pkgs`, for example).\n\n```yaml\nrepository:\n  token: \"{{ .Env.FORK_TOKEN }}\"\n  pull_request:\n    enabled: true\n    token: \"{{ .Env.UPSTREAM_PR_TOKEN }}\"\n```",
+          "description": "Token used to open the pull request. Supports templates. Falls back to `repository.token`, then to `ANODIZER_GITHUB_TOKEN`, `GITHUB_TOKEN` and `GH_TOKEN`. Set it when the token that pushes to the fork may not open pull requests against the upstream repository (a fine-grained token scoped to the fork beside a classic token for `microsoft/winget-pkgs`, for example).\n\n```yaml\nrepository:\n  token: \"{{ .Env.FORK_TOKEN }}\"\n  pull_request:\n    enabled: true\n    token: \"{{ .Env.UPSTREAM_PR_TOKEN }}\"\n```",
           "default": null,
           "type": [
             "string",
@@ -13724,7 +13724,7 @@
           ]
         },
         "token": {
-          "description": "Auth token for the repository. Falls back to env-based resolution.",
+          "description": "Auth token for the push to this repository. Supports templates; a value that renders blank falls through to the publisher's own variable (`HOMEBREW_TAP_TOKEN`, `SCOOP_BUCKET_TOKEN`, `KREW_INDEX_TOKEN`, …), then the run's GitHub token (`--token`), then `ANODIZER_GITHUB_TOKEN`, `GITHUB_TOKEN` and `GH_TOKEN`.\n\n```yaml\nrepository:\n  owner: my-org\n  name: homebrew-tap\n  token: \"{{ .Env.TAP_PUSH_TOKEN }}\"\n```",
           "default": null,
           "type": [
             "string",

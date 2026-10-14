@@ -291,7 +291,7 @@ pub(crate) fn seed_determinism_state(
                 .project_root
                 .clone()
                 .unwrap_or_else(|| PathBuf::from("."));
-            match anodizer_core::git::resolve_snapshot_sde(&repo) {
+            match anodizer_core::git::resolve_snapshot_sde_with_env(&repo, ctx.env_source()) {
                 Ok(epoch) => {
                     ctx.determinism =
                         Some(anodizer_core::DeterminismState::seed_from_commit(epoch)?);
@@ -1777,10 +1777,71 @@ mod run_helpers_tests {
         ctx.set_env_source(MapEnvSource::new().with("SOURCE_DATE_EPOCH", "1600000000"));
         let log = mk_log();
         seed_determinism_state(&mut ctx, "0", &log).unwrap();
-        assert!(
-            ctx.determinism.is_some(),
-            "determinism state must be seeded from SOURCE_DATE_EPOCH"
+        assert_eq!(ctx.determinism.as_ref().map(|d| d.sde), Some(1_600_000_000));
+    }
+
+    /// A git repository whose one commit is dated 1715000000
+    /// (2024-05-06T12:53:20Z), left dirty by an untracked file.
+    fn dirty_repo_at_1715000000() -> tempfile::TempDir {
+        use anodizer_core::test_helpers::{git_test_ok, output_with_spawn_retry};
+        let tmp = tempfile::tempdir().unwrap();
+        git_test_ok(tmp.path(), &["init", "-q"]);
+        std::fs::write(tmp.path().join("a.txt"), "a").unwrap();
+        git_test_ok(tmp.path(), &["add", "a.txt"]);
+        let out = output_with_spawn_retry(
+            || {
+                let mut cmd = anodizer_core::git::git_command();
+                cmd.current_dir(tmp.path())
+                    .env("GIT_AUTHOR_DATE", "1715000000 +0000")
+                    .env("GIT_COMMITTER_DATE", "1715000000 +0000")
+                    .args(["commit", "-q", "-m", "init"]);
+                cmd
+            },
+            "git",
         );
+        assert!(out.status.success(), "{out:?}");
+        std::fs::write(tmp.path().join("untracked.txt"), "dirty").unwrap();
+        tmp
+    }
+
+    fn snapshot_ctx(repo: &std::path::Path, env: MapEnvSource) -> Context {
+        let mut ctx = Context::new(
+            Config {
+                project_name: "myproj".to_string(),
+                ..Default::default()
+            },
+            ContextOptions {
+                snapshot: true,
+                project_root: Some(repo.to_path_buf()),
+                ..Default::default()
+            },
+        );
+        ctx.set_env_source(env);
+        ctx
+    }
+
+    /// A snapshot run seeds the state from SOURCE_DATE_EPOCH when it is set,
+    /// on a dirty tree too. The docker `created` label, archive mtimes and
+    /// SBOM timestamps all read this value.
+    #[test]
+    fn a_snapshot_seeds_source_date_epoch_when_set() {
+        let repo = dirty_repo_at_1715000000();
+        let mut ctx = snapshot_ctx(
+            repo.path(),
+            MapEnvSource::new().with("SOURCE_DATE_EPOCH", "1767225600"),
+        );
+        seed_determinism_state(&mut ctx, "1715000000", &mk_log()).unwrap();
+        assert_eq!(ctx.determinism.as_ref().map(|d| d.sde), Some(1_767_225_600));
+    }
+
+    /// With no SOURCE_DATE_EPOCH a snapshot run seeds the HEAD commit time,
+    /// and a dirty tree does not move it.
+    #[test]
+    fn a_snapshot_without_source_date_epoch_seeds_the_commit_time() {
+        let repo = dirty_repo_at_1715000000();
+        let mut ctx = snapshot_ctx(repo.path(), MapEnvSource::new());
+        seed_determinism_state(&mut ctx, "1715000000", &mk_log()).unwrap();
+        assert_eq!(ctx.determinism.as_ref().map(|d| d.sde), Some(1_715_000_000));
     }
 
     /// When determinism is already set before calling seed_determinism_state, it

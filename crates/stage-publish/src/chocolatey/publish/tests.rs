@@ -951,6 +951,22 @@ fn resolve_api_key_falls_back_to_env() {
     );
 }
 
+/// An `api_key` that renders blank falls through to `CHOCOLATEY_API_KEY`, as the preflight does.
+#[test]
+fn resolve_api_key_falls_through_a_blank_render_to_env() {
+    let mut ctx = ctx_with_choco(ChocolateyConfig::default());
+    ctx.set_env_source(anodizer_core::MapEnvSource::new().with("CHOCOLATEY_API_KEY", "from-env"));
+    ctx.template_vars_mut().set("MyKey", "");
+    let cfg = ChocolateyConfig {
+        api_key: Some("{{ MyKey }}".to_string()),
+        ..Default::default()
+    };
+    assert_eq!(
+        resolve_api_key(&ctx, &cfg, &ctx.logger("publish")).unwrap(),
+        "from-env"
+    );
+}
+
 #[test]
 fn resolve_api_key_empty_when_neither_configured_nor_env() {
     let mut ctx = ctx_with_choco(ChocolateyConfig::default());

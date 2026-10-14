@@ -9440,7 +9440,7 @@ crates:
         "publish.homebrew",
         "GoReleaser v2.16",
         "homebrew_casks",
-        "https://anodizer.dev/docs/publish/homebrew-casks/",
+        "https://tj-smith47.github.io/anodizer/migration/goreleaser/#brews-homebrew_casks",
     ] {
         assert!(
             msg.contains(clause),

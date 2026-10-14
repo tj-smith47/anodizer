@@ -103,7 +103,6 @@ Credentials are read from environment variables using each provider's standard c
 | `AWS_SECRET_ACCESS_KEY` | Secret access key. |
 | `AWS_SESSION_TOKEN` | Session token (for assumed roles). |
 | `AWS_REGION` | Default region (overridden by `region` field). |
-| `AWS_PROFILE` | Named profile from `~/.aws/credentials`. |
 
 IAM instance profiles and ECS task roles are also supported automatically.
 
@@ -113,7 +112,8 @@ IAM instance profiles and ECS task roles are also supported automatically.
 |----------|-------------|
 | `GOOGLE_SERVICE_ACCOUNT` | Path to service account JSON key file. |
 | `GOOGLE_SERVICE_ACCOUNT_PATH` | Alias for `GOOGLE_SERVICE_ACCOUNT`. |
-| `GOOGLE_SERVICE_ACCOUNT_KEY` | JSON-serialized service account key (inline, not a file path). |
+| `GOOGLE_SERVICE_ACCOUNT_KEY` | JSON-serialized service account key, given inline as the JSON text. |
+| `GOOGLE_APPLICATION_CREDENTIALS` | Path to an application credentials JSON file. |
 
 Application Default Credentials (ADC) via `gcloud auth application-default login` are also supported.
 
@@ -124,7 +124,6 @@ Application Default Credentials (ADC) via `gcloud auth application-default login
 | `AZURE_STORAGE_ACCOUNT_NAME` | Storage account name. |
 | `AZURE_STORAGE_ACCOUNT_KEY` | Storage account key. |
 | `AZURE_STORAGE_SAS_KEY` | Shared Access Signature token (alias: `AZURE_STORAGE_SAS_TOKEN`). |
-| `AZURE_STORAGE_CONNECTION_STRING` | Full connection string. |
 | `AZURE_CLIENT_ID` | Service principal client ID (with `AZURE_CLIENT_SECRET` and `AZURE_TENANT_ID`). |
 | `AZURE_CLIENT_SECRET` | Service principal client secret. |
 | `AZURE_TENANT_ID` | Azure AD tenant ID. |

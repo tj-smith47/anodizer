@@ -87,10 +87,10 @@ crates:
           owner: my-org                      # optional; inferred if omitted
           name: nixpkgs                      # optional
           branch: main                       # optional; default: repo default branch (versioned <name>-<version> when pull_request.enabled)
-          token: "{{ Env.GITHUB_TOKEN }}"   # optional
+          token: "{{ Env.NIX_PKGS_TOKEN }}" # optional; default: NIX_PKGS_TOKEN, then the GitHub token chain
           pull_request:
             enabled: false                   # optional; open PR instead of direct push
-            token: ""                        # token used to open the PR (default: repository.token, then GITHUB_TOKEN)
+            token: ""                        # token used to open the PR (default: repository.token, then ANODIZER_GITHUB_TOKEN / GITHUB_TOKEN / GH_TOKEN)
             base: master                     # optional
         dependencies:                        # optional; runtime deps as Nix attr paths
           - name: openssl                    # Nix attribute path
@@ -100,11 +100,25 @@ crates:
 
 ## Authentication
 
-| Variable | Description |
-|----------|-------------|
-| `GITHUB_TOKEN` | Token with push access to your nixpkgs-style repository |
+The push to your nixpkgs-style repository uses the first token that is set:
 
-The token can also be set via `repository.token` in the config.
+1. `repository.token`
+2. `NIX_PKGS_TOKEN`
+3. the run's GitHub token (`--token`, or the `ANODIZER_GITHUB_TOKEN` / `GITHUB_TOKEN` / `GH_TOKEN` value read at startup); a GitLab or Gitea token is never sent to GitHub
+4. `ANODIZER_GITHUB_TOKEN`, `GITHUB_TOKEN`, `GH_TOKEN`
+
+The pull request is opened with `repository.pull_request.token`, then `repository.token`, then `ANODIZER_GITHUB_TOKEN`, `GITHUB_TOKEN` and `GH_TOKEN`. With none of these set, the `gh` CLI's own login opens it; with neither a token nor `gh`, the publish fails.
+
+```yaml
+nix:
+  repository:
+    owner: myorg
+    name: nixpkgs
+    token: "{{ .Env.NIX_PKGS_TOKEN }}"
+    pull_request:
+      enabled: true
+      token: "{{ .Env.PR_TOKEN }}"
+```
 
 `repository.pull_request.token` and `repository.token` are rendered before anything is cloned or pushed. A blank render, such as an unset `{{ .Env.X }}`, falls through to the next token in the chain. A template that fails to render skips this crate's nix entry with nothing pushed, and the next crate still publishes. The skip reason names the field and the render error (`pull_request.token does not render: …`), with the template's own text replaced by `<template>` so a token literal in it is never printed.
 
@@ -149,7 +163,7 @@ repository:
   token: "{{ Env.GITHUB_TOKEN }}"
   pull_request:
     enabled: true        # open a PR instead of pushing directly
-    token: ""            # token used to open the PR (default: repository.token, then GITHUB_TOKEN)
+    token: ""            # token used to open the PR (default: repository.token, then ANODIZER_GITHUB_TOKEN / GITHUB_TOKEN / GH_TOKEN)
     base: master
 ```
 

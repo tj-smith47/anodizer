@@ -52,7 +52,7 @@ crates:
 |-------|------|---------|-------------|
 | `repository.owner` | string | — | GitHub owner of the bucket repo |
 | `repository.name` | string | — | Bucket repository name |
-| `repository.pull_request.token` | string | `repository.token`, then `GITHUB_TOKEN` | Token used to open the PR when `repository.pull_request.enabled` is set (templates allowed). Set it when the bucket token cannot open pull requests. |
+| `repository.pull_request.token` | string | `repository.token`, then `ANODIZER_GITHUB_TOKEN`, `GITHUB_TOKEN`, `GH_TOKEN` | Token used to open the PR when `repository.pull_request.enabled` is set (templates allowed). Set it when the bucket token cannot open pull requests. |
 | `description` | string | Cargo `[package].description` | Manifest description. Derived from `Cargo.toml`; set to override. |
 | `directory` | string | `bucket` | Subdirectory in the bucket repo for manifest placement. Scoop resolves manifests only from `bucket/` when that directory exists (repo root otherwise), so `bucket/` is correct for both layouts. Set to `""` to target the repo root. A stale same-named root-level manifest is removed when publishing into a subdirectory. |
 | `license` | string | Cargo `[package].license` | License identifier. Derived from `Cargo.toml`; set to override. |
@@ -68,11 +68,11 @@ crates:
         repository:
           owner: myorg              # required
           name: scoop-bucket        # required
-          token: ""                 # falls back to GITHUB_TOKEN
+          token: ""                 # default: SCOOP_BUCKET_TOKEN, then the GitHub token chain
           branch: ""                # default: repo default branch (versioned <manifest>-<version> when pull_request.enabled)
           pull_request:
             enabled: false          # optional; open PR instead of direct push
-            token: ""               # token used to open the PR (default: repository.token, then GITHUB_TOKEN)
+            token: ""               # token used to open the PR (default: repository.token, then ANODIZER_GITHUB_TOKEN / GITHUB_TOKEN / GH_TOKEN)
         description: "A fast CLI tool"   # optional; derived from Cargo.toml description
         license: MIT                     # optional; derived from Cargo.toml license
         directory: bucket                # optional; default "bucket" ("" targets the repo root)
@@ -82,11 +82,25 @@ crates:
 
 ## Authentication
 
-| Variable | Description |
-|----------|-------------|
-| `GITHUB_TOKEN` | Token with push access to your bucket repository |
+The push to the bucket repository uses the first token that is set:
 
-The token can also be set via `repository.token` in the config.
+1. `repository.token`
+2. `SCOOP_BUCKET_TOKEN`
+3. the run's GitHub token (`--token`, or the `ANODIZER_GITHUB_TOKEN` / `GITHUB_TOKEN` / `GH_TOKEN` value read at startup); a GitLab or Gitea token is never sent to GitHub
+4. `ANODIZER_GITHUB_TOKEN`, `GITHUB_TOKEN`, `GH_TOKEN`
+
+The pull request is opened with `repository.pull_request.token`, then `repository.token`, then `ANODIZER_GITHUB_TOKEN`, `GITHUB_TOKEN` and `GH_TOKEN`. With none of these set, the `gh` CLI's own login opens it; with neither a token nor `gh`, the publish fails.
+
+```yaml
+scoop:
+  repository:
+    owner: myorg
+    name: scoop-bucket
+    token: "{{ .Env.SCOOP_BUCKET_TOKEN }}"
+    pull_request:
+      enabled: true
+      token: "{{ .Env.SCOOP_PR_TOKEN }}"
+```
 
 `repository.pull_request.token` and `repository.token` are rendered before anything is cloned or pushed. A blank render, such as an unset `{{ .Env.X }}`, falls through to the next token in the chain. A template that fails to render skips this crate's scoop entry with nothing pushed, and the next crate still publishes. The skip reason names the field and the render error (`pull_request.token does not render: …`), with the template's own text replaced by `<template>` so a token literal in it is never printed.
 

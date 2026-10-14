@@ -61,9 +61,13 @@ pub struct AurSourceConfig {
     /// `ssh://aur@aur.archlinux.org/<package>.git`, derived from the resolved
     /// package name; set this only for a non-standard endpoint.
     pub git_url: Option<String>,
-    /// Custom SSH command for git operations.
+    /// Custom SSH command for git operations. Takes precedence over
+    /// `private_key` when both are set.
     pub git_ssh_command: Option<String>,
-    /// Path to SSH private key file.
+    /// The SSH private key itself, as its PEM or OpenSSH text.
+    /// Supports templates, so a key is usually read from the environment:
+    /// `private_key: "{{ .Env.AUR_SSH_KEY }}"`. Written to a temporary
+    /// file with mode 0600 for the push.
     pub private_key: Option<String>,
     /// Subdirectory in the git repo for committed files.
     pub directory: Option<String>,

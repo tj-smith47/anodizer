@@ -115,7 +115,7 @@ Anodizer needs a Chocolatey API key to push packages. You can provide it in two 
 1. **Environment variable** (recommended for CI): set `CHOCOLATEY_API_KEY`.
 2. **Config field**: set `api_key` in the chocolatey config. This field supports template rendering, so you can reference environment variables or other context values.
 
-The environment variable is used as a fallback when `api_key` is not set in the config. To obtain an API key, sign in to [chocolatey.org/account](https://community.chocolatey.org/account) and generate one from your account page.
+Anodizer reads `api_key` first; when it is unset or renders blank (such as an unset `{{ Env.X }}`), anodizer reads `CHOCOLATEY_API_KEY`. To obtain an API key, sign in to [chocolatey.org/account](https://community.chocolatey.org/account) and generate one from your account page.
 
 ## Common gotchas
 

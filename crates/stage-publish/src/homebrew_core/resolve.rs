@@ -15,7 +15,7 @@ use anyhow::{Context as _, Result, bail};
 /// `HOMEBREW_CORE_GITHUB_TOKEN`, then `COMMITTER_TOKEN` (the name
 /// mislav/bump-homebrew-formula-action consumes, so a project migrating from
 /// that action keeps its existing secret), then the standard GitHub ladder
-/// (`ANODIZER_GITHUB_TOKEN` / `GITHUB_TOKEN`).
+/// (`ANODIZER_GITHUB_TOKEN` / `GITHUB_TOKEN` / `GH_TOKEN`).
 pub(crate) const TOKEN_ENV_VARS: [&str; 2] = ["HOMEBREW_CORE_GITHUB_TOKEN", "COMMITTER_TOKEN"];
 
 /// The default formula repository when `repository:` is unset.

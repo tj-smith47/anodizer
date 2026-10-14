@@ -15,35 +15,23 @@ impl Context {
     /// PyPI wheels + sdists).
     ///
     /// Resolution ladder, single-sourced here so archives and wheels never
-    /// pick different timestamps in one run:
-    ///
-    /// 1. when ANY build in the crate universe is `reproducible: true`, the
-    ///    commit timestamp wins outright — a reproducible build pins its own
-    ///    output to the commit, so a stray ambient `SOURCE_DATE_EPOCH` must
-    ///    not override it;
-    /// 2. otherwise `SOURCE_DATE_EPOCH` (the standard reproducibility
-    ///    contract, set by the determinism harness on every child), falling
-    ///    back to the commit timestamp.
+    /// pick different timestamps in one run: `SOURCE_DATE_EPOCH` (the
+    /// standard reproducibility contract, set by the determinism harness on
+    /// every child), falling back to the commit timestamp. A
+    /// `reproducible: true` build stamps its binaries from the same ladder
+    /// (`resolve_reproducible_epoch`), so the binary and the archive holding
+    /// it carry one date.
     ///
     /// Returns `None` when neither a commit timestamp nor `SOURCE_DATE_EPOCH`
     /// is available (writers then leave the default wall-clock stamp).
     pub fn resolve_reproducible_mtime(&self) -> Option<u64> {
-        let any_reproducible = self.config.crate_universe().into_iter().any(|c| {
-            c.builds
-                .as_ref()
-                .is_some_and(|builds| builds.iter().any(|b| b.reproducible.unwrap_or(false)))
-        });
-        let commit_ts = self
-            .template_vars()
-            .get("CommitTimestamp")
-            .and_then(|ts| ts.parse::<u64>().ok());
-        if any_reproducible {
-            commit_ts
-        } else {
-            self.env_var("SOURCE_DATE_EPOCH")
-                .and_then(|s| s.parse::<u64>().ok())
-                .or(commit_ts)
-        }
+        self.env_var("SOURCE_DATE_EPOCH")
+            .and_then(|s| s.parse::<u64>().ok())
+            .or_else(|| {
+                self.template_vars()
+                    .get("CommitTimestamp")
+                    .and_then(|ts| ts.parse::<u64>().ok())
+            })
     }
 
     /// Derive the verbosity level from context options.
