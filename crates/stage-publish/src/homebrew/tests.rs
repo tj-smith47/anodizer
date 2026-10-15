@@ -4583,33 +4583,35 @@ fn publish_top_level_homebrew_casks_skip_then_missing_repository_records_both() 
 /// path clones it (a plain `git clone <localpath>`), writes the cask `.rb`,
 /// commits, and pushes back here. Returns `(bare_url, holder)`.
 pub(super) fn make_bare_cask_tap(branch: &str) -> (String, tempfile::TempDir) {
-    let bare = tempfile::tempdir().expect("bare tempdir");
-    let seed = tempfile::tempdir().expect("seed tempdir");
-    let git_ok =
-        |dir: &std::path::Path, args: &[&str]| anodizer_core::test_helpers::git_test_ok(dir, args);
-    git_ok(bare.path(), &["init", "--bare", "-b", branch]);
-    git_ok(seed.path(), &["init", "-b", branch]);
-    git_ok(seed.path(), &["config", "user.email", "t@example.invalid"]);
-    git_ok(seed.path(), &["config", "user.name", "T"]);
-    std::fs::write(seed.path().join("README"), "cask tap\n").unwrap();
-    git_ok(seed.path(), &["add", "README"]);
-    git_ok(seed.path(), &["commit", "-m", "seed"]);
-    assert!(
-        anodizer_core::test_helpers::output_with_spawn_retry(
-            || {
-                let mut cmd = std::process::Command::new("git");
-                cmd.args(["remote", "add", "origin"])
-                    .arg(bare.path())
-                    .current_dir(seed.path());
-                cmd
-            },
-            "git",
-        )
-        .status
-        .success(),
-        "git remote add origin failed"
-    );
-    git_ok(seed.path(), &["push", "-u", "origin", branch]);
+    let bare = crate::testing::fixture_copy(&format!("bare cask tap on {branch}"), |bare| {
+        let seed = tempfile::tempdir().expect("seed tempdir");
+        let git_ok = |dir: &std::path::Path, args: &[&str]| {
+            anodizer_core::test_helpers::git_test_ok(dir, args)
+        };
+        git_ok(bare, &["init", "--bare", "-b", branch]);
+        git_ok(seed.path(), &["init", "-b", branch]);
+        git_ok(seed.path(), &["config", "user.email", "t@example.invalid"]);
+        git_ok(seed.path(), &["config", "user.name", "T"]);
+        std::fs::write(seed.path().join("README"), "cask tap\n").unwrap();
+        git_ok(seed.path(), &["add", "README"]);
+        git_ok(seed.path(), &["commit", "-m", "seed"]);
+        assert!(
+            anodizer_core::test_helpers::output_with_spawn_retry(
+                || {
+                    let mut cmd = std::process::Command::new("git");
+                    cmd.args(["remote", "add", "origin"])
+                        .arg(bare)
+                        .current_dir(seed.path());
+                    cmd
+                },
+                "git",
+            )
+            .status
+            .success(),
+            "git remote add origin failed"
+        );
+        git_ok(seed.path(), &["push", "-u", "origin", branch]);
+    });
     (bare.path().to_string_lossy().into_owned(), bare)
 }
 

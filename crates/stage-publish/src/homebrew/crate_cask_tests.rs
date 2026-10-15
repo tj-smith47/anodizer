@@ -435,123 +435,139 @@ fn assert_gate_line_prints_once_per_command(
 /// warning from whichever pass reads it first, in every command including
 /// a snapshot and a dry run. The documents are the same-tap cask beside a
 /// pushed formula, a cask on its own tap, the formula, and a top-level
-/// cask.
+/// cask. Each gate is its own test, so the gates run in parallel: every
+/// document pushes to a git tap in every command, and on Windows the gates
+/// together came close to the test timeout.
 #[test]
-fn every_gate_skip_line_prints_once_per_command() {
+fn a_skip_upload_gate_skip_line_prints_once_per_command() {
+    assert_every_gate_skip_line_prints_once_per_command("skip_upload");
+}
+
+/// The `if` gate of [`a_skip_upload_gate_skip_line_prints_once_per_command`].
+#[test]
+fn an_if_gate_skip_line_prints_once_per_command() {
+    assert_every_gate_skip_line_prints_once_per_command("if");
+}
+
+/// The unrecognized `skip_upload` warning of
+/// [`a_skip_upload_gate_skip_line_prints_once_per_command`].
+#[test]
+fn an_unrecognized_skip_upload_warning_prints_once_per_command() {
+    assert_every_gate_skip_line_prints_once_per_command("warn");
+}
+
+fn assert_every_gate_skip_line_prints_once_per_command(gate: &'static str) {
     const WARNING: &str = "unrecognized skip_upload value \"ture\" (expected \"true\", \"false\", \"1\", \"0\" or \"auto\"); treating as false";
-    for gate in ["skip_upload", "if", "warn"] {
-        let gated = |skip_upload: &mut Option<StringOrBool>, if_condition: &mut Option<String>| {
-            match gate {
-                "skip_upload" => *skip_upload = Some(StringOrBool::Bool(true)),
-                "if" => *if_condition = Some("false".to_string()),
-                _ => *skip_upload = Some(StringOrBool::String("ture".to_string())),
-            }
+    let gated =
+        |skip_upload: &mut Option<StringOrBool>, if_condition: &mut Option<String>| match gate {
+            "skip_upload" => *skip_upload = Some(StringOrBool::Bool(true)),
+            "if" => *if_condition = Some("false".to_string()),
+            _ => *skip_upload = Some(StringOrBool::String("ture".to_string())),
         };
-        let (level, skip_line) = if gate == "warn" {
-            (LogLevel::Warn, None)
-        } else {
-            (LogLevel::Status, Some(gate))
-        };
-        let expected = |upload_label: &str, if_line: &str| match skip_line {
-            Some("skip_upload") => format!("skipped {upload_label} upload — skip_upload is set"),
-            Some(_) => if_line.to_string(),
-            None => WARNING.to_string(),
-        };
-        // A gate that trips pushes nothing; a value that only warns leaves the
-        // document in, and a dry run pushes nothing either way.
-        let pushes = |ctx: &Context| gate == "warn" && !ctx.is_dry_run();
+    let (level, skip_line) = if gate == "warn" {
+        (LogLevel::Warn, None)
+    } else {
+        (LogLevel::Status, Some(gate))
+    };
+    let expected = |upload_label: &str, if_line: &str| match skip_line {
+        Some("skip_upload") => format!("skipped {upload_label} upload — skip_upload is set"),
+        Some(_) => if_line.to_string(),
+        None => WARNING.to_string(),
+    };
+    // A gate that trips pushes nothing; a value that only warns leaves the
+    // document in, and a dry run pushes nothing either way.
+    let pushes = |ctx: &Context| gate == "warn" && !ctx.is_dry_run();
 
-        assert_gate_line_prints_once_per_command(
-            "same-tap cask",
-            &|bare_url| {
-                let mut publish = same_tap_publish(bare_url, "alpha", false);
-                let cask = publish.homebrew_cask.as_mut().unwrap();
-                gated(&mut cask.skip_upload, &mut cask.if_condition);
-                single_crate_ctx(publish)
-            },
-            &|ctx, log| {
-                let pushed = super::publish_to_homebrew(ctx, "alpha", log).expect("formula runs");
-                assert_eq!(pushed, !ctx.is_dry_run(), "the formula pushes");
-            },
-            level,
-            &expected(
-                "homebrew cask for 'alpha'",
-                "skipped homebrew cask for 'alpha' — `if` condition evaluated falsy",
-            ),
-        );
+    assert_gate_line_prints_once_per_command(
+        "same-tap cask",
+        &|bare_url| {
+            let mut publish = same_tap_publish(bare_url, "alpha", false);
+            let cask = publish.homebrew_cask.as_mut().unwrap();
+            gated(&mut cask.skip_upload, &mut cask.if_condition);
+            single_crate_ctx(publish)
+        },
+        &|ctx, log| {
+            let pushed = super::publish_to_homebrew(ctx, "alpha", log).expect("formula runs");
+            assert_eq!(pushed, !ctx.is_dry_run(), "the formula pushes");
+        },
+        level,
+        &expected(
+            "homebrew cask for 'alpha'",
+            "skipped homebrew cask for 'alpha' — `if` condition evaluated falsy",
+        ),
+    );
 
-        assert_gate_line_prints_once_per_command(
-            "own-tap cask",
-            &|bare_url| {
-                let mut publish = cask_only_publish(bare_url, "alpha");
-                let cask = publish.homebrew_cask.as_mut().unwrap();
-                gated(&mut cask.skip_upload, &mut cask.if_condition);
-                single_crate_ctx(publish)
-            },
-            &|ctx, log| {
-                let pushed = super::publish_cask(ctx, "alpha", log).expect("cask runs");
-                assert_eq!(pushed, pushes(ctx));
-            },
-            level,
-            &expected(
-                "homebrew cask for 'alpha'",
-                "skipped homebrew cask for 'alpha' — `if` condition evaluated falsy",
-            ),
-        );
+    assert_gate_line_prints_once_per_command(
+        "own-tap cask",
+        &|bare_url| {
+            let mut publish = cask_only_publish(bare_url, "alpha");
+            let cask = publish.homebrew_cask.as_mut().unwrap();
+            gated(&mut cask.skip_upload, &mut cask.if_condition);
+            single_crate_ctx(publish)
+        },
+        &|ctx, log| {
+            let pushed = super::publish_cask(ctx, "alpha", log).expect("cask runs");
+            assert_eq!(pushed, pushes(ctx));
+        },
+        level,
+        &expected(
+            "homebrew cask for 'alpha'",
+            "skipped homebrew cask for 'alpha' — `if` condition evaluated falsy",
+        ),
+    );
 
-        assert_gate_line_prints_once_per_command(
-            "formula",
-            &|bare_url| {
-                let mut formula = HomebrewConfig {
-                    repository: Some(tap_repository(bare_url)),
+    assert_gate_line_prints_once_per_command(
+        "formula",
+        &|bare_url| {
+            let mut formula = HomebrewConfig {
+                repository: Some(tap_repository(bare_url)),
+                ..Default::default()
+            };
+            gated(&mut formula.skip_upload, &mut formula.if_condition);
+            single_crate_ctx(PublishConfig {
+                homebrew: Some(formula),
+                ..Default::default()
+            })
+        },
+        &|ctx, log| {
+            let pushed = super::publish_to_homebrew(ctx, "alpha", log).expect("formula runs");
+            assert_eq!(pushed, pushes(ctx));
+        },
+        level,
+        &expected(
+            "homebrew for 'alpha'",
+            "skipped homebrew for 'alpha' — `if` condition evaluated falsy",
+        ),
+    );
+
+    assert_gate_line_prints_once_per_command(
+        "top-level cask",
+        &|bare_url| {
+            let mut top = HomebrewCaskConfig {
+                repository: Some(tap_repository(bare_url)),
+                ..cask("mycask")
+            };
+            gated(&mut top.skip_upload, &mut top.if_condition);
+            release_ctx(
+                Config {
+                    project_name: "alpha".to_string(),
+                    crates: vec![crate_with("alpha", PublishConfig::default())],
+                    homebrew_casks: Some(vec![top]),
                     ..Default::default()
-                };
-                gated(&mut formula.skip_upload, &mut formula.if_condition);
-                single_crate_ctx(PublishConfig {
-                    homebrew: Some(formula),
-                    ..Default::default()
-                })
-            },
-            &|ctx, log| {
-                let pushed = super::publish_to_homebrew(ctx, "alpha", log).expect("formula runs");
-                assert_eq!(pushed, pushes(ctx));
-            },
-            level,
-            &expected(
-                "homebrew for 'alpha'",
-                "skipped homebrew for 'alpha' — `if` condition evaluated falsy",
-            ),
-        );
-
-        assert_gate_line_prints_once_per_command(
-            "top-level cask",
-            &|bare_url| {
-                let mut top = HomebrewCaskConfig {
-                    repository: Some(tap_repository(bare_url)),
-                    ..cask("mycask")
-                };
-                gated(&mut top.skip_upload, &mut top.if_condition);
-                release_ctx(
-                    Config {
-                        project_name: "alpha".to_string(),
-                        crates: vec![crate_with("alpha", PublishConfig::default())],
-                        homebrew_casks: Some(vec![top]),
-                        ..Default::default()
-                    },
-                    &["alpha"],
-                )
-            },
-            &|ctx, log| {
-                let got = super::publish_top_level_homebrew_casks(ctx, log).expect("casks run");
-                assert_eq!(got.pushed_any, pushes(ctx), "{got:?}");
-            },
-            level,
-            &expected(
-                "cask for 'mycask'",
-                "skipped cask 'mycask' — `if` condition evaluated falsy",
-            ),
-        );
-    }
+                },
+                &["alpha"],
+            )
+        },
+        &|ctx, log| {
+            let got = super::publish_top_level_homebrew_casks(ctx, log).expect("casks run");
+            assert_eq!(got.pushed_any, pushes(ctx), "{got:?}");
+        },
+        level,
+        &expected(
+            "cask for 'mycask'",
+            "skipped cask 'mycask' — `if` condition evaluated falsy",
+        ),
+    );
 }
 
 /// A `custom_block` the lexer cannot read to its end warns once per
@@ -560,35 +576,51 @@ fn every_gate_skip_line_prints_once_per_command() {
 /// open at the end of the block, or an operator after an untracked word
 /// that may open a literal spanning lines. A `depends_on_macos:` decides
 /// the verdict itself, so it silences the warning.
+///
+/// Every block is valid Ruby, so the emission check passes. `width` and
+/// `cond` are words the lexer cannot tell from a local or a method, and the
+/// `<<` follows a block parameter while it is in scope. A literal left open
+/// at the end of a block is not valid Ruby, so that reason has no case here;
+/// `an_unclosed_literal_falls_back_to_the_word_scan` holds what it reports.
+/// Each block is its own test, so the blocks run in parallel: every cask
+/// pushes to a git tap in every command, and on Windows the blocks together
+/// came close to the test timeout.
 #[test]
-fn an_unreadable_custom_block_warns_once_per_command() {
-    // Every block is valid Ruby, so the emission check passes. `width` and
-    // `cond` are words the lexer cannot tell from a local or a method, and
-    // the `<<` follows a block parameter while it is in scope. A literal
-    // left open at the end of a block is not valid Ruby, so that reason
-    // has no case here; `an_unclosed_literal_falls_back_to_the_word_scan`
-    // holds what it reports.
-    const CASES: &[(&str, &str)] = &[
-        (
-            "n = width %-2\non_linux do\nend\n-",
-            "line 1 (the '%' there could open a percent literal or be an operator)",
-        ),
-        (
-            "x = cond ?a, %w[\nb\n]\non_linux do\nend",
-            "line 1 (the '?' there could open a character literal or be an operator)",
-        ),
-        (
-            "x = width /2\non_linux do\nend\n/",
-            "line 1 (the '/' there could open a regex or be an operator)",
-        ),
-        (
-            "[1].each do |caveats|\n  caveats <<~EOS\n  on_linux\n  EOS\nend",
-            "line 2 (the '<<' there could open a heredoc or be an operator)",
-        ),
-    ];
-    for (block, cause) in CASES {
-        assert_an_unreadable_custom_block_warns_once(block, cause);
-    }
+fn a_custom_block_with_an_ambiguous_percent_warns_once_per_command() {
+    assert_an_unreadable_custom_block_warns_once(
+        "n = width %-2\non_linux do\nend\n-",
+        "line 1 (the '%' there could open a percent literal or be an operator)",
+    );
+}
+
+/// The `?` case of
+/// [`a_custom_block_with_an_ambiguous_percent_warns_once_per_command`].
+#[test]
+fn a_custom_block_with_an_ambiguous_question_mark_warns_once_per_command() {
+    assert_an_unreadable_custom_block_warns_once(
+        "x = cond ?a, %w[\nb\n]\non_linux do\nend",
+        "line 1 (the '?' there could open a character literal or be an operator)",
+    );
+}
+
+/// The `/` case of
+/// [`a_custom_block_with_an_ambiguous_percent_warns_once_per_command`].
+#[test]
+fn a_custom_block_with_an_ambiguous_slash_warns_once_per_command() {
+    assert_an_unreadable_custom_block_warns_once(
+        "x = width /2\non_linux do\nend\n/",
+        "line 1 (the '/' there could open a regex or be an operator)",
+    );
+}
+
+/// The `<<` case of
+/// [`a_custom_block_with_an_ambiguous_percent_warns_once_per_command`].
+#[test]
+fn a_custom_block_with_an_ambiguous_heredoc_warns_once_per_command() {
+    assert_an_unreadable_custom_block_warns_once(
+        "[1].each do |caveats|\n  caveats <<~EOS\n  on_linux\n  EOS\nend",
+        "line 2 (the '<<' there could open a heredoc or be an operator)",
+    );
 }
 
 fn assert_an_unreadable_custom_block_warns_once(block: &'static str, cause: &str) {

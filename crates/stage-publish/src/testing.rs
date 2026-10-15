@@ -508,13 +508,13 @@ pub fn assert_publisher_visible_work_contract(publisher: &dyn Publisher, ctx: &m
 /// consumers.
 #[cfg(test)]
 pub fn hermetic_tagged_repo() -> tempfile::TempDir {
-    let repo = tempfile::tempdir().expect("tempdir for hermetic publisher repo");
     // `init_git_repo_with_commits` writes a file per commit before committing,
     // so it works in an empty tempdir (plain `init_git_repo` assumes the caller
     // already wrote files and its `git commit` errors on an empty tree). The
     // first commit is tagged `v0.1.0`, matching the `v{{ .Version }}` template.
-    anodizer_core::test_helpers::init_git_repo_with_commits(repo.path(), &["initial"]);
-    repo
+    fixture_copy("tagged repository", |repo| {
+        anodizer_core::test_helpers::init_git_repo_with_commits(repo, &["initial"]);
+    })
 }
 
 /// Create a throwaway git repo carrying an arbitrary set of tags and return its
@@ -534,12 +534,49 @@ pub fn hermetic_tagged_repo() -> tempfile::TempDir {
 /// `test-helpers` feature.
 #[cfg(test)]
 pub fn hermetic_repo_with_tags(tags: &[&str]) -> tempfile::TempDir {
-    let repo = tempfile::tempdir().expect("tempdir for hermetic per-crate repo");
-    anodizer_core::test_helpers::init_git_repo_with_commits(repo.path(), &["initial"]);
-    for tag in tags {
-        anodizer_core::test_helpers::git_test_ok(repo.path(), &["tag", tag]);
-    }
-    repo
+    fixture_copy(&format!("repository tagged {tags:?}"), |repo| {
+        anodizer_core::test_helpers::init_git_repo_with_commits(repo, &["initial"]);
+        for tag in tags {
+            anodizer_core::test_helpers::git_test_ok(repo, &["tag", tag]);
+        }
+    })
+}
+
+/// A fresh copy of the directory `build` fills in, for a fixture every caller
+/// wants identical.
+///
+/// `build` runs once per test binary for each `key`, into a template
+/// directory, and every call returns its own copy of that template. A git
+/// fixture takes several git processes to build, and each costs hundreds of
+/// milliseconds on Windows, so a test that builds one per case spent most of
+/// its time there; copying the files starts no process.
+#[cfg(test)]
+pub fn fixture_copy(key: &str, build: impl FnOnce(&std::path::Path)) -> tempfile::TempDir {
+    use std::collections::BTreeMap;
+    use std::path::PathBuf;
+    use std::sync::{Mutex, PoisonError};
+
+    static TEMPLATES: Mutex<BTreeMap<String, PathBuf>> = Mutex::new(BTreeMap::new());
+    let template = {
+        let mut templates = TEMPLATES.lock().unwrap_or_else(PoisonError::into_inner);
+        templates
+            .entry(key.to_string())
+            .or_insert_with(|| {
+                // ponytail: a static never drops, so each template stays on
+                // disk after the test binary exits; one small directory per key
+                // per run.
+                let dir = tempfile::tempdir()
+                    .expect("fixture template tempdir")
+                    .keep();
+                build(&dir);
+                dir
+            })
+            .clone()
+    };
+    let copy = tempfile::tempdir().expect("fixture copy tempdir");
+    anodizer_core::util::copy_dir_tree(&template, copy.path())
+        .unwrap_or_else(|e| panic!("copy fixture template {}: {e:#}", template.display()));
+    copy
 }
 
 // Preflight doubles
