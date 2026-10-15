@@ -4144,6 +4144,10 @@ fn npm_publish_stderr_classifier_names_every_transient_shape() {
 /// It is neither retried nor a failure: the attempt ends as `Staged`, the
 /// `auto`-mode token fallback never fires (its warning would claim Trusted
 /// Publishing failed), and the status line says what npm is doing.
+///
+/// Unix only: the `npm` stub on PATH is a `.cmd` file on Windows, and the
+/// publisher's bare `Command::new("npm")` looks for `npm.exe` there.
+#[cfg(unix)]
 #[test]
 #[serial_test::serial(path_env)]
 fn a_staged_version_conflict_is_accepted_without_retry_or_token_fallback() {

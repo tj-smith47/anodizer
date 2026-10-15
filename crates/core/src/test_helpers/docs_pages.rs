@@ -28,8 +28,15 @@ pub fn read_docs_page(relative: &str) -> String {
     std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()))
 }
 
+/// A page path written with `/` on every host, so a page listed by a test
+/// as `"publish/krew.md"` compares equal to the one a listing found, as a
+/// string as well as a path.
+fn slash_path(path: &Path) -> PathBuf {
+    PathBuf::from(crate::path_util::slash_display(path))
+}
+
 /// Every `.md` file under `dir`, skipping the directory `skip`, as paths
-/// relative to `root`.
+/// relative to `root`, written with `/`.
 fn collect_pages(dir: &Path, root: &Path, skip: Option<&Path>, pages: &mut Vec<PathBuf>) {
     for entry in std::fs::read_dir(dir).unwrap_or_else(|e| panic!("{}: {e}", dir.display())) {
         let path = entry.expect("docs entry").path();
@@ -38,16 +45,13 @@ fn collect_pages(dir: &Path, root: &Path, skip: Option<&Path>, pages: &mut Vec<P
                 collect_pages(&path, root, skip, pages);
             }
         } else if path.extension().is_some_and(|ext| ext == "md") {
-            pages.push(
-                path.strip_prefix(root)
-                    .expect("under the root")
-                    .to_path_buf(),
-            );
+            pages.push(slash_path(path.strip_prefix(root).expect("under the root")));
         }
     }
 }
 
-/// Every `.md` page under [`docs_dir`], as paths relative to it, sorted.
+/// Every `.md` page under [`docs_dir`], as paths relative to it written
+/// with `/`, sorted.
 pub fn docs_pages() -> Vec<PathBuf> {
     let root = docs_dir();
     let mut pages = Vec::new();
@@ -59,7 +63,8 @@ pub fn docs_pages() -> Vec<PathBuf> {
 
 /// Every other `.md` page of the docs site: the pages under
 /// `docs/site/content` outside [`docs_dir`] (the migration guides, the
-/// dogfooding log), as paths relative to [`repo_root`], sorted.
+/// dogfooding log), as paths relative to [`repo_root`] written with `/`,
+/// sorted.
 pub fn other_site_pages() -> Vec<PathBuf> {
     let root = repo_root();
     let docs = docs_dir();
@@ -76,7 +81,7 @@ pub fn other_site_pages() -> Vec<PathBuf> {
 }
 
 /// The repository README and every workspace crate's README, as paths
-/// relative to [`repo_root`], sorted.
+/// relative to [`repo_root`] written with `/`, sorted.
 pub fn readme_pages() -> Vec<PathBuf> {
     let root = repo_root();
     let mut pages = vec![PathBuf::from("README.md")];
@@ -85,7 +90,7 @@ pub fn readme_pages() -> Vec<PathBuf> {
         if readme.is_file() {
             let krate = krate.canonicalize().expect("crate dir");
             let relative = krate.strip_prefix(&root).expect("crate under the root");
-            pages.push(relative.join("README.md"));
+            pages.push(slash_path(&relative.join("README.md")));
         }
     }
     pages
@@ -250,6 +255,9 @@ mod tests {
         }
     }
 
+    /// A test names a page as a string with `/` (`"publish/krew.md"`) and
+    /// matches it against a listed page's `to_str()`, so every listing
+    /// writes its pages with `/` on Windows too.
     #[test]
     fn the_page_listings_find_the_pages() {
         let pages = docs_pages();
@@ -257,5 +265,18 @@ mod tests {
         let readmes = readme_pages();
         assert!(readmes.contains(&PathBuf::from("README.md")));
         assert!(readmes.contains(&PathBuf::from("crates/cli/README.md")));
+        let others = other_site_pages();
+        let names: Vec<&str> = pages
+            .iter()
+            .chain(&readmes)
+            .chain(&others)
+            .map(|page| page.to_str().expect("a UTF-8 page path"))
+            .collect();
+        assert!(names.contains(&"general/templates.md"));
+        assert!(names.contains(&"crates/cli/README.md"));
+        assert!(
+            names.iter().all(|name| !name.contains('\\')),
+            "a page name written with a backslash: {names:?}"
+        );
     }
 }

@@ -221,10 +221,16 @@ jobs:
       - name: Tests
         run: task test
 
+      # The runner image ships whatever Homebrew it was built with, and
+      # `brew style` checks a cask against that copy's stanza order. A tap
+      # lints with the current Homebrew, so the check updates first.
       - name: Lint the rendered Homebrew casks with brew style
         if: runner.os == 'macOS'
         timeout-minutes: 10
-        run: task test:brew-style
+        run: |
+          brew update
+          brew --version
+          task test:brew-style
 
       - name: Build release binary
         if: env.RELEASE_BOOTSTRAP == 'true'

@@ -7254,6 +7254,126 @@ end
     );
 }
 
+/// Homebrew's cask stanza groups, in order, as `STANZA_GROUPS` in
+/// `Library/Homebrew/rubocops/cask/constants/stanza.rb` lists them at
+/// Homebrew/brew commit 5ac888db727abd0796055f06301226eb3f02c972 (Homebrew
+/// 7.0.8), which sorts `zsh_completion` before `fish_completion`. The
+/// `on_<macOS version>` blocks between `on_intel` and `on_macos` are left
+/// out, since a cask never gets one from the renderer.
+const HOMEBREW_STANZA_GROUPS: &[&[&str]] = &[
+    &["arch", "on_arch_conditional", "os", "on_system_conditional"],
+    &["version", "sha256"],
+    &["on_arm", "on_intel", "on_macos", "on_linux"],
+    &["language"],
+    &["url", "appcast", "name", "desc", "homepage"],
+    &["livecheck"],
+    &["no_autobump!"],
+    &["deprecate!", "disable!"],
+    &["auto_updates", "conflicts_with", "depends_on", "container"],
+    &["rename"],
+    &[
+        "suite",
+        "app",
+        "app_image",
+        "pkg",
+        "generated_script",
+        "installer",
+        "binary",
+        "command_wrapper",
+        "manpage",
+        "bash_completion",
+        "zsh_completion",
+        "fish_completion",
+        "pwsh_completion",
+        "generate_completions_from_executable",
+        "colorpicker",
+        "dictionary",
+        "font",
+        "input_method",
+        "internet_plugin",
+        "keyboard_layout",
+        "prefpane",
+        "qlplugin",
+        "mdimporter",
+        "screen_saver",
+        "service",
+        "audio_unit_plugin",
+        "vst_plugin",
+        "vst3_plugin",
+        "artifact",
+        "stage_only",
+    ],
+    &["preflight_steps", "preflight"],
+    &["postflight_steps", "postflight"],
+    &["uninstall_preflight_steps", "uninstall_preflight"],
+    &["uninstall_postflight_steps", "uninstall_postflight"],
+    &["uninstall"],
+    &["zap"],
+    &["caveats"],
+];
+
+/// Every rendered fixture cask writes its top-level stanzas in Homebrew's
+/// order, one blank line between two groups and none inside one, so the
+/// layout `brew style` checks holds on a host with no Homebrew. The
+/// `custom_block_*` casks put the user's block first on purpose and are
+/// left out.
+#[test]
+fn rendered_casks_follow_homebrew_stanza_groups() {
+    let place = |stanza: &str| {
+        HOMEBREW_STANZA_GROUPS
+            .iter()
+            .flat_map(|group| group.iter())
+            .position(|s| *s == stanza)
+            .map(|at| {
+                let group = HOMEBREW_STANZA_GROUPS
+                    .iter()
+                    .position(|g| g.contains(&stanza))
+                    .expect("a placed stanza has a group");
+                (group, at)
+            })
+    };
+    let mut checked = 0;
+    for (stem, body) in style_fixture_casks() {
+        if stem.starts_with("custom_block_") {
+            continue;
+        }
+        let lines: Vec<&str> = body.lines().collect();
+        let mut previous: Option<(&str, (usize, usize))> = None;
+        for (i, line) in lines.iter().enumerate() {
+            let Some(rest) = line.strip_prefix("  ") else {
+                continue;
+            };
+            if !rest.starts_with(|c: char| c.is_ascii_lowercase()) {
+                continue;
+            }
+            let stanza = rest
+                .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == '!'))
+                .next()
+                .expect("a stanza word");
+            if stanza == "end" {
+                continue;
+            }
+            let at = place(stanza)
+                .unwrap_or_else(|| panic!("{stem}: `{stanza}` is not in Homebrew's stanza order"));
+            if let Some((before, before_at)) = previous {
+                assert!(
+                    before_at.1 <= at.1,
+                    "{stem}: `{stanza}` comes after `{before}` in Homebrew's order:\n{body}"
+                );
+                let blank_before = lines[i - 1].is_empty();
+                assert_eq!(
+                    blank_before,
+                    before_at.0 != at.0,
+                    "{stem}: `{stanza}` after `{before}` needs a blank line only between two groups:\n{body}"
+                );
+            }
+            previous = Some((stanza, at));
+        }
+        checked += 1;
+    }
+    assert!(checked >= 5, "the fixture casks were read");
+}
+
 /// The environment variable that turns on [`rendered_casks_pass_brew_style_opt_in`].
 const BREW_STYLE_OPT_IN: &str = "ANODIZER_BREW_STYLE";
 

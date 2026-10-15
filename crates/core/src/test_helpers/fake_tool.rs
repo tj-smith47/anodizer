@@ -116,12 +116,22 @@ impl FakeToolDir {
     /// when dropped. The test **must** be `#[serial]`; the guard holds the
     /// shared [`env_mutex`] so it cannot race other env-mutating tests, but
     /// `#[serial]` is still required because coverage runs share one process.
+    ///
+    /// On Windows a bare `Command::new(name)` looks for `<name>.exe` only and
+    /// never reaches the `.cmd` stub, so every `PATH` directory holding a real
+    /// `<name>.exe` for a stub installed before this call is left off: the
+    /// code under test then finds no such program, and a test that needs the
+    /// stub to run fails on the missing program.
     pub fn activate(&self) -> PathGuard {
         let lock = env_mutex().lock().unwrap_or_else(|e| e.into_inner());
         let prior = std::env::var_os("PATH");
         let mut entries: Vec<PathBuf> = vec![self.dir.path().to_path_buf()];
         if let Some(ref p) = prior {
-            entries.extend(std::env::split_paths(p));
+            let shadows = self.real_binary_names();
+            entries.extend(
+                std::env::split_paths(p)
+                    .filter(|dir| !shadows.iter().any(|name| dir.join(name).is_file())),
+            );
         }
         let joined = std::env::join_paths(entries).expect("fake_tool: join PATH");
         // PATH is resolved by spawned children via execvp(3), not through any
@@ -132,6 +142,33 @@ impl FakeToolDir {
             _path: super::env::EnvGuard::set("PATH", &joined),
             _lock: lock,
         }
+    }
+
+    /// The file names a bare spawn of an installed stub's name looks for on
+    /// `PATH` where the stub itself is not one of them.
+    ///
+    /// A Windows stub is a `.cmd` file, and `Command::new("gh")` searches
+    /// `PATH` for `gh.exe` only, so it never runs the stub. A directory
+    /// holding a real `gh.exe` is left off `PATH`, so the code under test
+    /// finds no `gh` at all and never runs the host's own program with the
+    /// test's arguments and the host's credentials. On unix the stub carries
+    /// the bare name and comes first on `PATH`, so nothing is left off.
+    fn real_binary_names(&self) -> Vec<String> {
+        if !cfg!(windows) {
+            return Vec::new();
+        }
+        std::fs::read_dir(self.dir.path())
+            .expect("fake_tool: read stub dir")
+            .map(|entry| entry.expect("fake_tool: stub entry").path())
+            .filter(|stub| {
+                stub.extension()
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("cmd"))
+            })
+            .filter_map(|stub| {
+                stub.file_stem()
+                    .map(|name| format!("{}.exe", name.to_string_lossy()))
+            })
+            .collect()
     }
 
     /// Every recorded invocation of `name`, outer `Vec` per call, inner `Vec`
@@ -580,5 +617,42 @@ mod tests {
         std::env::split_paths(&path)
             .map(|d| d.join(name))
             .find(|p| p.exists())
+    }
+}
+
+#[cfg(all(test, windows))]
+mod windows_tests {
+    use super::*;
+
+    /// A bare spawn of a stubbed name never reaches the `.cmd` stub on
+    /// Windows, so a directory holding a real `<name>.exe` is left off
+    /// `PATH` while the stub is active and the spawn finds no program.
+    #[test]
+    #[serial_test::serial(path_env)]
+    fn a_real_exe_for_a_stubbed_name_is_left_off_path() {
+        let real = TempDir::new().unwrap();
+        std::fs::write(real.path().join("findme.exe"), b"").unwrap();
+        let prior = std::env::var_os("PATH").unwrap_or_default();
+        let mut dirs = vec![real.path().to_path_buf()];
+        dirs.extend(std::env::split_paths(&prior));
+        let _path = super::super::env::EnvGuard::set(
+            "PATH",
+            std::env::join_paths(dirs).expect("join PATH"),
+        );
+        let tools = FakeToolDir::new();
+        tools.tool("findme").install();
+        let _active = tools.activate();
+        let active: Vec<PathBuf> =
+            std::env::split_paths(&std::env::var_os("PATH").expect("PATH")).collect();
+        assert_eq!(active.first().map(PathBuf::as_path), Some(tools.bin_dir()));
+        assert!(
+            !active.iter().any(|dir| dir == real.path()),
+            "the directory holding findme.exe stays off PATH: {active:?}"
+        );
+        let spawn = std::process::Command::new("findme").output();
+        assert_eq!(
+            spawn.map(|_| ()).map_err(|e| e.kind()),
+            Err(std::io::ErrorKind::NotFound)
+        );
     }
 }
