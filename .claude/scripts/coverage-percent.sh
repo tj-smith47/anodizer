@@ -22,7 +22,8 @@ if [ ! -f "$XML" ]; then
   exit 1
 fi
 
-LINE_RATE=$(grep -oP -m1 'line-rate="\K[^"]+' "$XML" || true)
+# awk keeps this portable: BSD grep (macOS) has no -P.
+LINE_RATE=$(awk 'match($0, /line-rate="[^"]*"/) { print substr($0, RSTART + 11, RLENGTH - 12); exit }' "$XML" || true)
 # Fail loudly on a missing or non-numeric line-rate: awk would coerce
 # garbage to 0, letting a parse failure masquerade as a real measurement.
 if ! printf '%s' "$LINE_RATE" | grep -Eq '^[0-9]+(\.[0-9]+)?([eE][+-]?[0-9]+)?$'; then

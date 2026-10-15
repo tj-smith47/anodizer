@@ -1679,7 +1679,6 @@ fn zip_source_inputs<'a>(
 /// The uncommitted `extra.txt` `executable_source_repo` writes, named the way
 /// glob expansion hands it to the stage: an absolute path, so `src.exists()`
 /// holds from any working directory and the entry is really appended.
-#[cfg(unix)]
 fn extra_txt_entry(tmp: &std::path::Path) -> anodizer_core::config::SourceFileEntry {
     anodizer_core::config::SourceFileEntry {
         src: tmp.join("extra.txt").to_string_lossy().into_owned(),

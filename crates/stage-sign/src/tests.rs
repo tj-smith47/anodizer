@@ -3412,6 +3412,7 @@ fn docker_sign_signed_images(dry_run: bool, verify_exit: i32) -> Vec<String> {
 
 /// `sign_exit` is the stub's exit code for `cosign sign`, `verify_exit` for
 /// `cosign verify`; `verify_on` is the config's `verify.enabled`.
+#[cfg(unix)]
 fn docker_sign_signed_images_with(
     dry_run: bool,
     sign_exit: i32,
@@ -9706,6 +9707,9 @@ fn per_target_output_templates_render_one_name_on_the_gate_and_the_stage() {
 /// `artifacts: none` skips its own config and nothing else: a failing config
 /// configured after it still fails the stage, on `signs:`, `binary_signs:`
 /// and `docker_signs:` alike.
+// The failing sibling is the POSIX `false`, and the assertion reads its exit
+// code, so the test needs a unix host.
+#[cfg(unix)]
 #[test]
 fn a_none_config_does_not_mask_a_failing_sibling_on_any_sign_slice() {
     use anodizer_core::artifact::{Artifact, ArtifactKind};

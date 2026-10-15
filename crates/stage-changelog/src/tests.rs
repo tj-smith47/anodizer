@@ -891,11 +891,17 @@ fn test_changelog_stage_github_native_dry_run_skips_api() {
     // and the per-crate changelog body falls back to the empty string.
     // Outside dry-run/snapshot the body would be the API response.
     let tmp = tempfile::tempdir().expect("tempdir");
+    // The stage lists tags in the cwd, so the test runs inside a repository
+    // of its own instead of the checkout the tests run in.
+    let repo = tempfile::tempdir().expect("tempdir");
+    anodizer_core::test_helpers::init_git_repo_with_commits(repo.path(), &["initial"]);
+    let _cwd = CwdGuard::new(repo.path()).unwrap();
     let mut ctx = TestContextBuilder::new()
         .project_name("test")
         .token(Some("test-token".to_string()))
         .dry_run(true)
         .dist(tmp.path().join("dist"))
+        .project_root(repo.path().to_path_buf())
         .crates(vec![CrateConfig {
             name: "mylib".to_string(),
             path: ".".to_string(),
@@ -1034,11 +1040,17 @@ fn test_changelog_github_native_aggregates_missing_release_github_warnings() {
     }));
 
     let tmp = tempfile::tempdir().expect("tempdir");
+    // The stage lists tags in the cwd, so the test runs inside a repository
+    // of its own instead of the checkout the tests run in.
+    let repo = tempfile::tempdir().expect("tempdir");
+    anodizer_core::test_helpers::init_git_repo_with_commits(repo.path(), &["initial"]);
+    let _cwd = CwdGuard::new(repo.path()).unwrap();
     let mut ctx = TestContextBuilder::new()
         .project_name("test")
         .token(Some("test-token".to_string()))
         .dry_run(true)
         .dist(tmp.path().join("dist"))
+        .project_root(repo.path().to_path_buf())
         .crates(crates)
         .build();
     let capture = anodizer_core::log::LogCapture::new();

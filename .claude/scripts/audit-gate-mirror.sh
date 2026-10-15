@@ -174,8 +174,9 @@ SPLIT_SEGMENTS=$(cat <<'AWK'
 AWK
 )
 
-# A `\`-continued line is one command.
-joined_runs=$(sed -e ':a' -e '/\\$/{N;s/\\\n//;ba}' <<< "$step_runs")
+# A `\`-continued line is one command. awk joins them: BSD sed (macOS)
+# rejects GNU sed's one-line label loop.
+run_scanner joined_runs '{ if (sub(/\\$/, "")) { held = held $0; next } print held $0; held = "" } END { if (held != "") print held }' <<< "$step_runs"
 run_scanner segments "$SPLIT_SEGMENTS" <<< "$joined_runs"
 expression_targets=""
 spaced_targets=""

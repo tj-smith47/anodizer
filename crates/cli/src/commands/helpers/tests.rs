@@ -2229,11 +2229,6 @@ fn resolve_git_context_notify_no_tag_defaults_v0() {
     });
 }
 
-/// A dirty working tree on a tagged HEAD is the exact state an `on_error:`
-/// notify hook runs in after a failed release (partial `dist/`, in-flight
-/// writeback). Without `notify` it is a hard bail; with `notify: true` it
-/// must resolve cleanly so the alert is never lost.
-#[cfg(unix)]
 /// A snapshot of an untagged repository still reads the tree's dirty
 /// state: the synthetic tag does not make the tree clean.
 #[test]
@@ -2268,6 +2263,10 @@ fn resolve_git_context_snapshot_of_an_untagged_repo_keeps_the_dirty_state() {
     });
 }
 
+/// A dirty working tree on a tagged HEAD is the exact state an `on_error:`
+/// notify hook runs in after a failed release (partial `dist/`, in-flight
+/// writeback). Without `notify` it is a hard bail; with `notify: true` it
+/// must resolve cleanly so the alert is never lost.
 #[cfg(unix)]
 #[test]
 #[serial_test::serial(cwd)]

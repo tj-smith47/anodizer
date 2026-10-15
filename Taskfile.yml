@@ -18,7 +18,7 @@ tasks:
       # (agent sandbox host). macOS, Windows, and GitHub Actions runners
       # all back /tmp with real disk; on those the linker can't OOM from
       # /tmp pressure, so skip the check entirely.
-      - sh: '[ -n "${ANODIZER_STRUCTURAL_WALK:-}" ] || [ "$(uname)" != "Linux" ] || [ "$(stat -f -c %T /tmp 2>/dev/null)" != "tmpfs" ] || [ "$(df --output=pcent /tmp | tail -1 | tr -dc 0-9)" -lt 50 ]'
+      - sh: '[ -n "${ANODIZER_STRUCTURAL_WALK:-}" ] || [ "$(uname)" != "Linux" ] || [ "$(stat -f -c %T /tmp 2>/dev/null)" != "tmpfs" ] || [ "$(df --output=pcent /tmp | tail -1 | tr -dc 0-9)" -lt 50 ]'  # portable-ok: reached only on Linux, after the uname check
         msg: "/tmp is over 50% full — cargo will OOM under tmpfs RAM pressure. Run `du -sh /tmp/*/ | sort -hr | head` to find offenders and clean them. Write all scratch / debug / download files to `/opt/repos/.det-debug/` or `~/.cache/`, NEVER `/tmp`."
 
   _check:mem-headroom:
@@ -450,6 +450,12 @@ tasks:
       - task: audit:serial-groups
       - task: audit:path-stub-serial
       - task: audit:test-dead-port
+      - task: audit:script-portability
+
+  audit:script-portability:
+    desc: "Guard: no script the macOS CI job runs uses a GNU-only grep, sed, readlink, date or stat option."
+    cmds:
+      - .claude/scripts/audit-script-portability.sh
 
   audit:test-dead-port:
     desc: "Guard: no test binds a listener and releases it to get a 'nothing listens here' address (the freed port is reused by parallel tests)."
@@ -510,6 +516,23 @@ tasks:
       - task: snapshot
       - task: audit:code
       - task: audit:workflows
+      - task: check:windows-tests
+
+  check:windows-tests:
+    # A test helper gated to unix while a test that calls it is not compiles
+    # on Linux and macOS and breaks only the Windows CI job. The GNU target
+    # type-checks the same cfg(windows) code with mingw, which this host can
+    # install, where the MSVC target needs a C compiler for ring it cannot.
+    desc: "Type-check every test target for Windows (x86_64-pc-windows-gnu); skips when the target or mingw is missing."
+    cmds:
+      - |
+        set -eu
+        if ! rustup target list --installed 2>/dev/null | grep -qx x86_64-pc-windows-gnu \
+          || ! command -v x86_64-w64-mingw32-gcc >/dev/null 2>&1; then
+          echo "check:windows-tests: skip — needs the x86_64-pc-windows-gnu target and x86_64-w64-mingw32-gcc (rustup target add x86_64-pc-windows-gnu; apt install gcc-mingw-w64-x86-64)."
+          exit 0
+        fi
+        cargo check --workspace --tests --target x86_64-pc-windows-gnu
 
   ci:
     desc: Run all CI checks (everything except cross-platform builds and the rustdoc gate, which CI's rustdoc job and task gate run)

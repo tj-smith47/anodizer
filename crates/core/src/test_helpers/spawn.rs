@@ -455,6 +455,40 @@ mod tests {
         }
     }
 
+    /// A git spawned from a crate's directory the way production spawns it,
+    /// with `.` as its repository, finds no repository, while one spawned at
+    /// the workspace root still finds it: `.cargo/config.toml` stops git's
+    /// search at the workspace root. A fixture that leaves `project_root`
+    /// unset so fails on every host, instead of passing on a clone that
+    /// carries tags and failing on a CI checkout fetched without them.
+    #[test]
+    fn a_production_shaped_git_spawn_cannot_reach_the_checkout_from_a_crate() {
+        let crate_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let workspace = crate_dir.join("../..");
+        if !workspace.join(".git").exists() {
+            // A packaged crate has no checkout to reach.
+            return;
+        }
+        let git_dir = |dir: &Path| {
+            let mut cmd = Command::new("git"); // spawn-retry-ok: the uninsulated production spawn shape is the subject
+            cmd.args(["rev-parse", "--git-dir"]).current_dir(dir);
+            cmd.output().unwrap()
+        };
+        let from_crate = git_dir(crate_dir);
+        assert!(
+            !from_crate.status.success(),
+            "run under cargo, git must find no repository from {}: {}",
+            crate_dir.display(),
+            String::from_utf8_lossy(&from_crate.stdout)
+        );
+        let from_root = git_dir(&workspace);
+        assert!(
+            from_root.status.success(),
+            "git must still find the repository from the workspace root: {}",
+            String::from_utf8_lossy(&from_root.stderr)
+        );
+    }
+
     /// A planted global config under a temp `HOME` (and `XDG_CONFIG_HOME`)
     /// never reaches a fixture spawn, and no config file outside the
     /// repository and the fixture directory is read at all.

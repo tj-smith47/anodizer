@@ -346,6 +346,62 @@ fn a_script_whose_counts_go_through_plural_passes_the_plural_scan() {
     );
 }
 
+/// A GNU-only option of grep, sed, readlink, date or stat fails on the macOS
+/// runner's BSD tools, in a script under any root the audit reads and in the
+/// Taskfile. A comment, a line marked `# portable-ok:`, and the forms both
+/// implementations read (`sed -i.bak`, one `sed -e` command per expression,
+/// `grep -E`, awk, a `\n` handed to `tr` beside a sed) are not findings.
+#[test]
+fn a_gnu_only_tool_option_in_a_script_is_reported_and_a_portable_form_is_not() {
+    let gnu = "\
+rate=$(grep -oP 'line-rate=\"\\K[^\"]+' f.xml)
+grep --perl-regexp 'x' f
+sed -i 's/a/b/' f
+joined=$(sed -e ':a' -e '/\\\\$/{N;s/\\\\\\n//;ba}' f)
+sed 's/,/\\n/g' f
+here=$(readlink -f \"$0\")
+when=$(date -d '1 day ago' +%s)
+size=$(stat -c %s f)
+";
+    let portable = "\
+# grep -oP in a comment is prose
+rate=$(awk 'match($0, /line-rate=\"[^\"]*\"/) { print substr($0, RSTART + 11, RLENGTH - 12); exit }' f.xml)
+sed -i.bak 's/a/b/' f
+sed -e 's/a/b/' -e 's/c/d/' f | tr ',' '\\n'
+grep -E 'x|y' f
+size=$(stat -c %s f)  # portable-ok: this line runs only on Linux
+";
+    let roots = [
+        ".claude/scripts/demo.sh",
+        "scripts/demo.sh",
+        "packaging/demo.sh",
+        ".github/actions/demo/run.sh",
+    ];
+    let mut files: Vec<(&str, &str)> = roots.iter().map(|r| (*r, gnu)).collect();
+    files.push(("Taskfile.yml", gnu));
+    files.push((".claude/scripts/clean.sh", portable));
+    let dir = prose_tree(&files);
+    let (code, out) = run_audit("audit-script-portability.sh", dir.path());
+    assert_eq!(code, 1, "{out}");
+    for root in roots.iter().chain(std::iter::once(&"Taskfile.yml")) {
+        for line in 1..=8 {
+            assert!(
+                out.contains(&format!("{root}:{line}: ")),
+                "{root}:{line} must be reported:\n{out}"
+            );
+        }
+    }
+    assert!(!out.contains("clean.sh"), "{out}");
+
+    let dir = prose_tree(&[
+        (".claude/scripts/clean.sh", portable),
+        ("Taskfile.yml", "version: '3'\n"),
+    ]);
+    let (code, out) = run_audit("audit-script-portability.sh", dir.path());
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("2 scripts read"), "{out}");
+}
+
 /// The bash the scanners run under. Every scanner asserts the 4.4 minimum
 /// (`.claude/scripts/lib/require-bash.sh`), and macOS ships 3.2 at `/bin/bash`,
 /// so a Homebrew bash is preferred wherever one is installed; elsewhere `PATH`
@@ -1919,7 +1975,7 @@ fn rustdoc_gate_is_wired_into_gate_and_ci_never_commit() {
     }
     assert_eq!(
         commit_path.len(),
-        30,
+        32,
         "the set of tasks `task commit` reaches changed; re-check that none of them runs the rustdoc gate and update the count: {commit_path:?}"
     );
 

@@ -2458,6 +2458,10 @@ mod live_pr {
             r.pull_request = None;
         }
         let mut ctx = build_ctx(vec![c], "1.0.0");
+        // `run` resolves the crate's tag from `project_root`, so the fixture
+        // owns the tag instead of reading the checkout the tests run in.
+        let repo = crate::testing::hermetic_repo_with_tags(&["v1.0.0"]);
+        ctx.options.project_root = Some(repo.path().to_path_buf());
         inject_api_base(&mut ctx, &addr);
         add_windows_zip(&mut ctx, "widget", &"9".repeat(64));
 

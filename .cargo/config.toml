@@ -26,6 +26,13 @@ GIT_CONFIG_VALUE_3 = { value = "master", force = true }
 # fixture publishes something cannot append to the CI job's own summary
 # page. `force` because GitHub Actions sets the variable on every step.
 GITHUB_STEP_SUMMARY = { value = "", force = true }
+# Git stops its repository search at the workspace root. A test binary runs
+# in its crate's directory, so code under test that falls back to `.` as its
+# repository finds no repository at all, the same answer a CI checkout
+# fetched without tags gives. Without this, such a test reads the tags of the
+# checkout it runs in: it passes on a clone that carries tags and fails in
+# CI. Git still finds the repository from the workspace root itself.
+GIT_CEILING_DIRECTORIES = { value = ".", relative = true, force = true }
 
 # Windows MSVC determinism. MSVC-only flags (`link-arg=/...`) must be
 # scoped per-target — `[build] rustflags` would forward them to lld /

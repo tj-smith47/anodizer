@@ -79,10 +79,42 @@ fn crate_with(name: &str, publish: PublishConfig) -> CrateConfig {
     }
 }
 
+/// A release context with the git repository it resolves tags from.
+///
+/// Its `project_root` is a throwaway repository tagged `v1.2.3`, so each
+/// crate's `v{{ .Version }}` tag resolves from the fixture's own tags. Left
+/// unset, `project_root` falls back to the process cwd, which reads the
+/// checkout the tests run in: one that carries tags passes, and a CI checkout
+/// fetched without tags fails. The repository lives as long as the context.
+struct ReleaseCtx {
+    ctx: Context,
+    _repo: tempfile::TempDir,
+}
+
+impl std::ops::Deref for ReleaseCtx {
+    type Target = Context;
+    fn deref(&self) -> &Context {
+        &self.ctx
+    }
+}
+
+impl std::ops::DerefMut for ReleaseCtx {
+    fn deref_mut(&mut self) -> &mut Context {
+        &mut self.ctx
+    }
+}
+
 /// A context over `config` at version 1.2.3, with a macOS archive for every
 /// named crate.
-fn release_ctx(config: Config, crate_names: &[&str]) -> Context {
-    let mut ctx = Context::new(config, ContextOptions::default());
+fn release_ctx(config: Config, crate_names: &[&str]) -> ReleaseCtx {
+    let repo = crate::testing::hermetic_repo_with_tags(&["v1.2.3"]);
+    let mut ctx = Context::new(
+        config,
+        ContextOptions {
+            project_root: Some(repo.path().to_path_buf()),
+            ..Default::default()
+        },
+    );
     ctx.template_vars_mut().set("Version", "1.2.3");
     ctx.template_vars_mut().set("RawVersion", "1.2.3");
     ctx.template_vars_mut().set("Tag", "v1.2.3");
@@ -99,10 +131,10 @@ fn release_ctx(config: Config, crate_names: &[&str]) -> Context {
             .insert("format".to_string(), "tar.gz".to_string());
         ctx.artifacts.add(a);
     }
-    ctx
+    ReleaseCtx { ctx, _repo: repo }
 }
 
-fn single_crate_ctx(publish: PublishConfig) -> Context {
+fn single_crate_ctx(publish: PublishConfig) -> ReleaseCtx {
     release_ctx(
         Config {
             crates: vec![crate_with("alpha", publish)],
@@ -362,7 +394,7 @@ fn a_gated_off_formula_and_cask_push_nothing_and_print_both_skips() {
 /// warning once in every command.
 fn assert_gate_line_prints_once_per_command(
     site: &str,
-    make_ctx: &dyn Fn(&str) -> Context,
+    make_ctx: &dyn Fn(&str) -> ReleaseCtx,
     publish: &dyn Fn(&mut Context, &StageLogger),
     level: LogLevel,
     line: &str,
@@ -685,7 +717,7 @@ fn two_top_level_casks_sharing_a_name_each_warn_once_per_command() {
 fn own_tap_ctx(
     formula_gate: fn(&mut HomebrewConfig),
     cask_gate: fn(&mut HomebrewCaskConfig),
-) -> Context {
+) -> ReleaseCtx {
     let mut formula = HomebrewConfig {
         repository: Some(github_tap("homebrew-tap", "FORMULA_TOKEN")),
         ..Default::default()
@@ -705,7 +737,7 @@ fn own_tap_ctx(
 
 /// The preflight probe count for `ctx` against a responder that grants
 /// push, and the verdict.
-fn probes(mut ctx: Context) -> (bool, u32) {
+fn probes(mut ctx: ReleaseCtx) -> (bool, u32) {
     let body = r#"{"permissions":{"push":true}}"#;
     let (addr, calls) =
         anodizer_core::test_helpers::responder::spawn_oneshot_http_responder(vec![Box::leak(
@@ -986,7 +1018,10 @@ fn published_version(ctx: &mut Context, crate_name: &str) -> String {
 
 /// Reconcile a context against a responder that answers the open-PR search
 /// with `search_body`, returning the verdict and how many searches ran.
-fn reconcile_against(mut ctx: Context, search_body: &str) -> (anodizer_core::ReconcileState, u32) {
+fn reconcile_against(
+    mut ctx: ReleaseCtx,
+    search_body: &str,
+) -> (anodizer_core::ReconcileState, u32) {
     let response = Box::leak(
         format!(
             "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{search_body}",
@@ -1012,7 +1047,7 @@ fn reconcile_against(mut ctx: Context, search_body: &str) -> (anodizer_core::Rec
 /// A crate whose formula is gated off by `skip_upload: true` and whose cask
 /// shares the formula's tap, which takes pull requests when `pull_request`
 /// is set.
-fn gated_formula_with_same_tap_cask(bare_url: &str, pull_request: bool) -> Context {
+fn gated_formula_with_same_tap_cask(bare_url: &str, pull_request: bool) -> ReleaseCtx {
     let mut publish = same_tap_publish(bare_url, "alpha", false);
     let formula = publish.homebrew.as_mut().unwrap();
     formula.skip_upload = Some(StringOrBool::Bool(true));

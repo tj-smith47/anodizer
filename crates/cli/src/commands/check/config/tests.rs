@@ -3738,6 +3738,7 @@ pub(crate) fn quoted_label_lines(relative: &str, label: &str) -> Vec<String> {
 
 /// [`quoted_label_lines`] narrowed to one `## ` section of the page: the
 /// lines from the `heading` line up to the next `## ` heading.
+#[cfg(unix)]
 pub(crate) fn quoted_label_lines_in_section(
     relative: &str,
     heading: &str,
