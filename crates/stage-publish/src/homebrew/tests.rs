@@ -7387,8 +7387,11 @@ impl Drop for RemoveTreeOnDrop {
 }
 
 /// The file and offence counts from RuboCop's `1 file inspected, N offenses
-/// detected` summary, or `None` when the report carries no summary.
+/// detected` summary, or `None` when the report carries no summary. Colour
+/// escapes are removed first, since RuboCop colours the offence count when
+/// colour is forced.
 fn rubocop_summary(report: &str) -> Option<(usize, usize)> {
+    let report = anodizer_core::log::strip_ansi(report);
     let line = report.lines().rev().find(|l| l.contains(" inspected, "))?;
     let (files, tail) = line.split_once(" inspected, ")?;
     let files = files.split_whitespace().next()?;
@@ -7431,6 +7434,18 @@ fn rubocop_summary_reads_the_file_and_offence_counts() {
     assert_eq!(rubocop_summary("no style gems installed"), None);
 }
 
+#[test]
+fn rubocop_summary_reads_a_coloured_summary() {
+    assert_eq!(
+        rubocop_summary("1 file inspected, \u{1b}[31m4 offenses\u{1b}[0m detected\n"),
+        Some((1, 4))
+    );
+    assert_eq!(
+        rubocop_summary("1 file inspected, \u{1b}[32mno offenses\u{1b}[0m detected\n"),
+        Some((1, 0))
+    );
+}
+
 /// Run `brew style` over every layout fixture. Opt-in through
 /// `ANODIZER_BREW_STYLE=1`, because it needs a working Homebrew with its
 /// style gems (macOS, or Linux as a non-root user); once opted in, a brew
@@ -7470,6 +7485,9 @@ fn rendered_casks_pass_brew_style_opt_in() {
             .env("HOMEBREW_NO_AUTO_UPDATE", "1")
             .env("HOMEBREW_NO_INSTALL_FROM_API", "1")
             .env("HOMEBREW_NO_ENV_HINTS", "1")
+            // Homebrew forces colour when CI and GITHUB_ACTIONS are both
+            // set, which colours RuboCop's summary line.
+            .env("HOMEBREW_NO_COLOR", "1")
             .stdin(std::process::Stdio::null())
             .output()
             .expect("run brew")
@@ -7826,6 +7844,9 @@ fn rendered_formulae_pass_brew_style_opt_in() {
             .env("HOMEBREW_NO_AUTO_UPDATE", "1")
             .env("HOMEBREW_NO_INSTALL_FROM_API", "1")
             .env("HOMEBREW_NO_ENV_HINTS", "1")
+            // Homebrew forces colour when CI and GITHUB_ACTIONS are both
+            // set, which colours RuboCop's summary line.
+            .env("HOMEBREW_NO_COLOR", "1")
             .stdin(std::process::Stdio::null())
             .output()
             .expect("run brew")

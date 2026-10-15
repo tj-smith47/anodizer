@@ -6507,6 +6507,11 @@ fn test_build_ws_member_crate_applies_workspace_inference() {
 /// `HOME`. Every stage after the environment setup is skipped, so the run
 /// stops at the first check after it; what matters is whether it stopped at
 /// the token check.
+///
+/// A run that passes the token check goes on to the release stage, so the
+/// GitHub API points at a closed local port and the call is tried once. The
+/// run then fails at once without reaching the network; otherwise a host
+/// with no route to api.github.com retries for minutes.
 fn release_with_only_home(home: &Path, extra_config: &str) -> std::process::Output {
     let repo = TempDir::new().unwrap();
     create_test_project(repo.path());
@@ -6516,6 +6521,11 @@ fn release_with_only_home(home: &Path, extra_config: &str) -> std::process::Outp
             r#"
 project_name: test-project
 {extra_config}
+github_urls:
+  api: http://127.0.0.1:1/
+  upload: http://127.0.0.1:1/
+retry:
+  attempts: 1
 crates:
   - name: test-project
     path: "."
