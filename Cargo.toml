@@ -150,7 +150,7 @@ regex = "1"
 semver = "1"
 flate2 = "1"
 tar = "0.4"
-zip = { version = "8", default-features = false, features = ["deflate"] }
+zip = { version = "9", default-features = false, features = ["deflate"] }
 tempfile = "3"
 # Cross-platform free-space probe (statvfs on unix, GetDiskFreeSpaceExW on
 # Windows) for the determinism harness's disk-headroom guard. `sync` only —
