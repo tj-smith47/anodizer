@@ -150,7 +150,7 @@ regex = "1"
 semver = "1"
 flate2 = "1"
 tar = "0.4"
-zip = { version = "8", default-features = false, features = ["deflate"] }
+zip = { version = "9", default-features = false, features = ["deflate"] }
 tempfile = "3"
 # Cross-platform free-space probe (statvfs on unix, GetDiskFreeSpaceExW on
 # Windows) for the determinism harness's disk-headroom guard. `sync` only —
@@ -228,7 +228,7 @@ rcgen = { version = "0.14", default-features = false, features = ["ring", "pem"]
 # 0.40.x line because 0.14 pins `^0.40.1`; the resulting advisory is a
 # tracked ignore in `.cargo/audit.toml`, not a blocker here.
 object_store = { version = "0.14", features = ["aws", "gcp", "azure"] }
-object = { version = "0.40", default-features = false, features = ["read", "elf", "macho", "std"] }
+object = { version = "0.41", default-features = false, features = ["read", "elf", "macho", "std"] }
 serial_test = "4"
 schemars = "1.2"
 # 2.0 adopted. GoReleaser template parity is preserved by keeping every custom
